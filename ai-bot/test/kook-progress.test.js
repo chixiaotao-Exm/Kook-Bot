@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { createKookProgress, KookProgressError } from '../src/kook-progress.js';
 
 const TOKEN = 'fixture-private-progress-token';
@@ -14,7 +16,7 @@ const body = call => JSON.parse(call.init.body);
 const card = call => JSON.parse(body(call).content)[0];
 const text = call => card(call).modules.map(module => module.text?.content || module.elements?.map(element => element.content).join('\n')).join('\n');
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
-const settled = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
+const settled = async () => { for (let i = 0; i < 40; i++) await Promise.resolve(); };
 
 function harness(options = {}) {
   const calls = [], timers = new Map(), cleared = [];
@@ -27,7 +29,7 @@ function harness(options = {}) {
     clearIntervalImpl: key => { cleared.push(key); timers.delete(key); },
     ...Object.fromEntries(Object.entries(options).filter(([key]) => key !== 'fetchImpl')),
   });
-  return { progress, calls, timers, cleared, advance(ms) { time += ms; }, tick() { for (const timer of timers.values()) timer.callback(); } };
+  return { progress, calls, timers, cleared, advance(ms) { time += ms; }, tick() { for (const timer of [...timers.values()]) timer.callback(); } };
 }
 
 test('pause freezes elapsed time, resume preserves the card and safe action detail shows real work', async () => {
@@ -50,7 +52,7 @@ test('creates one quoted status card using the official endpoint and only fixed 
   assert.equal(h.calls.length, 1);
   const call = h.calls[0], data = body(call);
   assert.equal(call.url, 'https://www.kookapp.cn/api/v3/message/create');
-  assert.equal(call.init.method, 'POST'); assert.equal(call.init.redirect, 'error');
+  assert.equal(call.init.method, 'POST'); assert.equal(call.init.redirect, 'manual');
   assert.equal(call.init.headers.Authorization, `Bot ${TOKEN}`);
   assert.equal(data.type, 10); assert.equal(data.target_id, targetId);
   assert.equal(data.quote, replyMessageId); assert.equal(data.reply_msg_id, replyMessageId);
@@ -173,19 +175,167 @@ test('abort while an update is pending serializes one cancellation after it', as
   await handle.fail('TIMEOUT'); assert.equal(h.calls.length, 3);
 });
 
-test('stops periodic updates after rejection but allows only one final attempt', async () => {
+test('transient update failures retry the newest state and return to the normal refresh interval', async () => {
+  for (const status of [408, 429, 500, 502, 503, 504, 'network']) {
+    let updates = 0;
+    const h = harness({ fetchImpl: async url => {
+      if (url.endsWith('/create')) return success();
+      if (++updates > 1) return updateSuccess();
+      if (status === 'network') throw new Error(TOKEN);
+      return Response.json({ message: TOKEN }, { status });
+    } });
+    const handle = await h.progress.start(input);
+    h.tick(); await settled();
+    assert.equal(h.timers.size, 1);
+    const delay = [...h.timers.values()][0].ms;
+    assert.equal(delay, status === 429 ? 15000 : 2000);
+    await handle.setPhase('uploading'); await handle.setDetail('正在上传');
+    assert.equal(updates, 1, 'State changes must not bypass retry backoff');
+    h.advance(delay); h.tick(); await settled();
+    assert.equal(updates, 2); assert.match(text(h.calls.at(-1)), /上传内容/);
+    assert.match(text(h.calls.at(-1)), /正在上传/);
+    assert.equal(h.timers.size, 1); assert.equal([...h.timers.values()][0].ms, 15000);
+    await handle.finish(); assert.equal(h.timers.size, 0);
+    assert.equal(h.calls.filter(call => call.url.endsWith('/create')).length, 1);
+  }
+});
+
+test('rate-limit delays honor Retry-After and survive pause, resume and terminal transitions', async () => {
+  for (const [header, delay] of [['45', 45000], [new Date(1060000).toUTCString(), 60000],
+    ['999999999999', 300000], ['invalid', 15000], ['1.5', 15000], ['1', 15000]]) {
+    let updates = 0;
+    const h = harness({ fetchImpl: async url => {
+      if (url.endsWith('/create')) return success();
+      return ++updates === 1 ? Response.json({}, { status: 429, headers: { 'Retry-After': header } }) : updateSuccess();
+    } });
+    const handle = await h.progress.start(input);
+    h.tick(); await settled(); const originalTimer = [...h.timers.keys()][0];
+    assert.equal([...h.timers.values()][0].ms, delay);
+    await handle.pause(); await handle.resume(); await handle.resume(); await handle.finish();
+    assert.equal(updates, 1); assert.deepEqual([...h.timers.keys()], [originalTimer]);
+    h.advance(delay); h.tick(); await settled();
+    assert.equal(updates, 2); assert.match(text(h.calls.at(-1)), /已完成/);
+    assert.equal(h.timers.size, 0);
+  }
+});
+
+test('repeated transient updates back off to a bounded delay without accumulating schedulers', async () => {
   let updates = 0;
   const h = harness({ fetchImpl: async url => {
     if (url.endsWith('/create')) return success();
-    updates++; return Response.json({ message: TOKEN }, { status: 429 });
+    return ++updates <= 5 ? Response.json({}, { status: 500 }) : updateSuccess();
   } });
   const handle = await h.progress.start(input);
   h.tick(); await settled();
-  assert.equal(h.timers.size, 0); assert.equal(updates, 1);
-  for (let i = 0; i < 30; i++) h.tick();
-  await handle.setPhase('rendering'); assert.equal(updates, 1);
-  await handle.finish(); await handle.finish(); await handle.cancel();
-  assert.equal(updates, 2); assert.match(text(h.calls.at(-1)), /已完成/);
+  const abandoned = [...h.timers.values()][0].callback;
+  for (const delay of [2000, 4000, 8000, 15000, 15000]) {
+    assert.equal(h.timers.size, 1); assert.equal([...h.timers.values()][0].ms, delay);
+    h.advance(delay); h.tick(); await settled();
+  }
+  assert.equal(updates, 6); assert.equal(h.timers.size, 1);
+  assert.equal([...h.timers.values()][0].ms, 15000);
+  await handle.finish(); const completed = h.calls.length;
+  abandoned(); await settled(); assert.equal(h.calls.length, completed); assert.equal(h.timers.size, 0);
+});
+
+test('timed-out updates recover and late abandoned responses cannot revive completed updates', async () => {
+  const late = deferred(); let updates = 0, abandonedSignal;
+  const h = harness({ timeoutMs: 10, fetchImpl: async (url, init) => {
+    if (url.endsWith('/create')) return success();
+    if (++updates === 1) { abandonedSignal = init.signal; return late.promise; }
+    return updateSuccess();
+  } });
+  const handle = await h.progress.start(input);
+  await handle.setPhase('uploading'); assert.equal(abandonedSignal.aborted, true);
+  await handle.setDetail('最新状态'); await handle.finish();
+  assert.equal(updates, 1); assert.equal(h.timers.size, 1);
+  h.tick(); await handle.finish();
+  assert.equal(updates, 2); assert.equal(h.timers.size, 0);
+  assert.match(text(h.calls.at(-1)), /已完成/); assert.match(text(h.calls.at(-1)), /最新状态/);
+  late.resolve(updateSuccess()); await settled();
+  assert.equal(updates, 2); assert.equal(h.timers.size, 0);
+});
+
+test('paused status retries without counting paused time or creating duplicate tickers on resume', async () => {
+  let updates = 0;
+  const h = harness({ fetchImpl: async url => {
+    if (url.endsWith('/create')) return success();
+    return ++updates === 1 ? Response.json({}, { status: 503 }) : updateSuccess();
+  } });
+  const handle = await h.progress.start(input);
+  h.advance(12000); await handle.pause(); assert.equal(h.timers.size, 1);
+  h.advance(60000); h.tick(); await settled();
+  assert.match(text(h.calls.at(-1)), /已暂停/); assert.match(text(h.calls.at(-1)), /00:12/);
+  assert.equal(h.timers.size, 0);
+  await handle.resume(); const timer = [...h.timers.keys()][0]; await handle.resume();
+  assert.deepEqual([...h.timers.keys()], [timer]);
+  h.advance(8000); await handle.pause(); h.advance(10000); await handle.finish();
+  assert.match(text(h.calls.at(-1)), /00:20/); assert.equal(h.timers.size, 0);
+});
+
+test('terminal updates retry in the background with fixed content and stop after success or three attempts', async () => {
+  for (const succeeds of [true, false]) {
+    let updates = 0;
+    const h = harness({ fetchImpl: async url => {
+      if (url.endsWith('/create')) return success();
+      return ++updates === 3 && succeeds ? updateSuccess() : Response.json({}, { status: 503 });
+    } });
+    const handle = await h.progress.start(input);
+    h.advance(12345); await handle.finish();
+    assert.equal(updates, 1, 'finish returns before the scheduled retries');
+    const terminalContent = body(h.calls.at(-1)).content;
+    await handle.fail('AUTH'); await handle.cancel(); await handle.setDetail('late'); await handle.resume();
+    assert.equal(updates, 1);
+    for (const delay of [2000, 4000]) {
+      assert.equal(h.timers.size, 1); assert.equal([...h.timers.values()][0].ms, delay);
+      h.advance(60000); h.tick(); await handle.finish();
+      assert.equal(body(h.calls.at(-1)).content, terminalContent);
+    }
+    assert.equal(updates, 3); assert.equal(h.timers.size, 0);
+    h.tick(); await handle.finish(); assert.equal(updates, 3);
+  }
+});
+
+test('a failing in-flight update cannot override terminal state or start overlapping retries', async () => {
+  const wait = deferred(); let updates = 0, active = 0, maximum = 0;
+  const h = harness({ fetchImpl: async url => {
+    if (url.endsWith('/create')) return success();
+    active++; maximum = Math.max(maximum, active);
+    const attempt = ++updates;
+    if (attempt === 1) await wait.promise;
+    active--; return attempt === 1 ? Response.json({}, { status: 503 }) : updateSuccess();
+  } });
+  const handle = await h.progress.start(input);
+  h.tick(); void handle.setPhase('sending'); const finishing = handle.finish();
+  for (let i = 0; i < 20; i++) h.tick();
+  wait.resolve(); await finishing;
+  assert.equal(updates, 1); assert.equal(h.timers.size, 1);
+  h.tick(); await handle.finish();
+  assert.equal(updates, 2); assert.equal(maximum, 1); assert.match(text(h.calls.at(-1)), /已完成/);
+  assert.equal(h.timers.size, 0);
+});
+
+test('permanent HTTP, API and format rejections stop all updates without retrying', async () => {
+  for (const rejected of [() => Response.json({}, { status: 400 }), () => Response.json({}, { status: 401 }),
+    () => Response.json({}, { status: 403 }), () => Response.json({}, { status: 404 }),
+    () => Response.json({}, { status: 302 }), () => Response.json({}, { status: 501 }),
+    () => Response.json({ code: 40000, message: TOKEN }), () => new Response('not json')]) {
+    const h = harness({ fetchImpl: async url => url.endsWith('/create') ? success() : rejected() });
+    const handle = await h.progress.start(input);
+    h.tick(); await settled(); assert.equal(h.timers.size, 0);
+    await handle.setPhase('rendering'); await handle.pause(); await handle.resume(); await handle.finish();
+    h.tick(); assert.equal(h.calls.length, 2);
+  }
+});
+
+test('background terminal retries do not keep a completed short-lived process alive', async () => {
+  const moduleUrl = new URL('../src/kook-progress.js', import.meta.url).href;
+  const script = `import { createKookProgress } from ${JSON.stringify(moduleUrl)};
+    const progress = createKookProgress({ token: 'fixture-only', fetchImpl: async url => url.endsWith('/create')
+      ? Response.json({ code: 0, data: { msg_id: ${JSON.stringify(sentId)} } }) : Response.json({}, { status: 503 }) });
+    const handle = await progress.start(${JSON.stringify(input)}); await handle.finish(); process.stdout.write('finished');`;
+  const result = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', script], { timeout: 5000, windowsHide: true });
+  assert.equal(result.stdout, 'finished'); assert.equal(result.stderr, '');
 });
 
 test('invalid input and pre-aborted requests do not create cards', async () => {
@@ -237,5 +387,7 @@ test('timeout also bounds a hanging body and final status updates', async () => 
   const final = harness({ timeoutMs: 10, fetchImpl: async url => url.endsWith('/create') ? success() : new Promise(() => {}) });
   const handle = await final.progress.start(input);
   await assert.doesNotReject(handle.finish());
-  await handle.cancel(); assert.equal(final.calls.length, 2); assert.equal(final.timers.size, 0);
+  await handle.cancel(); assert.equal(final.calls.length, 2); assert.equal(final.timers.size, 1);
+  for (let attempt = 0; attempt < 2; attempt++) { final.tick(); await handle.finish(); }
+  assert.equal(final.calls.length, 4); assert.equal(final.timers.size, 0);
 });
