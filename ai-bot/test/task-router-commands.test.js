@@ -98,7 +98,7 @@ test('unauthorized repository requests cannot start code tasks or stop normal di
   assert.match(await f.send(OTHER, REQUEST), /只有已授权的操作者/);
   assert.equal(f.discussionState.active, true); assert.equal(f.codeState.active, false);
   assert.deepEqual(f.calls.map(call => call.name), ['discussion.start']);
-  assert.match(await f.send(OTHER, '停止'), /已停止讨论/);
+  assert.match(await f.send(OTHER, '停止'), /已停止，保留当前话题/);
   assert.equal(f.discussionState.active, false);
   assert.equal(f.calls.at(-1).name, 'discussion.stop');
 });
@@ -114,7 +114,7 @@ test('other users cannot contribute, pause, resume or stop active code tasks and
   }
   const after = f.commands.snapshot();
   for (const count of ['starts', 'contributions', 'pauses', 'resumes', 'stops']) assert.equal(after[count], baseline[count]);
-  assert.deepEqual(f.calls.slice(1).map(call => call.name), ['code.contribute', 'code.pause', 'code.resume', 'code.stop']);
+  assert.deepEqual(f.calls.slice(1).map(call => call.name), ['code.pause', 'code.resume', 'code.stop']);
   assert.ok(f.calls.slice(1).every(call => call.options.userId === OTHER));
   assert.ok(f.calls.every(call => !call.name.startsWith('discussion.')));
 });
