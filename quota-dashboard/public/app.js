@@ -469,6 +469,30 @@
     return `<div class="account-reset reset-credit-panel ${known && count > 0 ? 'has-credits' : 'credits-muted'}" data-reset-credits><div class="reset-credit-label"><span class="reset-credit-icon" aria-hidden="true">↻</span><span>重置卡</span><span class="reset-credit-source">${badge}</span></div><strong class="reset-credit-count">${known ? `${number(count, 0)}<small>次</small>` : '<span>未知</span>'}</strong><span class="reset-credit-note">${escapeHtml(note)}</span></div>`;
   }
 
+  function pointsHtml(account) {
+    if (platformKey(account) !== 'openai' || !/^(oauth|setup-token)$/i.test(account.type || '')) return '';
+    const points = account.points && typeof account.points === 'object' && !Array.isArray(account.points) ? account.points : {};
+    const balance = typeof points.balance === 'number' && Number.isFinite(points.balance) && points.balance >= 0 ? points.balance : null;
+    let label = '未知', unit = '', numeric = false;
+    if (points.unlimited === true) label = '不限量';
+    else if (points.hasCredits === false) { label = '0'; unit = '点'; numeric = true; }
+    else if (points.hasCredits === true && balance !== null) {
+      label = balance > 0 && balance < 0.0001 ? '<0.0001' : number(balance, 4); unit = '点'; numeric = true;
+    } else if (points.hasCredits === true) label = '有可用点数';
+    const hasTime = typeof points.observedAt === 'string' && Number.isFinite(Date.parse(points.observedAt));
+    const stale = points.freshness === 'stale';
+    const note = stale ? '旧数据' : !hasTime || points.freshness !== 'fresh' ? '时间未知' : '已更新';
+    const source = points.source === 'sub2api-active-quota' ? '主动查询' : points.source === 'sub2api-cache' ? '上游缓存' : '未提供';
+    const details = [`OpenAI Codex 点数：${label}${unit}`, `来源：${source}`, hasTime ? `采样：${formatTime(points.observedAt, { second: '2-digit' })}（北京时间）` : '采样时间未知',
+      ...(stale ? ['旧数据，当前点数可能已变化。'] : []), ...(points.hasCredits === true && balance !== null && points.unlimited !== true ? [`原始余额：${balance}`] : [])].join('\n');
+    return `<div class="account-points${stale ? ' stale' : ''}" data-account-points title="${escapeHtml(details)}"><span class="points-label">点数</span><strong class="points-value${numeric ? '' : ' points-text'}">${escapeHtml(label)}${unit ? `<small>${unit}</small>` : ''}</strong><span class="points-note">${note}</span></div>`;
+  }
+
+  function creditPanelsHtml(account) {
+    const resets = resetCreditsHtml(account.resetCredits, account), points = pointsHtml(account);
+    return points ? `<div class="account-credit-pair">${resets}${points}</div>` : resets;
+  }
+
   function accountDetailsHtml(account, secondary) {
     const plan = accountPlan(account);
     const metrics = (account.metrics || []).map(metric => {
@@ -494,7 +518,7 @@
     const notices = [stale ? '<span class="warning">旧缓存 · 非实时额度</span>' : '', account.quotaQuery?.message ? `<span class="warning">${escapeHtml(account.quotaQuery.message)}</span>` : '', issue ? `<span class="error" title="${escapeHtml(error || account.status)}">${escapeHtml(error ? String(error).slice(0, 52) + (String(error).length > 52 ? '…' : '') : '账号异常')}</span>` : ''].filter(Boolean).join('');
     const unknown = !known ? '<div class="unknown-block"><span>上游额度未知</span><small>未知 ≠ 0</small></div>' : !primary.length ? '<div class="unknown-block"><span>产品用量见详情</span></div>' : '';
     const metrics = primary.map(metric => `<div class="quota-window">${metricHtml(metric)}${windows.filter(window => window.metricKey && window.metricKey === metric.key).map(window => windowStatsHtml(window, { matched: true })).join('')}</div>`).join('') + windows.filter(window => !window.metricKey || !primaryKeys.has(window.metricKey)).map(window => `<div class="unmatched-window-stats">${windowStatsHtml(window)}</div>`).join('');
-    return `<article class="account-card ${stale ? 'stale' : ''} ${issue ? 'has-error' : ''}" data-account-id="${escapeHtml(account.id)}"><div class="account-header"><span class="provider-icon ${escapeHtml(Object.hasOwn(providers, platformKey(account)) ? platformKey(account) : '')}">${escapeHtml(provider.icon)}</span><div class="account-title"><h3 title="${escapeHtml(account.name)}">${escapeHtml(account.name || `账号 ${account.id}`)}</h3><p class="account-meta"><span>${escapeHtml(provider.name)}</span><span class="account-plan${plan.label === '版本未知' ? ' unknown' : ''}" title="${escapeHtml(`${plan.label} · ${plan.source}`)}">${escapeHtml(plan.label)}</span><span class="account-id">#${escapeHtml(account.id)}</span></p></div><span class="account-scheduling ${scheduling[0]}" data-account-scheduling="${scheduling[0]}" title="Sub2API 参与调度状态，仅展示；开启不代表账号当前一定可用。"><span aria-hidden="true">●</span>${scheduling[1]}</span></div>${resetCreditsHtml(account.resetCredits, account)}${invitationHtml(account)}${notices ? `<div class="account-notices">${notices}</div>` : ''}<div class="metrics">${unknown}${metrics}</div>${accountDetailsHtml(account, secondary)}</article>`;
+    return `<article class="account-card ${stale ? 'stale' : ''} ${issue ? 'has-error' : ''}" data-account-id="${escapeHtml(account.id)}"><div class="account-header"><span class="provider-icon ${escapeHtml(Object.hasOwn(providers, platformKey(account)) ? platformKey(account) : '')}">${escapeHtml(provider.icon)}</span><div class="account-title"><h3 title="${escapeHtml(account.name)}">${escapeHtml(account.name || `账号 ${account.id}`)}</h3><p class="account-meta"><span>${escapeHtml(provider.name)}</span><span class="account-plan${plan.label === '版本未知' ? ' unknown' : ''}" title="${escapeHtml(`${plan.label} · ${plan.source}`)}">${escapeHtml(plan.label)}</span><span class="account-id">#${escapeHtml(account.id)}</span></p></div><span class="account-scheduling ${scheduling[0]}" data-account-scheduling="${scheduling[0]}" title="Sub2API 参与调度状态，仅展示；开启不代表账号当前一定可用。"><span aria-hidden="true">●</span>${scheduling[1]}</span></div>${creditPanelsHtml(account)}${invitationHtml(account)}${notices ? `<div class="account-notices">${notices}</div>` : ''}<div class="metrics">${unknown}${metrics}</div>${accountDetailsHtml(account, secondary)}</article>`;
   }
 
   function renderAccounts() {
