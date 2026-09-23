@@ -4,17 +4,19 @@ import { fileURLToPath } from 'node:url';
 import { AdminAuth, AuthError } from './auth.js';
 import { KeyUsageError, validateUsageKey } from './key-usage.js';
 import { InvitationError } from './invitations.js';
+import { UsageTrendsError } from './usage-trends.js';
 
 const staticRoot = fileURLToPath(new URL('../public/', import.meta.url));
 export class QuotaServer {
-  #keyPresets; #keyUsage; #keyQueryTimes = []; #invitations; #accountLoad;
-  constructor({ host = '127.0.0.1', port = 18998, publicUrl, sub2apiUrl, dashboard, scheduler, reporter = {}, auth, preview = false, publicAccess = false, keyUsage, keyPresets = [], queryBotStatus, activeQuotaStatus, invitations, publicInvites = false, accountLoad }) {
+  #keyPresets; #keyUsage; #keyQueryTimes = []; #invitations; #accountLoad; #usageTrends;
+  constructor({ host = '127.0.0.1', port = 18998, publicUrl, sub2apiUrl, dashboard, scheduler, reporter = {}, auth, preview = false, publicAccess = false, keyUsage, keyPresets = [], queryBotStatus, activeQuotaStatus, invitations, publicInvites = false, accountLoad, usageTrends }) {
     Object.assign(this, { host, port, dashboard, scheduler, reporter, preview, publicAccess });
     this.queryBotStatus = queryBotStatus;
     this.activeQuotaStatus = activeQuotaStatus;
     this.#keyUsage = keyUsage;
     this.#invitations = invitations;
     this.#accountLoad = accountLoad;
+    this.#usageTrends = usageTrends;
     this.publicInvites = publicInvites === true;
     this.#keyPresets = keyPresets.filter(preset => preset.key).map(({ id, label, key }) => ({ id, label, key: validateUsageKey(key) }));
     this.publicUrl = new URL(publicUrl); this.basePath = this.publicUrl.pathname.replace(/\/$/, '');
@@ -146,6 +148,19 @@ export class QuotaServer {
           : { enabled: false, accounts: [], refreshIntervalMs: 10000, checkedAt: null, lastError: '' };
         return this.json(res, 200, snapshot);
       }
+      if (route === '/api/usage-trends') {
+        if (req.method !== 'GET') return this.json(res, 405, { error: '请求方法不支持。' });
+        if (!this.publicAccess && !session?.user) throw new AuthError('请先登录管理员账号。');
+        if (!this.#usageTrends) throw new UsageTrendsError('UNAVAILABLE', '每日趋势暂未配置。', 503);
+        if ([...url.searchParams.keys()].some(key => !['days', 'accountId'].includes(key))
+          || url.searchParams.getAll('days').length > 1 || url.searchParams.getAll('accountId').length > 1
+          || url.searchParams.has('days') && !['7', '30'].includes(url.searchParams.get('days'))
+          || url.searchParams.has('accountId') && !/^(?:all|[1-9]\d{0,18})$/.test(url.searchParams.get('accountId'))) {
+          throw new UsageTrendsError('INVALID_REQUEST', '请选择 7 天或 30 天，以及有效的账号。', 400);
+        }
+        const days = Number(url.searchParams.get('days') || 7), accountId = url.searchParams.get('accountId') || 'all';
+        return this.json(res, 200, await this.#usageTrends.get({ days, accountId }));
+      }
       if (await this.invitationRoute(req, res, route, url, session)) return;
       if (this.publicAccess && await this.keyRoute(req, res, route, url)) return;
       if (this.publicAccess && this.reportImage(req, res, route)) return;
@@ -189,7 +204,7 @@ export class QuotaServer {
       return this.json(res, 404, { error: '接口不存在。' });
     } catch (error) {
       if (res.headersSent) return;
-      if (error instanceof KeyUsageError || error instanceof InvitationError) {
+      if (error instanceof KeyUsageError || error instanceof InvitationError || error instanceof UsageTrendsError) {
         if (error.retryAfterSeconds) res.setHeader('Retry-After', String(error.retryAfterSeconds));
         return this.json(res, error.status, { error: { code: error.code, message: error.message } });
       }

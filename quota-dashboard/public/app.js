@@ -19,6 +19,11 @@
   let toastTimer;
   const accountLoad = { enabled: null, records: new Map(), checkedAt: null, receivedAt: null, failed: false, error: '', timer: null, controller: null, epoch: 0 };
   const ACCOUNT_LOAD_INTERVAL_MS = 10000;
+  const trend = { days: 7, accountId: 'all', metric: 'requests', data: null, key: '', loading: false, error: '', epoch: 0, controller: null, timer: null, receivedAt: null, selectedDate: null, accountOptions: '' };
+  const trendMetrics = { requests: { label: '请求', title: '请求数', unit: '次' }, tokens: { label: 'Token', title: 'Token 用量', unit: 'Token' },
+    accountCost: { label: 'A 费用', title: '账号计费', unit: 'USD' }, userCost: { label: 'U 费用', title: '用户扣费', unit: 'USD' } };
+  const healthView = { query: '', filter: 'all' };
+  const healthLabels = { healthy: '正常', limited: '限流中', temporary: '暂不可用', expired: '已到期', error: '异常', disabled: '已关闭', paused: '暂停调度', unknown: '待确认' };
   const keyQuery = { epoch: 0, controller: null, presets: [], presetsLoaded: false, loadingPresets: false, activePreset: null };
   const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
   const finite = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
@@ -51,7 +56,8 @@
     || accountCollator.compare(accountPlan(left).label, accountPlan(right).label)
     || accountCollator.compare(String(left.name || ''), String(right.name || ''))
     || accountCollator.compare(String(left.id || ''), String(right.id || ''));
-  const accountIssue = account => Boolean(account.error || ['error', 'disabled', 'inactive', 'rate_limited'].includes(account.status));
+  const accountIssue = account => Boolean(account.error || ['error', 'disabled', 'inactive', 'rate_limited'].includes(account.status) ||
+    ['limited', 'temporary', 'expired', 'error'].includes(account.health?.state));
   const knownMetric = metric => finite(metric.usedPercent) || finite(metric.remainingPercent) || finite(metric.remaining) || finite(metric.value) || finite(metric.balance) || finite(metric.used) || finite(metric.limit) || finite(metric.total) || Boolean(metric.display && metric.display !== '未知');
   const accountKnown = account => (account.metrics || []).some(metric => metric.scope !== 'local' && knownMetric(metric));
   const quarterHourTimes = Array.from({ length: 96 }, (_, index) => `${String(Math.floor(index / 4)).padStart(2, '0')}:${String(index % 4 * 15).padStart(2, '0')}`);
@@ -119,6 +125,7 @@
     state.authenticated = false;
     clearTimeout(pollTimer);
     pauseAccountLoad();
+    pauseTrends();
     $('#boot-view').hidden = true;
     $('#app-view').hidden = true;
     $('#login-view').hidden = false;
@@ -168,6 +175,171 @@
       }
       schedulePoll();
     }, state.refreshing ? 2500 : refreshIntervalMs());
+  }
+
+  function beijingDay(now = Date.now()) {
+    const parts = Object.fromEntries(new Intl.DateTimeFormat('en', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date(now)).map(part => [part.type, part.value]));
+    return `${parts.year}-${parts.month}-${parts.day}`;
+  }
+  const trendKey = () => `${trend.days}:${trend.accountId}:${beijingDay()}`;
+  const trendValue = value => typeof value === 'number' && Number.isFinite(value) && value >= 0;
+  const trendCost = metric => metric === 'accountCost' || metric === 'userCost';
+  function trendFormat(value, metric, exact = false) {
+    if (!trendValue(value)) return '未知';
+    if (trendCost(metric)) return `$${exact ? value > 0 && value < 0.000001 ? '<0.000001' : number(value, 6) : moneyNumber(value)}`;
+    return exact ? number(value, 0) : compact(value);
+  }
+  function trendInterval() { return Number.isFinite(trend.data?.refreshIntervalMs) && trend.data.refreshIntervalMs >= 60000 && trend.data.refreshIntervalMs <= 3600000 ? trend.data.refreshIntervalMs : 300000; }
+  function pauseTrends() {
+    clearTimeout(trend.timer); trend.timer = null; trend.epoch++;
+    const controller = trend.controller; trend.controller = null; controller?.abort(); trend.loading = false;
+  }
+  function scheduleTrends() {
+    clearTimeout(trend.timer); trend.timer = null;
+    if (state.view === 'trends' && !document.hidden && canRead() && !$('#app-view').hidden) {
+      const age = trend.receivedAt === null ? 0 : Math.max(0, performance.now() - trend.receivedAt);
+      const now = Date.now(), midnight = Date.parse(`${beijingDay(now)}T00:00:00+08:00`) + 86400000;
+      const delay = trend.error ? trendInterval() : Math.max(1000, trendInterval() - age);
+      trend.timer = setTimeout(() => { void loadTrends({ force: true }); }, Math.min(delay, Math.max(1, midnight - now)));
+    }
+  }
+  function syncTrendAccounts() {
+    const accounts = [...state.accounts].sort(compareAccounts);
+    const options = '<option value="all">全站（含历史账号）</option>' + accounts.map(account => `<option value="${escapeHtml(account.id)}">${escapeHtml(account.name || `账号 ${account.id}`)} · #${escapeHtml(account.id)}</option>`).join('');
+    if (options !== trend.accountOptions) { $('#trend-account').innerHTML = options; trend.accountOptions = options; }
+    if (trend.accountId !== 'all' && !accounts.some(account => String(account.id) === trend.accountId)) {
+      pauseTrends(); trend.accountId = 'all'; trend.data = null; trend.key = ''; trend.receivedAt = null;
+      if (state.view === 'trends') void loadTrends();
+    }
+    $('#trend-account').value = trend.accountId;
+  }
+  async function loadTrends({ force = false } = {}) {
+    if (state.view !== 'trends' || document.hidden || !canRead()) return;
+    const key = trendKey();
+    if (trend.loading && trend.key === key && !force) return;
+    if (!force && trend.data && trend.key === key && !trend.error && performance.now() - trend.receivedAt < trendInterval()) { renderTrends(); scheduleTrends(); return; }
+    pauseTrends();
+    if (trend.key !== key) { trend.data = null; trend.receivedAt = null; }
+    trend.key = key; trend.loading = true; trend.error = '';
+    const controller = new AbortController(), epoch = trend.epoch;
+    const days = trend.days, accountId = trend.accountId;
+    trend.controller = controller; renderTrends();
+    try {
+      const result = await api(`usage-trends?${new URLSearchParams({ days: String(days), accountId })}`, { signal: controller.signal });
+      if (epoch !== trend.epoch || controller.signal.aborted || key !== trendKey()) return;
+      if (result.days !== days || String(result.accountId) !== accountId || result.timeZone !== 'Asia/Shanghai' || !Array.isArray(result.rows)) throw new Error('趋势数据与当前筛选不匹配，请刷新重试。');
+      const rows = [...new Map(result.rows.filter(row => row && typeof row.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(row.date)).map(row => [row.date, row])).values()].sort((left, right) => left.date.localeCompare(right.date));
+      trend.data = { ...result, rows }; trend.receivedAt = performance.now();
+      if (!rows.some(row => row.date === trend.selectedDate)) trend.selectedDate = rows.at(-1)?.date || null;
+    } catch (error) {
+      if (epoch === trend.epoch && !controller.signal.aborted) trend.error = error.message || '趋势暂不可用，请稍后重试。';
+    } finally {
+      if (epoch === trend.epoch) {
+        trend.loading = false; trend.controller = null;
+        if (key !== trendKey()) void loadTrends();
+        else { renderTrends(); scheduleTrends(); }
+      }
+    }
+  }
+  function renderTrends() {
+    if (state.view !== 'trends') return;
+    syncTrendAccounts();
+    $('#trend-refresh').disabled = trend.loading;
+    $('#trend-refresh').textContent = trend.loading ? '读取中…' : '刷新趋势';
+    $$('[data-trend-days]').forEach(button => button.setAttribute('aria-pressed', String(Number(button.dataset.trendDays) === trend.days)));
+    $$('[data-trend-metric]').forEach(button => button.setAttribute('aria-pressed', String(button.dataset.trendMetric === trend.metric)));
+    const data = trend.data, metric = trendMetrics[trend.metric];
+    $('#trend-period').textContent = data ? `${data.startDate} — ${data.endDate} · 北京时间` : `近 ${trend.days} 天 · 北京时间 · 含今日`;
+    const notices = [trend.error ? `${trend.error}${data ? ' 保留上次结果。' : ''}` : '', data?.stale ? '含旧数据。' : '', data && !data.complete ? '部分日期未取得完整数据。' : '', typeof data?.lastError === 'string' ? data.lastError : ''].filter(Boolean);
+    $('#trend-feedback').hidden = !notices.length; $('#trend-feedback').textContent = notices.join(' ');
+    $('#trend-summary').innerHTML = Object.entries(trendMetrics).map(([key, value]) => `<div class="trend-total" title="${escapeHtml(trendCost(key) ? `${value.title}，USD；不是余额。` : value.title)}"><span>${value.label}</span><strong>${escapeHtml(trendFormat(data?.totals?.[key], key))}</strong>${data && !data.complete ? '<small>不完整</small>' : ''}</div>`).join('');
+    $('#trend-chart-title').textContent = `每日${metric.title}`;
+    const today = beijingDay();
+    $('#trend-updated').textContent = data?.checkedAt ? `更新 ${formatTime(data.checkedAt)}${data.endDate === today ? ' · 今日未结束' : ''} · 图中空缺表示未知` : trend.loading ? '正在读取每日用量…' : '尚无成功读取记录';
+    const rows = data?.rows || [];
+    $('#trend-row-count').textContent = `${rows.length} 天`;
+    $('#trend-table-body').innerHTML = rows.length ? [...rows].reverse().map(row => `<tr data-trend-row="${row.date}"><th scope="row"><button type="button" data-trend-select="${row.date}">${row.date.slice(5).replace('-', '/')}</button>${row.date === today ? '<small class="trend-row-today" title="今日未结束">今日</small>' : ''}${row.stale ? '<small class="trend-row-warning">旧</small>' : row.error ? '<small class="trend-row-warning">缺</small>' : ''}</th>${Object.keys(trendMetrics).map(key => `<td title="${escapeHtml(`${trendMetrics[key].title}：${trendFormat(row[key], key, true)}${trendCost(key) ? ' USD' : ''}${row.error ? ` · ${row.error}` : ''}`)}">${escapeHtml(trendFormat(row[key], key))}</td>`).join('')}</tr>`).join('') : '<tr><td colspan="5" class="trend-empty">暂无每日明细</td></tr>';
+    renderTrendChart(rows);
+    selectTrendDay(trend.selectedDate);
+  }
+  function renderTrendChart(rows) {
+    const host = $('#trend-chart'), values = rows.map(row => trendValue(row[trend.metric]) ? row[trend.metric] : null);
+    if (!rows.length || !values.some(value => value !== null)) {
+      host.innerHTML = `<div class="trend-chart-empty">${trend.loading ? '正在读取趋势…' : '暂无可绘制的用量数据'}</div>`; return;
+    }
+    const peak = Math.max(...values.filter(value => value !== null));
+    const maximum = trendCost(trend.metric) ? peak || 1 : Math.max(4, Math.ceil(peak / 4) * 4);
+    const point = (value, index) => ({ x: rows.length === 1 ? 500 : 20 + index / (rows.length - 1) * 960, y: 196 - value / maximum * 184 });
+    const segments = []; let segment = [];
+    values.forEach((value, index) => { if (value === null) { if (segment.length) segments.push(segment); segment = []; } else segment.push(point(value, index)); });
+    if (segment.length) segments.push(segment);
+    const paths = segments.map(points => {
+      const line = points.map((item, index) => `${index ? 'L' : 'M'}${item.x.toFixed(2)},${item.y.toFixed(2)}`).join(' ');
+      return `<path d="${line} L${points.at(-1).x},196 L${points[0].x},196 Z" fill="url(#trend-area-fill)"/><path d="${line}" class="trend-line"/>`;
+    }).join('');
+    const axis = Array.from({ length: 5 }, (_, index) => maximum * (4 - index) / 4);
+    const labels = [...new Set(Array.from({ length: Math.min(5, rows.length) }, (_, index) => Math.round(index * (rows.length - 1) / Math.max(1, Math.min(5, rows.length) - 1))))];
+    host.dataset.metric = trend.metric;
+    host.innerHTML = `<div class="trend-y-axis">${axis.map(value => `<span title="${escapeHtml(String(value))}">${escapeHtml(trendCost(trend.metric) ? `$${value > 0 && value < 0.0001 ? '<0.0001' : value >= 1000 ? compact(value) : number(value, 4)}` : compact(value))}</span>`).join('')}</div><div class="trend-plot-area"><div class="trend-plot"><svg viewBox="0 0 1000 208" preserveAspectRatio="none" aria-hidden="true"><defs><linearGradient id="trend-area-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--trend-color)" stop-opacity=".24"/><stop offset="1" stop-color="var(--trend-color)" stop-opacity=".015"/></linearGradient></defs>${axis.map((_, index) => `<line x1="0" x2="1000" y1="${12 + index * 46}" y2="${12 + index * 46}" class="trend-grid-line"/>`).join('')}${paths}</svg>${rows.map((row, index) => {
+      const position = point(values[index] || 0, index), label = `${row.date}，${trendMetrics[trend.metric].title} ${trendFormat(values[index], trend.metric, true)}${row.stale ? '，旧数据' : ''}`;
+      return `<button type="button" class="trend-hit${values[index] === null ? ' missing' : ''}${row.stale ? ' stale' : ''}" data-trend-day="${row.date}" style="left:${position.x / 10}%;width:${Math.min(14, 100 / rows.length)}%" aria-label="${escapeHtml(label)}"><span class="trend-dot" style="top:${position.y}px"></span></button>`;
+    }).join('')}</div><div class="trend-x-axis">${labels.map(index => `<span>${rows[index].date.slice(5).replace('-', '/')}</span>`).join('')}</div></div>`;
+  }
+  function selectTrendDay(date, focus = false) {
+    const rows = trend.data?.rows || [], index = rows.findIndex(row => row.date === date), row = rows[index];
+    trend.selectedDate = row?.date || null;
+    $$('[data-trend-day]').forEach(button => { const selected = button.dataset.trendDay === trend.selectedDate; button.classList.toggle('selected', selected); button.setAttribute('aria-pressed', String(selected)); });
+    $$('[data-trend-row]').forEach(item => item.classList.toggle('selected', item.dataset.trendRow === trend.selectedDate));
+    $('#trend-selection').textContent = row ? `${row.date} · ${trendMetrics[trend.metric].label} ${trendFormat(row[trend.metric], trend.metric, true)}${row.stale ? ' · 旧数据' : row.error ? ' · 未完整更新' : ''}` : '选择日期查看用量';
+    $('#trend-previous').disabled = index <= 0; $('#trend-next').disabled = index < 0 || index >= rows.length - 1;
+    if (focus && row) $(`[data-trend-day="${row.date}"]`)?.focus();
+  }
+  function stepTrendDay(step, focus = false) {
+    const rows = trend.data?.rows || [], index = rows.findIndex(row => row.date === trend.selectedDate);
+    if (rows.length) selectTrendDay(rows[Math.max(0, Math.min(rows.length - 1, index + step))].date, focus);
+  }
+
+  function accountHealth(account) {
+    const health = account.health || {}, known = Object.hasOwn(healthLabels, health.state);
+    const fresh = health.freshness === 'fresh' && typeof health.observedAt === 'string' && Number.isFinite(Date.parse(health.observedAt));
+    const status = known ? health.state : 'unknown';
+    const category = !fresh || status === 'unknown' ? 'unknown' : status === 'healthy' ? 'healthy' : ['disabled', 'paused'].includes(status) ? 'paused' : 'attention';
+    return { ...health, state: status, label: known ? healthLabels[status] : '待确认', category, fresh };
+  }
+  function accountHealthHtml(account) {
+    if (!account.health) return '';
+    const health = accountHealth(account), label = health.fresh ? health.label : '待确认';
+    return `<button type="button" class="account-health-link" data-health-account="${escapeHtml(account.id)}" data-health-tone="${health.category}" title="${escapeHtml(health.fresh ? health.reason || label : '状态记录待更新')}" aria-label="查看 ${escapeHtml(account.name || account.id)} 的账号健康">${label}</button>`;
+  }
+  function renderHealth() {
+    if (state.view !== 'health') return;
+    const categories = { healthy: '正常', attention: '需关注', paused: '关闭 / 暂停', unknown: '待确认' };
+    const items = state.accounts.map(account => ({ account, health: accountHealth(account) }));
+    $('#health-summary').innerHTML = Object.entries(categories).map(([key, label]) => `<div class="health-total" data-health-tone="${key}"><span>${label}</span><strong>${items.filter(item => item.health.category === key).length}</strong></div>`).join('');
+    const query = healthView.query.trim().toLowerCase(), categoryOrder = { attention: 0, unknown: 1, paused: 2, healthy: 3 }, statusOrder = ['error', 'expired', 'limited', 'temporary', 'unknown', 'paused', 'disabled', 'healthy'];
+    const selected = items.filter(({ account, health }) => (healthView.filter === 'all' || health.category === healthView.filter) && (!query || [account.id, account.name, accountPlan(account).label, platformInfo(account).name].join(' ').toLowerCase().includes(query)))
+      .sort((left, right) => categoryOrder[left.health.category] - categoryOrder[right.health.category] || statusOrder.indexOf(left.health.state) - statusOrder.indexOf(right.health.state) || compareAccounts(left.account, right.account));
+    $('#health-count').textContent = `${selected.length} / ${items.length}`;
+    $('#health-refresh').disabled = state.refreshing; $('#health-refresh').textContent = state.refreshing ? '更新中…' : '刷新数据';
+    $('#health-updated').textContent = state.snapshot?.updatedAt ? `账号记录更新于 ${formatTime(state.snapshot.updatedAt)} · 异常优先` : '等待账号状态记录';
+    $('#health-list').innerHTML = selected.length ? selected.map(({ account, health }) => {
+      const reason = typeof health.reason === 'string' ? health.reason : '等待新的账号状态观测。';
+      const stamp = value => typeof value === 'string' && Number.isFinite(Date.parse(value)) ? formatTime(value) : '未知';
+      const issues = Array.isArray(health.issues) ? health.issues.filter(issue => issue && typeof issue.label === 'string') : [];
+      return `<article class="health-row" data-health-id="${escapeHtml(account.id)}" data-health-tone="${health.category}"><div class="health-row-heading"><div><h2>${escapeHtml(account.name || `账号 ${account.id}`)}</h2><p>${escapeHtml(platformInfo(account).name)} · ${escapeHtml(accountPlan(account).label)} · #${escapeHtml(account.id)}</p></div><span class="health-state">${health.fresh ? health.label : '待确认'}</span></div><p class="health-reason">${escapeHtml(health.fresh ? reason : `上次记录：${health.label}。${health.freshness === 'stale' ? '旧数据，等待刷新确认。' : '采样时间未知，等待刷新确认。'}`)}</p>${issues.length ? `<div class="health-issues">${issues.map(issue => `<span title="${escapeHtml(issue.until ? `记录时间：${stamp(issue.until)}` : '')}">${escapeHtml(issue.label)}</span>`).join('')}</div>` : ''}<dl class="health-times"><div><dt>最近使用</dt><dd>${escapeHtml(stamp(health.lastUsedAt))}</dd></div><div><dt>预计恢复</dt><dd>${health.recoverAt ? escapeHtml(stamp(health.recoverAt)) : '—'}</dd></div><div><dt>配置到期</dt><dd>${escapeHtml(stamp(health.expiresAt))}</dd></div></dl><div class="health-row-footer"><span>采样 ${escapeHtml(stamp(health.observedAt))}${health.freshness === 'stale' ? ' · 旧数据' : ''}</span><button class="button text" type="button" data-quota-account="${escapeHtml(account.id)}">查看额度 →</button></div></article>`;
+    }).join('') : '<div class="health-empty">没有匹配的账号</div>';
+  }
+  async function showAccountHealth(id) {
+    const account = state.accounts.find(item => String(item.id) === id);
+    healthView.filter = 'all'; healthView.query = account?.name || id;
+    $('#health-filter').value = 'all'; $('#health-search').value = healthView.query;
+    await showView('health'); $(`[data-health-id="${CSS.escape(id)}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }
+  async function showAccountQuota(id) {
+    state.platform = 'all'; state.filter = 'all'; state.query = ''; $('#search').value = ''; $('#status-filter').value = 'all';
+    renderSummary(); renderAccounts(); await showView('overview');
+    const card = $(`[data-account-id="${CSS.escape(id)}"]`);
+    if (card) { const details = $('details', card); if (details) { details.open = true; expandedAccounts.add(id); } card.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
   }
 
   function canReadAccountLoad() { return canRead() && !document.hidden && !$('#app-view').hidden; }
@@ -599,10 +771,10 @@
     const windows = Array.isArray(account.windowStats) ? account.windowStats : [];
     const primaryKeys = new Set(primary.map(metric => metric.key));
     const error = account.error && typeof account.error === 'object' ? account.error.message || '查询失败' : account.error;
-    const notices = [stale ? '<span class="warning">旧缓存 · 非实时额度</span>' : '', account.quotaQuery?.message ? `<span class="warning">${escapeHtml(account.quotaQuery.message)}</span>` : '', issue ? `<span class="error" title="${escapeHtml(error || account.status)}">${escapeHtml(error ? String(error).slice(0, 52) + (String(error).length > 52 ? '…' : '') : '账号异常')}</span>` : ''].filter(Boolean).join('');
+    const notices = [stale ? '<span class="warning">旧缓存 · 非实时额度</span>' : '', account.quotaQuery?.message ? `<span class="warning">${escapeHtml(account.quotaQuery.message)}</span>` : '', issue ? `<span class="error" title="${escapeHtml(error || account.health?.reason || account.status)}">${escapeHtml(error ? String(error).slice(0, 52) + (String(error).length > 52 ? '…' : '') : healthLabels[account.health?.state] || '账号异常')}</span>` : ''].filter(Boolean).join('');
     const unknown = !known ? '<div class="unknown-block"><span>上游额度未知</span><small>未知 ≠ 0</small></div>' : !primary.length ? '<div class="unknown-block"><span>产品用量见详情</span></div>' : '';
     const metrics = primary.map(metric => `<div class="quota-window">${metricHtml(metric)}${windows.filter(window => window.metricKey && window.metricKey === metric.key).map(window => windowStatsHtml(window, { matched: true })).join('')}</div>`).join('') + windows.filter(window => !window.metricKey || !primaryKeys.has(window.metricKey)).map(window => `<div class="unmatched-window-stats">${windowStatsHtml(window)}</div>`).join('');
-    return `<article class="account-card ${stale ? 'stale' : ''} ${issue ? 'has-error' : ''}" data-account-id="${escapeHtml(account.id)}"><div class="account-header"><span class="provider-icon ${escapeHtml(Object.hasOwn(providers, platformKey(account)) ? platformKey(account) : '')}">${escapeHtml(provider.icon)}</span><div class="account-title"><h3 title="${escapeHtml(account.name)}">${escapeHtml(account.name || `账号 ${account.id}`)}</h3><p class="account-meta"><span>${escapeHtml(provider.name)}</span><span class="account-plan${plan.label === '版本未知' ? ' unknown' : ''}" title="${escapeHtml(`${plan.label} · ${plan.source}`)}">${escapeHtml(plan.label)}</span><span class="account-id">#${escapeHtml(account.id)}</span></p></div><span class="account-scheduling ${scheduling[0]}" data-account-scheduling="${scheduling[0]}" title="Sub2API 参与调度状态，仅展示；开启不代表账号当前一定可用。"><span aria-hidden="true">●</span>${scheduling[1]}</span></div>${accountLoadHtml(account)}${creditPanelsHtml(account)}${invitationHtml(account)}${notices ? `<div class="account-notices">${notices}</div>` : ''}<div class="metrics">${unknown}${metrics}</div>${accountDetailsHtml(account, secondary)}</article>`;
+    return `<article class="account-card ${stale ? 'stale' : ''} ${issue ? 'has-error' : ''}" data-account-id="${escapeHtml(account.id)}"><div class="account-header"><span class="provider-icon ${escapeHtml(Object.hasOwn(providers, platformKey(account)) ? platformKey(account) : '')}">${escapeHtml(provider.icon)}</span><div class="account-title"><h3 title="${escapeHtml(account.name)}">${escapeHtml(account.name || `账号 ${account.id}`)}</h3><p class="account-meta"><span>${escapeHtml(provider.name)}</span><span class="account-plan${plan.label === '版本未知' ? ' unknown' : ''}" title="${escapeHtml(`${plan.label} · ${plan.source}`)}">${escapeHtml(plan.label)}</span><span class="account-id">#${escapeHtml(account.id)}</span>${accountHealthHtml(account)}</p></div><span class="account-scheduling ${scheduling[0]}" data-account-scheduling="${scheduling[0]}" title="Sub2API 参与调度状态，仅展示；开启不代表账号当前一定可用。"><span aria-hidden="true">●</span>${scheduling[1]}</span></div>${accountLoadHtml(account)}${creditPanelsHtml(account)}${invitationHtml(account)}${notices ? `<div class="account-notices">${notices}</div>` : ''}<div class="metrics">${unknown}${metrics}</div>${accountDetailsHtml(account, secondary)}</article>`;
   }
 
   function renderAccounts() {
@@ -641,6 +813,7 @@
     renderSummary();
     renderAccounts();
     renderInvitation();
+    syncTrendAccounts(); renderHealth();
   }
 
   async function loadStatus() {
@@ -881,14 +1054,19 @@
     clearTimeout(toastTimer);
     $('#toast').hidden = true;
     if (state.view === 'key-usage' && view !== 'key-usage') resetKeyQuery({ clearInput: true });
+    if (state.view === 'trends' && view !== 'trends') pauseTrends();
     state.view = view;
     $('#overview-view').hidden = view !== 'overview';
     $('#reports-view').hidden = view !== 'reports';
     $('#key-usage-view').hidden = view !== 'key-usage';
-    $('#breadcrumb-title').textContent = view === 'reports' ? '定时播报' : view === 'key-usage' ? 'Key 用量' : '额度总览';
+    $('#trends-view').hidden = view !== 'trends';
+    $('#health-view').hidden = view !== 'health';
+    $('#breadcrumb-title').textContent = ({ overview: '额度总览', reports: '定时播报', 'key-usage': 'Key 用量', trends: '每日趋势', health: '账号健康' })[view] || '额度总览';
     $$('[data-view]').forEach(button => { button.classList.toggle('active', button.dataset.view === view); button.setAttribute('aria-current', button.dataset.view === view ? 'page' : 'false'); });
     if (view === 'reports') await loadReports();
     if (view === 'key-usage') await loadKeyPresets();
+    if (view === 'health') renderHealth();
+    if (view === 'trends') { syncTrendAccounts(); await loadTrends(); }
   }
 
   $('#login-form').addEventListener('submit', async event => {
@@ -926,7 +1104,33 @@
   $('#accounts').addEventListener('click', event => {
     const button = event.target.closest('[data-invite-account]');
     if (button && !button.disabled) void openInvitation(button.dataset.inviteAccount);
+    const health = event.target.closest('[data-health-account]');
+    if (health) void showAccountHealth(health.dataset.healthAccount);
   });
+  $$('[data-trend-days]').forEach(button => button.addEventListener('click', () => {
+    const days = Number(button.dataset.trendDays); if (![7, 30].includes(days) || days === trend.days) return;
+    trend.days = days; void loadTrends();
+  }));
+  $('#trend-account').addEventListener('change', event => { trend.accountId = event.target.value || 'all'; void loadTrends(); });
+  $('#trend-metrics').addEventListener('click', event => {
+    const button = event.target.closest('[data-trend-metric]');
+    if (button && Object.hasOwn(trendMetrics, button.dataset.trendMetric)) { trend.metric = button.dataset.trendMetric; renderTrends(); }
+  });
+  $('#trend-refresh').addEventListener('click', () => void loadTrends({ force: true }));
+  $('#trend-chart').addEventListener('pointerover', event => { const point = event.target.closest('[data-trend-day]'); if (point) selectTrendDay(point.dataset.trendDay); });
+  $('#trend-chart').addEventListener('focusin', event => { const point = event.target.closest('[data-trend-day]'); if (point) selectTrendDay(point.dataset.trendDay); });
+  $('#trend-chart').addEventListener('click', event => { const point = event.target.closest('[data-trend-day]'); if (point) selectTrendDay(point.dataset.trendDay); });
+  $('#trend-chart').addEventListener('keydown', event => {
+    if (!event.target.closest('[data-trend-day]') || !['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+    event.preventDefault(); stepTrendDay(event.key === 'ArrowLeft' ? -1 : 1, true);
+  });
+  $('#trend-table-body').addEventListener('click', event => { const button = event.target.closest('[data-trend-select]'); if (button) selectTrendDay(button.dataset.trendSelect); });
+  $('#trend-previous').addEventListener('click', () => stepTrendDay(-1));
+  $('#trend-next').addEventListener('click', () => stepTrendDay(1));
+  $('#health-search').addEventListener('input', event => { healthView.query = event.target.value; renderHealth(); });
+  $('#health-filter').addEventListener('change', event => { healthView.filter = event.target.value; renderHealth(); });
+  $('#health-refresh').addEventListener('click', requestRefresh);
+  $('#health-list').addEventListener('click', event => { const button = event.target.closest('[data-quota-account]'); if (button) void showAccountQuota(button.dataset.quotaAccount); });
   $('#invitation-form').addEventListener('submit', event => { event.preventDefault(); void sendInvitation(); });
   $('#invitation-refresh').addEventListener('click', () => void refreshInvitation());
   $('#invitation-confirm').addEventListener('change', renderInvitation);
@@ -961,11 +1165,11 @@
     finally { $('#save-report').disabled = false; }
   });
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) pauseAccountLoad();
-    else if (canRead()) { loadStatus(); schedulePoll(); void refreshAccountLoad(); }
+    if (document.hidden) { pauseAccountLoad(); pauseTrends(); }
+    else if (canRead()) { loadStatus(); schedulePoll(); void refreshAccountLoad(); if (state.view === 'trends') void loadTrends(); }
   });
   window.addEventListener('pageshow', event => { if (event.persisted) location.reload(); });
-  window.addEventListener('pagehide', () => { resetKeyQuery({ clearInput: true }); pauseAccountLoad(); });
+  window.addEventListener('pagehide', () => { resetKeyQuery({ clearInput: true }); pauseAccountLoad(); pauseTrends(); });
 
   async function boot() {
     $('#boot-retry').hidden = true;
