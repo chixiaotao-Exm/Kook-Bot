@@ -1,0 +1,24 @@
+{
+  "approved": true,
+  "baseSha": "9a000553f815ae1664e8cbbecfa738796a1d0a44",
+  "branch": "kook-agent/task-09abf781-12b4-490a-bf49-1167b53b045f",
+  "checks": [
+    {
+      "complete": true,
+      "exitCode": 0,
+      "name": "Repository checks",
+      "passed": true,
+      "workHash": "2dbbf16d21a9b6b09a57ff9a1d229f63c98177f7ed4e98637be056f05560dfed"
+    }
+  ],
+  "checksPassed": true,
+  "jobId": "09abf781-12b4-490a-bf49-1167b53b045f",
+  "repository": "chixiaotao-Exm/Kook-Bot",
+  "review": {
+    "findings": [],
+    "summary": "独立读取实际 diff 和相关源码，确认仅修改 server.py 与 test_server.py，未涉及依赖、无关文件或字面测试 key。显示输出在超过 16000 字符时为首部+明确截断标识+尾部，长度精确限制为 16000；短日志保持原样，上游 truncated 标记得到保留。裁剪只作用于私密检查记录落盘后的浅拷贝，不改变原有私密日志保存策略或检查哈希等证据。新增回归覆盖空日志、短日志、15999/16000/16001 边界、长 Unicode 日志、末尾失败摘要、上游截断状态及私密证据一致性。独立运行 code-agent 固定检查，61 项测试全部通过，passed=true、complete=true、exitCode=0，workHash=2dbbf16d21a9b6b09a57ff9a1d229f63c98177f7ed4e98637be056f05560dfed，与实际 diff 一致。未发现实质问题；可进入草稿 PR 创建阶段，本只读审阅未执行发布。"
+  },
+  "reviewPassed": true,
+  "version": 1,
+  "workHash": "2dbbf16d21a9b6b09a57ff9a1d229f63c98177f7ed4e98637be056f05560dfed"
+}
