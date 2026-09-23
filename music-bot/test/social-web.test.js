@@ -13,6 +13,7 @@ import { parseMusicInput } from '../src/music-input.js';
 import { UserError } from '../src/util.js';
 
 const song = (id) => ({ id: String(id), name: `Song ${id}`, artists: 'Artist', source: 'netease', durationMs: 180000 });
+const deferred = () => { let resolve; const promise = new Promise((done) => { resolve = done; }); return { promise, resolve }; };
 async function fixture(t) {
   const dir = await mkdtemp(path.join(tmpdir(), 'kook-social-web-'));
   const config = readConfig({ KOOK_TOKEN: 'never-show-token', ALLOWED_GUILD_IDS: '100', DATA_DIR: dir, MAX_QUEUE_SIZE: '500', WEB_REQUIRE_PASSWORD: 'false' }); config.webPort = 0;
@@ -79,6 +80,53 @@ test('public room identity cannot use old admin routes or leak credentials throu
   assert.equal(JSON.stringify({ room, share, session }).includes(f.adminToken), false);
   assert.equal((await member.request('/api/room/heartbeat', { botId: 'default' }, { 'X-CSRF-Token': 'wrong' })).status, 403);
   assert.equal((await member.request('/api/room/heartbeat', { botId: 'default' }, { Origin: 'https://foreign.example' })).status, 403);
+});
+
+test('room controls cancel earlier administrator music lookups before they can refill the queue', async (t) => {
+  const cases = [
+    { route: '/api/play', data: { input: '2' }, method: 'resolve', action: 'clear', result: song(2) },
+    { route: '/api/playlist', data: { id: '99' }, method: 'playlist', action: 'pause', result: [song(2)] },
+    { route: '/api/hot', data: {}, method: 'hot', action: 'skip', result: { name: 'Hot', tracks: [song(2)] } },
+    { route: '/api/heart', data: {}, method: 'heart', action: 'stop', result: { name: 'Heart', tracks: [song(2)] } },
+    { label: 'link expansion', route: '/api/play', data: { input: '2' }, method: 'parseInput', action: 'clear',
+      result: { kind: 'song', id: '2', input: '2', source: 'netease' } },
+  ];
+  for (const scenario of cases) await t.test(scenario.label || scenario.route, async (t) => {
+    const f = await fixture(t), admin = await f.client('Admin', true), member = await f.client('Listener');
+    const pending = deferred(), entered = deferred(), p = f.runtimes.get('default').player;
+    t.after(() => pending.resolve(scenario.result));
+    f.music[scenario.method] = async () => { entered.resolve(); return pending.promise; };
+    const request = admin.request(scenario.route, { botId: 'default', ...scenario.data });
+    await entered.promise;
+    if (scenario.action === 'stop') await p.control('stop');
+    else assert.equal((await member.request('/api/room/control', {
+      botId: 'default', action: scenario.action, expectedVoiceChannelId: '200',
+    })).status, 200);
+    const afterControl = p.snapshot(), intentAfterControl = p.intent;
+    pending.resolve(scenario.result);
+    const response = await request;
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).error, /状态已变化|频道已变化/);
+    assert.equal(p.queue.length, 0);
+    assert.equal(p.current?.id, afterControl.current?.id);
+    assert.equal(p.intent, intentAfterControl);
+    assert.deepEqual(p.context, afterControl.context);
+    assert.equal(f.runtimes.get('second').player.current.id, '1');
+  });
+});
+
+test('a room volume change preserves an in-flight administrator song request', async (t) => {
+  const f = await fixture(t), admin = await f.client('Admin', true), member = await f.client('Listener');
+  const pending = deferred(), entered = deferred(), p = f.runtimes.get('default').player;
+  t.after(() => pending.resolve(song(2)));
+  f.music.resolve = async () => { entered.resolve(); return pending.promise; };
+  const request = admin.request('/api/play', { botId: 'default', input: '2' }); await entered.promise;
+  assert.equal((await member.request('/api/room/control', {
+    botId: 'default', action: 'volume', value: 25, expectedVoiceChannelId: '200',
+  })).status, 200);
+  pending.resolve(song(2)); assert.equal((await request).status, 200);
+  assert.equal(p.volume, 25); assert.equal(p.current.id, '1');
+  assert.deepEqual(p.queue.map((track) => track.id), ['2']);
 });
 
 test('my requests retain server ownership and only their stable waiting entry can be withdrawn', async (t) => {

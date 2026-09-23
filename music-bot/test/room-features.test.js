@@ -145,6 +145,22 @@ test('timezone schedules run once and persist dispatch before side effects', asy
   await restored.init(); t.after(() => restored.close()); await restored.tick(); assert.equal(f.player.volume, 70);
 });
 
+test('a failed dispatch save does not mark an unexecuted schedule as already run', async (t) => {
+  const f = await fixture(t); await f.player.join(context);
+  await f.features.configure('schedules', [schedule()]);
+  const save = f.features.save.bind(f.features); let failures = 1;
+  f.features.save = async () => { if (failures-- > 0) throw new Error('temporary write failure'); return save(); };
+  const volumeBefore = f.player.volume;
+  f.setTime('2026-09-18T12:00:00Z'); await f.features.tick();
+  assert.equal(f.player.volume, volumeBefore);
+  assert.equal(f.features.snapshot().schedules[0].lastRunAt, null);
+  assert.equal(JSON.parse(await readFile(f.features.file, 'utf8')).ledger.evening, undefined);
+  await f.features.tick();
+  assert.equal(f.player.volume, 30);
+  assert.equal(JSON.parse(await readFile(f.features.file, 'utf8')).ledger.evening.date, '2026-09-18');
+  f.player.volume = 40; await f.features.tick(); assert.equal(f.player.volume, 40);
+});
+
 test('slow radio requests never mask scheduled volume or pause and cannot append after the pause', async (t) => {
   const f = await fixture(t), pending = deferred(), entered = deferred(); let radioRequests = 0;
   await f.player.add(context, [track(90)]); f.setTime('2026-09-18T11:59:50Z');
@@ -271,6 +287,35 @@ test('votes ignore departed members and reset after track changes during members
   const pending = deferred(), entered = deferred(); f.api.request = async () => { entered.resolve(); return pending.promise; };
   const voting = f.features.vote('43'); await entered.promise; await f.player.control('skip'); pending.resolve([{ id: '43', bot: false }]);
   await assert.rejects(voting, /歌曲已变化/); assert.equal(f.player.current.id, '3');
+});
+
+test('a vote queued behind a successful skip stays bound to the song present when submitted', async (t) => {
+  const f = await fixture(t); await f.features.configure('rules', { enabled: true, voteThreshold: 1 });
+  await f.player.add(context, [track(1), track(2), track(3)]);
+  const pending = deferred(), entered = deferred(); let lookups = 0;
+  f.api.request = async () => {
+    if (++lookups === 1) { entered.resolve(); return pending.promise; }
+    return [{ id: '42', bot: false }, { id: '43', bot: false }];
+  };
+  const first = f.features.vote('42'); await entered.promise;
+  const second = assert.rejects(f.features.vote('43'), /歌曲已变化/);
+  pending.resolve([{ id: '42', bot: false }, { id: '43', bot: false }]);
+  assert.match(await first, /投票通过/); await second;
+  assert.equal(f.player.current.id, '2'); assert.equal(lookups, 1);
+  assert.equal(f.features.snapshot().votes.count, 0);
+});
+
+test('caller vote context is rechecked before any vote is applied to a replacement track', async (t) => {
+  const f = await fixture(t); await f.features.configure('rules', { enabled: true });
+  await f.player.add(context, [track(1), track(2)]);
+  const received = { expectedEpoch: f.player.operationEpoch, expectedTrackEpoch: f.player.trackEpoch,
+    expectedVoiceChannelId: context.voiceChannelId, expectedGuildId: context.guildId };
+  await f.player.control('skip'); let lookups = 0;
+  f.api.request = async () => { lookups++; return [{ id: '42', bot: false }, { id: '43', bot: false }]; };
+  await assert.rejects(f.features.vote('42', received), /歌曲已变化/);
+  assert.equal(lookups, 0); assert.equal(f.features.snapshot().votes.count, 0);
+  assert.equal(f.player.current.id, '2');
+  assert.match(await f.features.vote('42'), /1\/2/);
 });
 
 test('enabling residency reconnects a restored disconnected paused context and current command shows saved progress', async (t) => {

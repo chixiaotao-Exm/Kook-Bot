@@ -173,6 +173,23 @@ test('QQ bridge fails closed on malformed or oversized output and stops on close
   await assert.rejects(music.account(), /关闭/);
 });
 
+test('QQ malformed JSON envelopes reject only bridge work without escaping its event handler, and the bridge restarts', async (t) => {
+  const { music, children } = processFixture(t);
+  for (const envelope of [null, [], true, 7, 'invalid', {}, { id: '1', ok: true, result: null },
+    { id: 1, ok: 'true', result: null }, { id: 1, ok: true }, { id: 1, ok: false, error: null }]) {
+    const requests = Array.from({ length: 6 }, () => assert.rejects(music.account(), UserError));
+    const child = children.at(-1);
+    assert.equal(music.pending.size, 4); assert.equal(music.waiting.length, 2);
+    assert.doesNotThrow(() => child.stdout.write(JSON.stringify(envelope) + '\n'));
+    await Promise.all(requests);
+    assert.equal(child.signal, 'SIGKILL'); assert.equal(music.pending.size, 0); assert.equal(music.waiting.length, 0);
+  }
+  const recovered = music.account(), child = children.at(-1);
+  child.stdout.write(JSON.stringify({ id: child.lines[0].id, ok: true, result: { loggedIn: false } }) + '\n');
+  assert.deepEqual(await recovered, { loggedIn: false });
+  assert.equal(child.signal, undefined);
+});
+
 test('QQ rate limits cool down only the affected method while preserving its process and other operations', async (t) => {
   let now = 100000;
   const { music, children } = processFixture(t, { now: () => now });
