@@ -10,6 +10,8 @@
   "scripts": {
     "start": "node --env-file-if-exists=.env src/index.js",
     "doctor": "node --env-file-if-exists=.env src/doctor.js",
+    "start:duet": "node --env-file-if-exists=.env.duet src/duet-index.js",
+    "doctor:duet": "node --env-file-if-exists=.env.duet src/duet-doctor.js",
     "test": "node --test"
   },
   "dependencies": {

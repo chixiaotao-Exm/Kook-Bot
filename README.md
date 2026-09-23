@@ -6,7 +6,7 @@ KOOK 多机器人项目合集，包含双音乐源播放机器人、Sub2API 额�
 | --- | --- | --- |
 | `music-bot/` | 网易云 / QQ 音乐、多机器人独立语音房间、网页点歌、多人控制与管理员登录 | [音乐机器人](music-bot/README.md) |
 | `quota-dashboard/` | Sub2API 账号额度、API Key 用量查询、KOOK 对话查询与定时图片播报 | [额度看板](quota-dashboard/README.md) |
-| `ai-bot/` | 指定文字频道内与 AI 对话、独立上下文、重置对话，默认 `gpt-6-astra` | [AI 对话机器人](ai-bot/README.md) |
+| `ai-bot/` | 文字 AI 对话、图片回复、实时进度，以及两个机器人按话题轮流互聊 | [AI 对话机器人](ai-bot/README.md) |
 
 ## 快速开始
 

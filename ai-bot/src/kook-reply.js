@@ -43,16 +43,21 @@ function encode(targetId, replyMessageId, cards) {
 }
 
 
-function prepared({ targetId, replyMessageId, content, incomplete }) {
+function prepared({ targetId, replyMessageId, content, incomplete, textOnly }) {
   if (!CHANNEL_ID.test(targetId || '') || typeof targetId !== 'string'
     || typeof replyMessageId !== 'string' || !MESSAGE_ID.test(replyMessageId)
-    || typeof content !== 'string' || typeof incomplete !== 'boolean'
+    || typeof content !== 'string' || typeof incomplete !== 'boolean' || typeof textOnly !== 'boolean'
     || Buffer.byteLength(content) > MAX_ATTACHMENT_BYTES) throw new KookReplyError('KOOK_INVALID_INPUT');
   // Plain-text card elements do not parse AI-provided KMarkdown mentions or links.
   // Keep line breaks, tabs and code punctuation; discard other control characters.
   const text = content.replace(/\r\n?/g, '\n')
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '').trim();
   if (!text) throw new KookReplyError('KOOK_INVALID_INPUT');
+  if (textOnly) {
+    const body = encode(targetId, replyMessageId, card(text));
+    if (text.length > MAX_TEXT || body.length > MAX_PAYLOAD) throw new KookReplyError('KOOK_INVALID_INPUT');
+    return { body };
+  }
   const svgLike = /<\s*\/?svg\b|```(?:svg|xml)\b/i.test(content);
   const svg = svgLike && !incomplete ? staticSvg(content) : null;
   if (svg) return { attachment: { type: 'svg', name: 'drawing.svg', text: svg } };
@@ -133,8 +138,8 @@ export function createKookReply({ token, fetchImpl = fetch, timeoutMs = 60000, r
     throw new KookReplyError('KOOK_INVALID_INPUT');
   }
   const authorization = `Bot ${token.trim()}`;
-  return async ({ targetId, replyMessageId, content, signal, incomplete = false, onStage } = {}) => {
-    const plan = prepared({ targetId, replyMessageId, content, incomplete });
+  return async ({ targetId, replyMessageId, content, signal, incomplete = false, textOnly = false, onStage } = {}) => {
+    const plan = prepared({ targetId, replyMessageId, content, incomplete, textOnly });
     if (signal?.aborted) throw new KookReplyError('KOOK_ABORTED');
     const controller = new AbortController(); let timedOut = false, asset = Boolean(plan.attachment), rejectInterrupted;
     let stage = plan.attachment?.type === 'svg' ? 'rendering' : asset ? 'uploading' : 'sending';

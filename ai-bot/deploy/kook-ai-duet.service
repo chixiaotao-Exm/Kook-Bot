@@ -1,0 +1,28 @@
+[Unit]
+Description=KOOK bounded dual AI conversation
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kook-duet
+Group=kook-duet
+WorkingDirectory=/opt/kook-ai-duet
+EnvironmentFile=/opt/kook-ai-duet/.env
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node /opt/kook-ai-duet/src/duet-index.js
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/kook-ai-duet/data
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=256M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target
