@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -130,9 +131,11 @@ class RepositoryTests(unittest.TestCase):
         self.assertEqual(self.git(self.remote, "rev-parse", "main").decode().strip(), main)
         self.assertEqual(self.git(self.remote, "rev-parse", meta["branch"]).decode().strip(), result["commit"])
         changed = set(self.git(self.remote, "diff-tree", "--no-commit-id", "--name-only", "-r", result["commit"]).decode().splitlines())
-        self.assertEqual(changed, {"ai-bot/src/app.js", "ai-bot/src/new.js", "ai-bot/src/old.js", ".kook-agent/report.md", ".kook-agent/report.json"})
+        report_root = f".kook-agent/reports/{job_id}"
+        self.assertEqual(changed, {"ai-bot/src/app.js", "ai-bot/src/new.js", "ai-bot/src/old.js",
+                                   report_root + "/report.md", report_root + "/report.json"})
         self.assertEqual(self.git(self.remote, "show", result["commit"] + ":ai-bot/src/app.js"), b"export const answer = 2;\n")
-        saved = json.loads(self.git(self.remote, "show", result["commit"] + ":.kook-agent/report.json"))
+        saved = json.loads(self.git(self.remote, "show", result["commit"] + ":" + report_root + "/report.json"))
         self.assertEqual(saved["workHash"], workspace.work_hash())
         self.assertEqual(saved["jobId"], job_id)
         self.assertFalse((workspace.root / ".kook-agent").exists())
@@ -143,6 +146,63 @@ class RepositoryTests(unittest.TestCase):
         self.assertNotIn("--force", pushes[0])
         self.assertEqual(self.backend.publish(job_id, job_root, meta, workspace, report), result)
         self.assertEqual(len([command for command, _ in self.calls if "push" in command]), 1)
+
+    def test_archived_reports_do_not_consume_workspace_archive_budget(self):
+        archived_path = f".kook-agent/reports/{uuid.uuid4()}/report.md"
+        archived = b"Historical review evidence\n" * 8192
+        target = self.seed / archived_path
+        target.parent.mkdir(parents=True)
+        target.write_bytes(archived)
+        self.git(self.seed, "add", ".kook-agent")
+        self.git(self.seed, "commit", "-m", "Large archived report")
+        self.git(self.seed, "push", str(self.remote), "main")
+        # The real Git archive would exceed this budget if it included history.
+        self.assertGreater(len(archived), 32768)
+        with patch("broker.repository.MAX_ARCHIVE", 32768):
+            job_id, job_root, meta, workspace = self.prepare()
+        self.assertFalse((workspace.root / ".kook-agent").exists())
+        self.assertEqual((workspace.root / "ai-bot/src/app.js").read_bytes(),
+                         self.git(self.remote, "show", meta["baseSha"] + ":ai-bot/src/app.js"))
+        self.modify(workspace)
+        result = self.backend.publish(job_id, job_root, meta, workspace, self.report(workspace))
+        self.assertEqual(self.git(self.remote, "show", result["commit"] + ":" + archived_path), archived)
+
+    def test_later_task_preserves_previous_task_reports_and_legacy_reports_in_published_tree(self):
+        legacy = {".kook-agent/report.json": b'{"legacy":true}\n',
+                  ".kook-agent/report.md": b"Original legacy report\n"}
+        for name, content in legacy.items():
+            target = self.seed / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(content)
+        self.git(self.seed, "add", ".kook-agent")
+        self.git(self.seed, "commit", "-m", "Existing legacy report")
+        self.git(self.seed, "push", str(self.remote), "main")
+
+        first_id, first_root, first_meta, first_workspace = self.prepare()
+        self.modify(first_workspace)
+        first = self.backend.publish(first_id, first_root, first_meta, first_workspace, self.report(first_workspace))
+        first_paths = [f".kook-agent/reports/{first_id}/report.{extension}" for extension in ("json", "md")]
+        retained = {**legacy, **{name: self.git(self.remote, "show", first["commit"] + ":" + name) for name in first_paths}}
+        # Advance only the local fixture main to model the first task being merged.
+        self.git(self.remote, "update-ref", "refs/heads/main", first["commit"])
+
+        second_id, second_root, second_meta, second_workspace = self.prepare()
+        self.assertEqual(second_meta["baseSha"], first["commit"])
+        self.assertFalse((second_workspace.root / ".kook-agent").exists())
+        (second_workspace.root / "ai-bot/src/app.js").write_bytes(b"export const answer = 3;\n")
+        second = self.backend.publish(second_id, second_root, second_meta, second_workspace, self.report(second_workspace))
+        second_paths = [f".kook-agent/reports/{second_id}/report.{extension}" for extension in ("json", "md")]
+        tree = set(self.git(self.remote, "ls-tree", "-r", "--name-only", second["commit"]).decode().splitlines())
+        self.assertEqual({name for name in tree if name.startswith(".kook-agent/")}, set(retained) | set(second_paths))
+        for name, content in retained.items():
+            self.assertEqual(self.git(self.remote, "show", second["commit"] + ":" + name), content)
+        for job_id, workspace, report_paths in ((first_id, first_workspace, first_paths),
+                                               (second_id, second_workspace, second_paths)):
+            saved = json.loads(self.git(self.remote, "show", second["commit"] + ":" + report_paths[0]))
+            self.assertEqual(saved["jobId"], job_id)
+            self.assertEqual(saved["workHash"], workspace.work_hash())
+        changed = set(self.git(self.remote, "diff-tree", "--no-commit-id", "--name-only", "-r", second["commit"]).decode().splitlines())
+        self.assertEqual(changed, {"ai-bot/src/app.js", *second_paths})
 
     def test_stale_hash_approval_and_failed_or_incomplete_checks_block_publication(self):
         job_id, job_root, meta, workspace = self.prepare()
@@ -216,8 +276,9 @@ class RepositoryTests(unittest.TestCase):
                             "findings": [{"severity": "high", "path": "ai-bot/src/app.js", "line": 1,
                                           "description": "`code`\n# injected heading", "solution": "$(touch private-file); [link](https://evil.invalid)"}]}
         result = self.backend.publish(job_id, job_root, meta, workspace, report)
-        markdown = self.git(self.remote, "show", result["commit"] + ":.kook-agent/report.md").decode()
-        metadata = self.git(self.remote, "show", result["commit"] + ":.kook-agent/report.json").decode()
+        report_root = f".kook-agent/reports/{job_id}"
+        markdown = self.git(self.remote, "show", result["commit"] + ":" + report_root + "/report.md").decode()
+        metadata = self.git(self.remote, "show", result["commit"] + ":" + report_root + "/report.json").decode()
         self.assertNotIn("![remote]", markdown)
         self.assertNotIn("<img", markdown)
         self.assertNotIn("\n# injected", markdown)
@@ -235,10 +296,11 @@ class RepositoryTests(unittest.TestCase):
              "description": ("😀![x](https://invalid.example/)" * 100)[:1600],
              "solution": ("😀[]<>`#*!\\" * 200)[:1600]} for number in range(30)]}
         result = self.backend.publish(job_id, job_root, meta, workspace, report)
-        markdown = self.git(self.remote, "show", result["commit"] + ":.kook-agent/report.md").decode("utf-8")
-        metadata = json.loads(self.git(self.remote, "show", result["commit"] + ":.kook-agent/report.json"))
+        report_root = f".kook-agent/reports/{job_id}"
+        markdown = self.git(self.remote, "show", result["commit"] + ":" + report_root + "/report.md").decode("utf-8")
+        metadata = json.loads(self.git(self.remote, "show", result["commit"] + ":" + report_root + "/report.json"))
         self.assertLessEqual(len(markdown.encode("utf-16-le")) // 2, 28000)
-        self.assertIn("完整复核记录见 .kook-agent/report.json", markdown)
+        self.assertIn("完整复核记录见 " + report_root + "/report.json", markdown)
         self.assertNotIn("![x]", markdown)
         self.assertEqual(len(metadata["review"]["findings"]), 30)
         self.assertEqual(metadata["review"]["summary"], "🦜" * 4000)
