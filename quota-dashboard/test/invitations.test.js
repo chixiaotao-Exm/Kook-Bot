@@ -156,7 +156,9 @@ test('confirmed sends settle even when the final local write or cache update nev
   for (const blocked of ['journal', 'cache']) await t.test(blocked, async t => {
     const gate = deferred(); let writes = 0, updates = 0;
     const f = await fixture(t, { config: { localTimeoutMs: 50,
-      writeState: async (file, data) => { if (++writes === 2 && blocked === 'journal') await gate.promise; await atomicJson(file, data); },
+      // This case injects a stalled callback, not filesystem latency. Keep the
+      // other writes immediate; real atomic durability is covered separately.
+      writeState: async () => { if (++writes === 2 && blocked === 'journal') await gate.promise; },
       onUpdated: async () => { if (++updates === 2 && blocked === 'cache') await gate.promise; },
     } });
     const input = request(), pending = f.client.invite('4200', input); let timer;
