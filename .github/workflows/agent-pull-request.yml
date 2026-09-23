@@ -19,13 +19,32 @@ jobs:
         with:
           script: |
             const branch = context.ref.replace('refs/heads/', '');
-            if (!/^kook-agent\/task-[a-f0-9-]{36}$/.test(branch)) throw new Error('Unexpected agent branch');
+            const match = /^kook-agent\/task-([a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12})$/.exec(branch);
+            if (!match) throw new Error('Unexpected agent branch');
+            const jobId = match[1];
             const existing = await github.rest.pulls.list({ ...context.repo, state: 'open', head: `${context.repo.owner}:${branch}` });
             if (existing.data.length) return;
-            const report = await github.rest.repos.getContent({ ...context.repo, path: '.kook-agent/report.md', ref: context.sha });
-            if (Array.isArray(report.data) || report.data.encoding !== 'base64') throw new Error('Missing agent evidence report');
-            const body = Buffer.from(report.data.content, 'base64').toString('utf8');
-            if (body.length > 30000) throw new Error('Report too large');
+            const readReport = async path => {
+              const report = await github.rest.repos.getContent({ ...context.repo, path, ref: context.sha });
+              if (Array.isArray(report.data) || report.data.encoding !== 'base64'
+                || typeof report.data.content !== 'string' || report.data.content.length > 2 * 1024 * 1024) throw new Error('Missing or oversized agent evidence report');
+              return Buffer.from(report.data.content, 'base64').toString('utf8');
+            };
+            let body;
+            for (const directory of [`.kook-agent/reports/${jobId}`, '.kook-agent']) {
+              let metadata;
+              try { metadata = JSON.parse(await readReport(`${directory}/report.json`)); }
+              catch (error) {
+                if (error.status === 404 && directory !== '.kook-agent') continue;
+                throw error;
+              }
+              // A legacy report inherited from main must not describe a new job.
+              if (metadata.jobId !== jobId || metadata.branch !== branch
+                || metadata.repository !== `${context.repo.owner}/${context.repo.repo}`) throw new Error('Report does not match this task');
+              body = await readReport(`${directory}/report.md`);
+              break;
+            }
+            if (typeof body !== 'string' || body.length > 30000) throw new Error('Missing or oversized report body');
             const result = await github.rest.pulls.create({ ...context.repo, head: branch, base: 'main', draft: true,
               title: `Agent review: ${branch.slice('kook-agent/task-'.length, 'kook-agent/task-'.length + 8)}`, body });
             core.notice(result.data.html_url);
