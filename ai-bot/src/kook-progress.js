@@ -5,6 +5,9 @@ const UPDATE_URL = 'https://www.kookapp.cn/api/v3/message/update';
 const CHANNEL_ID = /^\d{5,30}$/;
 const MESSAGE_ID = /^[a-f0-9-]{16,100}$/i;
 const MAX_BYTES = 32 * 1024;
+const RETRY_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
+const RETRY_DELAYS = [2000, 4000, 8000, 15000];
+const MAX_RETRY_AFTER_MS = 300000;
 const PHASES = Object.freeze({
   received: { active: '已接收', done: '已接收' },
   generating: { active: 'AI 生成中', done: 'AI 已生成' },
@@ -18,9 +21,18 @@ export class KookProgressError extends Error {
   constructor(code) { super(code); this.name = 'KookProgressError'; this.code = code; }
 }
 
-const error = code => new KookProgressError(code);
+const error = (code, retryable = false, retryAfterMs = 0) => Object.assign(new KookProgressError(code), { retryable, retryAfterMs });
 const plain = content => ({ type: 'plain-text', content, emoji: false });
 function cancelBody(body) { try { Promise.resolve(body?.cancel()).catch(() => {}); } catch {} }
+function retryAfter(value, now) {
+  if (typeof value !== 'string' || !value.trim()) return 0;
+  const trimmed = value.trim();
+  const seconds = /^\d+$/.test(trimmed);
+  // Do not interpret malformed values such as "1.5" as a calendar date.
+  if (!seconds && !/^[A-Za-z]{3}, \d{2} [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT$/.test(trimmed)) return 0;
+  const delay = seconds ? Number(trimmed) * 1000 : Date.parse(trimmed) - now;
+  return Number.isNaN(delay) ? 0 : Math.min(MAX_RETRY_AFTER_MS, Math.max(0, delay));
+}
 
 function elapsedLabel(duration) {
   const seconds = Number.isFinite(duration) && duration >= 0
@@ -95,12 +107,14 @@ export function createKookProgress({ token, fetchImpl = globalThis.fetch, now = 
     const timer = setTimeout(() => { timedOut = true; rejectInterrupted(error('KOOK_TIMEOUT')); controller.abort(); }, timeoutMs);
     try {
       const send = async () => {
-        const response = await fetchImpl(url, { method: 'POST', redirect: 'error', signal: controller.signal,
+        const response = await fetchImpl(url, { method: 'POST', redirect: 'manual', signal: controller.signal,
           headers: { Authorization: authorization, 'Content-Type': 'application/json' }, body });
         if (controller.signal.aborted) { cancelBody(response?.body); throw error('KOOK_ABORTED'); }
         if (!response?.ok || response.redirected || response.status >= 300 && response.status < 400) {
           cancelBody(response?.body);
-          throw error(response?.status === 429 ? 'KOOK_RATE_LIMITED' : 'KOOK_REJECTED');
+          const retryable = !response?.redirected && RETRY_STATUSES.has(response?.status);
+          throw error(response?.status === 429 ? 'KOOK_RATE_LIMITED' : 'KOOK_REJECTED', retryable,
+            retryable ? retryAfter(response.headers?.get('retry-after'), now()) : 0);
         }
         const result = await readJson(response, controller.signal);
         if (result?.code !== 0) throw error('KOOK_REJECTED');
@@ -109,9 +123,9 @@ export function createKookProgress({ token, fetchImpl = globalThis.fetch, now = 
       return await Promise.race([send(), interrupted]);
     } catch (caught) {
       if (signal?.aborted) throw error('KOOK_ABORTED');
-      if (timedOut) throw error('KOOK_TIMEOUT');
+      if (timedOut) throw error('KOOK_TIMEOUT', true);
       if (caught instanceof KookProgressError) throw caught;
-      throw error('KOOK_NETWORK');
+      throw error('KOOK_NETWORK', true);
     } finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); }
   }
 
@@ -123,7 +137,7 @@ export function createKookProgress({ token, fetchImpl = globalThis.fetch, now = 
       const startedAt = now();
       const visited = ['received', 'generating'];
       let phase = 'generating', terminal = null, interval = null, dirty = false, running = null;
-      let updatesStopped = false, terminalAttempted = false;
+      let updatesStopped = false, retryPending = false, failures = 0, terminalAttempts = 0;
       let pausedAt = null, pausedDuration = 0, detail = '';
       const content = () => card({ visited, phase, terminal, paused: pausedAt !== null, detail,
         duration: (terminal?.at ?? pausedAt ?? now()) - startedAt - pausedDuration });
@@ -135,20 +149,45 @@ export function createKookProgress({ token, fetchImpl = globalThis.fetch, now = 
       const clearTicker = () => {
         if (interval !== null) { clearIntervalImpl(interval); interval = null; }
       };
-      const stopUpdates = () => { updatesStopped = true; clearTicker(); };
+      const stopUpdates = () => {
+        updatesStopped = true; dirty = false; retryPending = false; clearTicker();
+        signal?.removeEventListener('abort', onAbort);
+      };
+      function schedule(delay, retry = false) {
+        clearTicker();
+        if (updatesStopped) return;
+        const scheduled = setIntervalImpl(() => {
+          if (interval !== scheduled) return;
+          if (retry) { clearTicker(); retryPending = false; }
+          void queue();
+        }, delay);
+        interval = scheduled; interval?.unref?.();
+      }
+      function scheduleNormal() {
+        if (!updatesStopped && !terminal && pausedAt === null && !retryPending && interval === null) schedule(intervalMs);
+      }
 
       async function drain() {
         try {
-          while (dirty) {
+          while (dirty && !updatesStopped && !retryPending) {
             dirty = false;
             const isTerminal = Boolean(terminal);
-            if (isTerminal ? terminalAttempted : updatesStopped) continue;
-            if (isTerminal) terminalAttempted = true;
+            if (isTerminal) terminalAttempts++;
             try {
               // A cancellation still needs to edit this card. Its final update uses
               // a fresh bounded request, independent of the cancelled model signal.
               await request(UPDATE_URL, { msg_id: messageId, content: content() });
-            } catch { stopUpdates(); }
+              failures = 0;
+              if (isTerminal) { stopUpdates(); break; }
+              scheduleNormal();
+            } catch (caught) {
+              if (!caught.retryable || isTerminal && terminalAttempts >= 3) { stopUpdates(); break; }
+              const delay = Math.max(RETRY_DELAYS[Math.min(failures++, RETRY_DELAYS.length - 1)],
+                caught.retryAfterMs || 0, caught.code === 'KOOK_RATE_LIMITED' ? intervalMs : 0);
+              // Updating a known card is retryable. Keep only the latest state
+              // and return without making callers wait through the backoff.
+              dirty = true; retryPending = true; schedule(delay, true); break;
+            }
           }
         } finally {
           // Release ownership in the same turn as the last dirty check. Deferring
@@ -158,8 +197,9 @@ export function createKookProgress({ token, fetchImpl = globalThis.fetch, now = 
       }
 
       function queue() {
-        if (terminal ? terminalAttempted : updatesStopped) return running || Promise.resolve();
+        if (updatesStopped) return running || Promise.resolve();
         dirty = true;
+        if (retryPending) return running || Promise.resolve();
         if (!running) running = drain().catch(stopUpdates);
         return running;
       }
@@ -169,7 +209,10 @@ export function createKookProgress({ token, fetchImpl = globalThis.fetch, now = 
         const at = now();
         if (pausedAt !== null) { pausedDuration += Math.max(0, at - pausedAt); pausedAt = null; }
         terminal = { kind, code: sanitizeFailureCode(code), at };
-        clearTicker(); signal?.removeEventListener('abort', onAbort);
+        failures = 0;
+        // Preserve an existing rate-limit deadline when switching to terminal.
+        if (!retryPending) clearTicker();
+        signal?.removeEventListener('abort', onAbort);
         return queue();
       }
 
@@ -181,12 +224,12 @@ export function createKookProgress({ token, fetchImpl = globalThis.fetch, now = 
         },
         pause() {
           if (terminal || pausedAt !== null) return running || Promise.resolve();
-          pausedAt = now(); clearTicker(); return queue();
+          pausedAt = now(); if (!retryPending) clearTicker(); return queue();
         },
         resume() {
           if (terminal || pausedAt === null) return running || Promise.resolve();
           pausedDuration += Math.max(0, now() - pausedAt); pausedAt = null;
-          if (!updatesStopped) interval = setIntervalImpl(() => { void queue(); }, intervalMs);
+          scheduleNormal();
           return queue();
         },
         setPhase(next) {
@@ -202,7 +245,7 @@ export function createKookProgress({ token, fetchImpl = globalThis.fetch, now = 
       function onAbort() { void handle.cancel(); }
       signal?.addEventListener('abort', onAbort, { once: true });
       if (signal?.aborted) await handle.cancel();
-      else interval = setIntervalImpl(() => { void queue(); }, intervalMs);
+      else scheduleNormal();
       return handle;
     },
   };

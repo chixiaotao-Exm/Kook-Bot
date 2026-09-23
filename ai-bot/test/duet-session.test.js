@@ -623,8 +623,11 @@ test('pause during an in-flight reply allows only that confirmed message and pre
   ]);
   await f.session.start(request()); await until(() => sent.length === 1);
   await f.session.pause(); assert.equal(sent[0].signal.aborted, false);
-  delivery.resolve({ messageId: receipt(500) }); await until(() => f.session.snapshot().completedTurns === 1);
-  await new Promise(resolve => setTimeout(resolve, 5));
+  delivery.resolve({ messageId: receipt(500) });
+  await until(() => {
+    const state = f.session.snapshot();
+    return state.completedTurns === 1 && state.currentSpeaker === 'B';
+  });
   assert.equal(peers.length, 0); assert.equal(f.session.snapshot().paused, true);
   assert.equal(f.session.snapshot().currentSpeaker, 'B'); assert.equal(sent.length, 1);
   await f.session.resume(); await until(() => peers.length === 1);
