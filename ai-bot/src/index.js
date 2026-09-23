@@ -5,6 +5,7 @@ import { ModelResponsesClient } from './model-client.js';
 import { KookGateway } from './kook-gateway.js';
 import { createKookReply } from './kook-reply.js';
 import { createAuthorResolver } from './kook-identity.js';
+import { createKookProgress } from './kook-progress.js';
 import { AiChatBot } from './chat-bot.js';
 import { sanitizeFailureCode, sanitizeDurationMs } from './failure.js';
 
@@ -18,14 +19,15 @@ export function safeLog(record) {
   }
 }
 
-export function createRuntime({ config, modelClient, reply, resolveAuthor, Gateway = KookGateway, logger = safeLog } = {}) {
+export function createRuntime({ config, modelClient, reply, resolveAuthor, progress, Gateway = KookGateway, logger = safeLog } = {}) {
   const client = modelClient || new ModelResponsesClient({ baseUrl: config.baseUrl, apiKey: config.apiKey, model: config.model,
     timeoutMs: config.timeoutMs, maxOutputTokens: config.maxOutputTokens, reasoningEffort: config.reasoningEffort, systemPrompt: config.systemPrompt });
   const transport = reply || createKookReply({ token: config.token });
   let gateway, closing;
   const bot = new AiChatBot({ generate: (messages, options) => client.generate(messages, options), reply: transport,
     getSelfId: () => gateway?.botId, channelId: config.channelId, dataDir: config.dataDir, model: config.model,
-    resolveAuthor: resolveAuthor || createAuthorResolver({ token: config.token }), logger });
+    resolveAuthor: resolveAuthor || createAuthorResolver({ token: config.token }),
+    progress: progress === undefined ? createKookProgress({ token: config.token }) : progress, logger });
   gateway = new Gateway({ token: config.token, onEvent: event => bot.handle(event), logger });
   const snapshot = () => {
     const chat = bot.snapshot(), connection = gateway.snapshot();
