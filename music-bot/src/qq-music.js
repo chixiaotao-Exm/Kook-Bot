@@ -85,6 +85,11 @@ export class QQMusic {
         const line = buffer.slice(0, newline); buffer = buffer.slice(newline + 1);
         let message;
         try { message = JSON.parse(line); } catch { this.failBridge(child); return; }
+        if (!message || typeof message !== 'object' || Array.isArray(message)
+          || !Number.isSafeInteger(message.id) || message.id < 1 || typeof message.ok !== 'boolean'
+          || (message.ok ? !Object.hasOwn(message, 'result') : typeof message.error !== 'string')) {
+          this.failBridge(child); return;
+        }
         const pending = this.pending.get(message.id);
         if (!pending) continue;
         if (message.ok) this.finish(pending, null, message.result);
