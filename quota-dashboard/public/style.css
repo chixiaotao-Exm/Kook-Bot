@@ -321,6 +321,13 @@ select option{background:#172940;color:var(--text)}
 .overview-charge-status{display:inline-flex;align-items:center;gap:5px;color:var(--charge);font-size:11px;white-space:nowrap}
 .overview-charge-status:before{content:"";width:4px;height:4px;border-radius:50%;background:currentColor;flex:none;box-shadow:0 0 7px rgba(var(--charge-rgb),.2)}
 .overview-charge-footer .metric-details{display:block;min-width:0;margin:0 0 0 auto;color:#b4c8e1;font-size:11px;line-height:1.5;text-align:right;overflow-wrap:anywhere}
+.metric-reset-group{display:grid;gap:2px;min-width:0;margin-left:auto;text-align:right}
+.metric-reset-time{display:block;color:#d0def0;font-size:11px;line-height:1.6;overflow-wrap:anywhere}
+.metric-reset-time time{font-variant-numeric:tabular-nums;white-space:nowrap}
+.metric-reset-time small{display:inline-block;margin-left:5px;font-size:10px;color:var(--muted)}
+.metric-reset-countdown{color:var(--muted);font-size:10px;line-height:1.5}
+.metric-window-unknown .metric-head{display:flex;justify-content:space-between;gap:8px}
+.metric-window-unknown .metric-reset-group,.metric-window-unknown>.metric-reset-time{margin-top:8px}
 .quota-window>.overview-charge+.window-stats{margin-top:10px;padding:0 2px}
 @media(max-width:760px){
   .metric.overview-charge{padding:12px 12px 10px;border-radius:14px}
