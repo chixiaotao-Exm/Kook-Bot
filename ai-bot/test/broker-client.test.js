@@ -11,11 +11,37 @@ function fixture(value, status = 200) {
     const request = new EventEmitter(); request.destroy = () => {};
     request.end = body => { calls.push({ options, body: JSON.parse(body) });
       const response = new PassThrough(); response.statusCode = status; response.headers = {};
-      callback(response); response.end(typeof value === 'string' ? value : JSON.stringify(value)); };
+      callback(response); response.end(typeof value === 'string' || Buffer.isBuffer(value) ? value : JSON.stringify(value)); };
     return request;
   } });
   return { client, calls };
 }
+test('rejects malformed UTF-8 rather than silently changing tool content', async () => {
+  const raw = Buffer.concat([Buffer.from('{"ok":true,"data":"'), Buffer.from([0xff]), Buffer.from('"}')]);
+  await assert.rejects(fixture(raw).client.request('read_file', job), error => error.code === 'BROKER_FAILED');
+  const text = '中文源码 😀 �';
+  assert.equal(await fixture(Buffer.from(JSON.stringify({ ok: true, data: text }))).client.request('read_file', job), text);
+});
+
+test('premature response close fails promptly and destroys the request', async () => {
+  let destroyed = false;
+  const controller = new AbortController();
+  const client = new CodeBrokerClient({ requestImpl(options, callback) {
+    const req = new EventEmitter();
+    req.destroy = () => { destroyed = true; };
+    req.end = () => {
+      const response = new PassThrough(); response.statusCode = 200; response.headers = {};
+      callback(response); response.write('{"ok":true'); response.destroy();
+    };
+    return req;
+  } });
+  const timer = setTimeout(() => controller.abort(), 1000);
+  try {
+    await assert.rejects(client.request('read_file', job, {}, { signal: controller.signal }), error => error.code === 'BROKER_FAILED');
+    assert.equal(destroyed, true);
+  } finally { clearTimeout(timer); }
+});
+
 test('uses only a local socket with a bounded typed request', async () => {
   const f = fixture({ ok: true, data: { files: ['README.md'] } });
   assert.deepEqual(await f.client.request('list_files', job, { path: '', limit: 10 }), { files: ['README.md'] });

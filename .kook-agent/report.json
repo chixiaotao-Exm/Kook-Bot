@@ -1,0 +1,24 @@
+{
+  "approved": true,
+  "baseSha": "9a000553f815ae1664e8cbbecfa738796a1d0a44",
+  "branch": "kook-agent/task-9ce95dc8-1cb3-45fc-9210-77f2e63ed62f",
+  "checks": [
+    {
+      "complete": true,
+      "exitCode": 0,
+      "name": "Repository checks",
+      "passed": true,
+      "workHash": "adbceea475c1070dbafc4d82841e46adfe09df502f646cfc72cc19684c9315ad"
+    }
+  ],
+  "checksPassed": true,
+  "jobId": "9ce95dc8-1cb3-45fc-9210-77f2e63ed62f",
+  "repository": "chixiaotao-Exm/Kook-Bot",
+  "review": {
+    "findings": [],
+    "summary": "独立核对实际 diff、broker-client 完整实现、相关测试及 Node 运行版本要求，本次仅修改两个文件，未发现需阻止合并的实质问题。编码完整性方面：fatal UTF-8 解码拒绝非法字节，合法中文、emoji 和 U+FFFD 保持原样；ignoreBOM:true 保留 BOM，使 JSON 解析的原有拒绝行为不变。传输生命周期方面：提前 close 立即以 BROKER_FAILED 结束并销毁请求；正常 end 后的 close 被 finished 幂等保护忽略，不覆盖成功结果；原有取消、超时及错误脱敏逻辑保持。新增测试覆盖非法 UTF-8、合法字符保真及提前关闭后的失败和资源清理。独立运行 ai-bot 固定检查，passed=true、complete=true、exitCode=0，workHash=adbceea475c1070dbafc4d82841e46adfe09df502f646cfc72cc19684c9315ad，与实际变更一致。非阻塞的后续增强建议：补充真实本地 HTTP/socket 的正常 end→close 与中途断连集成测试，以及跨 chunk 多字节字符、截断 UTF-8 和 BOM 用例；目前传输测试主要使用 PassThrough 替身。本结论限于本次变更及相关回归检查，不代表对整个仓库无缺陷的保证。"
+  },
+  "reviewPassed": true,
+  "version": 1,
+  "workHash": "adbceea475c1070dbafc4d82841e46adfe09df502f646cfc72cc19684c9315ad"
+}
