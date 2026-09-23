@@ -33,8 +33,8 @@
   const planRank = account => {
     const label = accountPlan(account).label.toLowerCase().replace(/[\s_-]+/g, '');
     if (label === 'pro5x') return 0;
-    if (label === 'team') return 1;
-    if (label === 'teampro') return 2;
+    if (label === 'teampro') return 1;
+    if (label === 'team') return 2;
     if (label === 'api计费' || /^(apikey|api_key|bedrock)$/i.test(account.type || '')) return 3;
     return 4;
   };

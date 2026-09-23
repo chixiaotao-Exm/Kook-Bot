@@ -22,7 +22,7 @@ const accounts = [
   account('1001', 'OpenAI_5X', 'openai', 'oauth', 'Pro 5x', 'upstream'),
   account('1007', 'Team 甲2', 'openai', 'oauth', 'Team', 'upstream'),
 ];
-const expectedIds = ['1001', '1007', '1011', '1010', '1008', '1006', '1009', '1005', '1004', '1002', '1003'];
+const expectedIds = ['1001', '1006', '1007', '1011', '1010', '1008', '1009', '1005', '1004', '1002', '1003'];
 let hostile = false;
 const attack = '<img src=x onerror="window.planInjected=1">';
 const writes = [];
@@ -51,7 +51,7 @@ const server = http.createServer((req, res) => {
     await page.locator('.account-card').first().waitFor();
     const visibleIds = () => page.locator('.account-card').evaluateAll(cards => cards.map(card => card.dataset.accountId));
     assert.deepEqual(await visibleIds(), expectedIds, 'Provider, plan, Chinese numeric name and ID tie-break sorting');
-    assert.deepEqual(await page.locator('.account-plan').allTextContents(), ['Pro 5x', 'Team', 'Team', 'Team', 'Team', 'Team Pro', 'API 计费', '版本未知', '版本未知', 'Max 20x', 'API 计费']);
+    assert.deepEqual(await page.locator('.account-plan').allTextContents(), ['Pro 5x', 'Team Pro', 'Team', 'Team', 'Team', 'Team', 'API 计费', '版本未知', '版本未知', 'Max 20x', 'API 计费']);
     assert.deepEqual(await page.locator('#platform-filters [data-platform]').evaluateAll(buttons => buttons.map(button => button.dataset.platform)), ['all', 'openai', 'claude', 'deepseek']);
     assert.deepEqual(await page.locator('#platform-filters [data-platform]').allTextContents(), ['全部11', 'OpenAI8', 'Claude2', 'DeepSeek1']);
     await page.locator('[data-platform="openai"]').click();
