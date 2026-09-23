@@ -130,7 +130,9 @@ export class ActiveQuotaSchedule {
       if (!account || typeof account !== 'object' || Array.isArray(account) || !state) return account;
       const extra = account.extra && typeof account.extra === 'object' && !Array.isArray(account.extra) ? account.extra : {};
       const stale = ['failed', 'skipped'].includes(state.status) && extra.codex_active_quota_observed_at;
-      return { ...account, extra: { ...extra, ...(stale ? { codex_active_quota_stale: true } : {}), dashboard_active_quota: {
+      const pointsStale = ['failed', 'skipped'].includes(state.status) && extra.codex_active_points_observed_at;
+      return { ...account, extra: { ...extra, ...(stale ? { codex_active_quota_stale: true } : {}),
+        ...(pointsStale ? { codex_active_points_stale: true } : {}), dashboard_active_quota: {
         status: state.status, queriedAt: state.queriedAt, error: state.error || null,
       } } };
     });

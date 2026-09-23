@@ -4,7 +4,7 @@ const ORIGIN = 'https://api.ark717.com';
 const PATHS = new Set(['/api/status', '/api/user/self', '/api/subscription/self', '/api/user/quota_grants', '/api/global-quota/self']);
 const MAX_BYTES = 1024 * 1024;
 const SOURCE = 'newapi-ark717';
-const FIELDS = ['id', 'name', 'platform', 'platformLabel', 'type', 'status', 'schedulable', 'plan', 'planLabel', 'planSource', 'source', 'freshness', 'observedAt', 'metrics', 'windowStats', 'resetCredits', 'invitation', 'quotaQuery', 'notes', 'error'];
+const FIELDS = ['id', 'name', 'platform', 'platformLabel', 'type', 'status', 'schedulable', 'plan', 'planLabel', 'planSource', 'source', 'freshness', 'observedAt', 'metrics', 'windowStats', 'resetCredits', 'points', 'invitation', 'quotaQuery', 'notes', 'error'];
 const obj = value => value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 const amount = value => (typeof value === 'number' || typeof value === 'string' && value.trim() !== '') && Number.isFinite(Number(value)) && Number(value) >= 0 ? Number(value) : null;
 const data = envelope => envelope?.success === true ? obj(envelope.data) : {};
