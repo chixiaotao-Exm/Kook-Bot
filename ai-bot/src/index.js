@@ -6,17 +6,21 @@ import { KookGateway } from './kook-gateway.js';
 import { createKookReply } from './kook-reply.js';
 import { createAuthorResolver } from './kook-identity.js';
 import { AiChatBot } from './chat-bot.js';
+import { sanitizeFailureCode, sanitizeDurationMs } from './failure.js';
 
-function safeLog(record) {
+export function safeLog(record) {
   const event = typeof record === 'string' ? record : record?.event;
   if (typeof event === 'string' && /^[A-Za-z0-9_]{1,80}$/.test(event)) {
-    console.info(JSON.stringify({ at: new Date().toISOString(), event }));
+    console.info(JSON.stringify({ at: new Date().toISOString(), event,
+      ...(record?.code !== undefined ? { code: sanitizeFailureCode(record.code) } : {}),
+      ...(record?.durationMs !== undefined ? { durationMs: sanitizeDurationMs(record.durationMs) } : {}),
+    }));
   }
 }
 
 export function createRuntime({ config, modelClient, reply, resolveAuthor, Gateway = KookGateway, logger = safeLog } = {}) {
   const client = modelClient || new ModelResponsesClient({ baseUrl: config.baseUrl, apiKey: config.apiKey, model: config.model,
-    timeoutMs: config.timeoutMs, maxOutputTokens: config.maxOutputTokens, systemPrompt: config.systemPrompt });
+    timeoutMs: config.timeoutMs, maxOutputTokens: config.maxOutputTokens, reasoningEffort: config.reasoningEffort, systemPrompt: config.systemPrompt });
   const transport = reply || createKookReply({ token: config.token });
   let gateway, closing;
   const bot = new AiChatBot({ generate: (messages, options) => client.generate(messages, options), reply: transport,

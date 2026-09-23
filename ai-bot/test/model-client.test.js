@@ -16,7 +16,7 @@ test('sends the exact Responses request to normalized /v1 with no tools or stora
   for (const baseUrl of ['https://example.invalid', 'https://example.invalid/', 'https://example.invalid/v1', 'https://example.invalid/v1/']) {
     const client = make(async (url, options) => { calls.push({ url, options }); return response(); }, { baseUrl, systemPrompt: '用中文回复。' });
     const result = await client.generate([{ role: 'user', content: '先前问题', ignored: KEY }, { role: 'assistant', content: '先前回答' }, ...messages]);
-    assert.deepEqual(result, { text: '你好，有什么可以帮你？', model: 'gpt-6-astra', usage: { inputTokens: 12, outputTokens: 8, totalTokens: 20 } });
+    assert.deepEqual(result, { text: '你好，有什么可以帮你？', historyText: '你好，有什么可以帮你？', incomplete: false, model: 'gpt-6-astra', usage: { inputTokens: 12, outputTokens: 8, totalTokens: 20 } });
     assert.equal(JSON.stringify(client), '{}');
   }
   assert.equal(calls.length, 4);
@@ -24,7 +24,7 @@ test('sends the exact Responses request to normalized /v1 with no tools or stora
     assert.equal(url, 'https://example.invalid/v1/responses');
     assert.equal(options.method, 'POST'); assert.equal(options.redirect, 'manual');
     assert.equal(options.headers.authorization, `Bearer ${KEY}`);
-    assert.deepEqual(JSON.parse(options.body), { model: 'gpt-6-astra', instructions: '用中文回复。', input: [{ role: 'user', content: '先前问题' }, { role: 'assistant', content: '先前回答' }, ...messages], store: false, stream: false, max_output_tokens: 2400 });
+    assert.deepEqual(JSON.parse(options.body), { model: 'gpt-6-astra', instructions: '用中文回复。', input: [{ role: 'user', content: '先前问题' }, { role: 'assistant', content: '先前回答' }, ...messages], store: false, stream: false, max_output_tokens: 8192, reasoning: { effort: 'low' } });
   }
 });
 
@@ -36,7 +36,17 @@ test('permits only configured HTTPS root/v1 and explicit loopback HTTP', () => {
 });
 
 test('invalid credentials/model/options fail without exposing values', () => {
-  for (const options of [{ apiKey: '' }, { apiKey: 'secret\nvalue' }, { model: '' }, { model: 'secret model' }, { timeoutMs: 0 }, { maxOutputTokens: 16001 }, { systemPrompt: '' }, { fetchImpl: null }]) assert.throws(() => make(undefined, options), hasCode('CONFIG'));
+  for (const options of [{ apiKey: '' }, { apiKey: 'secret\nvalue' }, { model: '' }, { model: 'secret model' }, { timeoutMs: 0 }, { maxOutputTokens: 16001 }, { reasoningEffort: 'unbounded' }, { reasoningEffort: null }, { systemPrompt: '' }, { fetchImpl: null }]) assert.throws(() => make(undefined, options), hasCode('CONFIG'));
+});
+
+test('supports explicit bounded reasoning and output budgets without changing the model', async () => {
+  for (const reasoningEffort of ['low', 'medium', 'high']) {
+    let sent;
+    await make(async (_url, options) => { sent = JSON.parse(options.body); return response(); }, { reasoningEffort, maxOutputTokens: 512 }).generate(messages);
+    assert.deepEqual(sent.reasoning, { effort: reasoningEffort });
+    assert.equal(sent.model, 'gpt-6-astra');
+    assert.equal(sent.max_output_tokens, 512);
+  }
 });
 
 test('validates history roles, strings, final user message and input bounds before any request', async () => {
@@ -54,14 +64,42 @@ test('extracts assistant text only and keeps missing/invalid usage unknown', asy
 });
 
 test('returns meaningful incomplete output with a marker and caps output without splitting surrogate pairs', async () => {
-  for (const content of ['已经生成一部分', '🐱'.repeat(4000)]) {
+  for (const content of ['已经生成一部分', '🐱'.repeat(20000)]) {
     const result = await make(async () => response(raw({ status: 'incomplete', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: content }] }] }))).generate(messages);
-    assert.ok(result.text.length <= 6000);
+    assert.ok(result.text.length <= 32000);
+    assert.equal(result.incomplete, true);
     assert.match(result.text, /未完整生成/);
     assert.equal(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(result.text), false);
+    assert.equal(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(result.historyText), false);
+    assert.ok(result.historyText.length <= 6000);
   }
-  const long = await make(async () => response(raw({ output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'x'.repeat(7000) }] }] }))).generate(messages);
-  assert.equal(long.text.length, 6000);
+  const long = await make(async () => response(raw({ output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'x'.repeat(32001) }] }] }))).generate(messages);
+  assert.equal(long.text.length, 32000);
+  assert.equal(long.incomplete, true);
+});
+
+test('preserves a complete long SVG reply for attachments and bounds follow-up history', async () => {
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg">' + '<path d="M0 0L5 5"/>'.repeat(750) + '</svg>';
+  const client = make(async () => response(raw({ output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: svg }] }] })));
+  const result = await client.generate(messages);
+  assert.equal(result.text, svg);
+  assert.equal(result.incomplete, false);
+  assert.ok(result.historyText.length <= 6000);
+  assert.ok(result.historyText.endsWith('[前文较长，完整内容已作为附件提供]'));
+  assert.equal(result.historyText.includes('</svg>'), false);
+  await assert.doesNotReject(client.generate([...messages, { role: 'assistant', content: result.historyText }, { role: 'user', content: '把猫改成粉色' }]));
+});
+
+test('retains an exactly 32000-character completed answer without marking it incomplete', async () => {
+  const text = '猫'.repeat(32000);
+  const result = await make(async () => response(raw({ output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] }] }))).generate(messages);
+  assert.equal(result.text, text);
+  assert.equal(result.incomplete, false);
+  assert.ok(result.historyText.length <= 6000);
+});
+
+test('reasoning-only incomplete output remains an explicit empty response failure', async () => {
+  await assert.rejects(make(async () => response(raw({ status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' }, output: [{ type: 'reasoning', summary: [] }] }))).generate(messages), hasCode('EMPTY_RESPONSE'));
 });
 
 test('rejects absent, non-text, refused, failed and wrong-model responses without leaking upstream text', async () => {
@@ -98,6 +136,18 @@ test('timeout bounds even a hanging fetch that ignores abort', async () => {
   await assert.rejects(make(async (_url, options) => { requestSignal = options.signal; return new Promise(() => {}); }, { timeoutMs: 15 }).generate(messages), hasCode('TIMEOUT'));
   assert.ok(Date.now() - start < 1000);
   assert.equal(requestSignal.aborted, true);
+});
+
+test('default timeout allows long output generation for 180 seconds', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let requestSignal;
+  const pending = make(async (_url, options) => { requestSignal = options.signal; return new Promise(() => {}); }).generate(messages);
+  const rejected = assert.rejects(pending, hasCode('TIMEOUT'));
+  t.mock.timers.tick(179999);
+  assert.equal(requestSignal.aborted, false);
+  t.mock.timers.tick(1);
+  assert.equal(requestSignal.aborted, true);
+  await rejected;
 });
 
 test('timeout also bounds reading a hanging response body and cancels the reader', async () => {

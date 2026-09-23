@@ -2,8 +2,9 @@ const MAX_BODY_BYTES = 1024 * 1024;
 const MAX_MESSAGES = 40;
 const MAX_MESSAGE_CHARS = 6000;
 const MAX_INPUT_CHARS = 48000;
-const MAX_OUTPUT_CHARS = 6000;
+const MAX_OUTPUT_CHARS = 32000;
 const INCOMPLETE_MARKER = '\n\n（回复未完整生成，可发送“继续”接着聊。）';
+const HISTORY_MARKER = '\n\n[前文较长，完整内容已作为附件提供]';
 const DEFAULT_PROMPT = '你是 KOOK 文字频道里的 AI 助手。请用简洁、自然的中文回复用户；用户指定其他语言时按其要求回复。';
 
 export class ModelClientError extends Error {
@@ -15,6 +16,8 @@ export class ModelClientError extends Error {
 }
 
 const failure = (code, message) => new ModelClientError(code, message);
+const withMarker = (text, limit, marker) => text.slice(0, limit - marker.length)
+  .replace(/[\uD800-\uDBFF]$/, '').trimEnd() + marker;
 
 function endpoint(baseUrl) {
   let url;
@@ -109,13 +112,12 @@ function normalize(raw, model) {
   let text = parts.join('\n').trim();
   if (!text) throw failure(refusal ? 'REFUSAL' : 'EMPTY_RESPONSE', refusal
     ? '模型无法回答这条消息，请换个问法。' : 'AI 没有生成文字回复，请换个问法或稍后重试。');
-  if (raw.status === 'incomplete' || text.length > MAX_OUTPUT_CHARS) {
-    const end = MAX_OUTPUT_CHARS - INCOMPLETE_MARKER.length;
-    text = text.slice(0, end).replace(/[\uD800-\uDBFF]$/, '').trimEnd() + INCOMPLETE_MARKER;
-  }
+  const incomplete = raw.status === 'incomplete' || text.length > MAX_OUTPUT_CHARS;
+  if (incomplete) text = withMarker(text, MAX_OUTPUT_CHARS, INCOMPLETE_MARKER);
+  const historyText = text.length > MAX_MESSAGE_CHARS ? withMarker(text, MAX_MESSAGE_CHARS, HISTORY_MARKER) : text;
   const number = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
   return {
-    text, model,
+    text, historyText, incomplete, model,
     usage: {
       inputTokens: number(raw.usage?.input_tokens),
       outputTokens: number(raw.usage?.output_tokens),
@@ -125,20 +127,22 @@ function normalize(raw, model) {
 }
 
 export class ModelResponsesClient {
-  #url; #apiKey; #model; #fetch; #timeoutMs; #maxOutputTokens; #systemPrompt;
+  #url; #apiKey; #model; #fetch; #timeoutMs; #maxOutputTokens; #systemPrompt; #reasoningEffort;
 
   constructor({ baseUrl, apiKey, model = 'gpt-6-astra', fetchImpl = globalThis.fetch,
-    timeoutMs = 90000, maxOutputTokens = 2400, systemPrompt = DEFAULT_PROMPT } = {}) {
+    timeoutMs = 180000, maxOutputTokens = 8192, reasoningEffort = 'low', systemPrompt = DEFAULT_PROMPT } = {}) {
     this.#url = endpoint(baseUrl);
     if (typeof apiKey !== 'string' || apiKey.length < 8 || apiKey.length > 512 || /[\s\x00-\x1f\x7f]/.test(apiKey)
       || typeof model !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/.test(model)
       || typeof fetchImpl !== 'function' || !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 180000
       || !Number.isInteger(maxOutputTokens) || maxOutputTokens < 1 || maxOutputTokens > 16000
+      || !['low', 'medium', 'high'].includes(reasoningEffort)
       || typeof systemPrompt !== 'string' || !systemPrompt.trim() || systemPrompt.length > 12000) {
       throw failure('CONFIG', 'AI 服务配置不正确，请联系管理员。');
     }
     this.#apiKey = apiKey; this.#model = model; this.#fetch = fetchImpl;
     this.#timeoutMs = timeoutMs; this.#maxOutputTokens = maxOutputTokens; this.#systemPrompt = systemPrompt;
+    this.#reasoningEffort = reasoningEffort;
   }
 
   async generate(messages, { signal } = {}) {
@@ -157,7 +161,7 @@ export class ModelResponsesClient {
           method: 'POST', redirect: 'manual', signal: controller.signal,
           headers: { 'content-type': 'application/json', accept: 'application/json', authorization: `Bearer ${this.#apiKey}` },
           body: JSON.stringify({ model: this.#model, instructions: this.#systemPrompt, input,
-            store: false, stream: false, max_output_tokens: this.#maxOutputTokens }),
+            store: false, stream: false, max_output_tokens: this.#maxOutputTokens, reasoning: { effort: this.#reasoningEffort } }),
         });
         if (controller.signal.aborted) throw controller.signal.reason;
         if (response?.type === 'opaqueredirect' || response?.redirected || (response?.status >= 300 && response.status < 400)) {

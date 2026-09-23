@@ -70,6 +70,16 @@ test('model cannot start until atomic receipt persistence succeeds', async t => 
   persisted.resolve(); await handling; await f.finish(); assert.equal(f.calls.length, 1);
 });
 
+test('official segmented KOOK message ID is accepted and deduplicated across restart', async t => {
+  const f = await fixture(t), messageId = '50974c-364c983fa6cb';
+  await f.send(1, { msg_id: messageId }); await f.finish();
+  await f.send(1, { msg_id: messageId }); await f.bot.close();
+  const next = await new AiChatBot(f.config).init();
+  await next.handle(event(1, { msg_id: messageId })); await next.close();
+  assert.equal(f.calls.length, 1); assert.equal(f.replies.length, 1);
+  assert.equal(f.replies[0].replyMessageId, messageId);
+});
+
 test('gateway receipt completes while model is pending and contexts stay isolated between users', async t => {
   const pending = defer(), calls = [];
   const f = await fixture(t, { generate: async messages => { calls.push(messages); return calls.length === 1 ? pending.promise : { text: 'user two answer' }; } });
@@ -89,6 +99,7 @@ test('ignores private, other channel, system, bots, self, malformed authors and 
     { type: 255 }, { type: 10 }, { author_id: SELF }, { author_id: 'bad-id' }, { author_id: undefined }, { author_id: 123456789 },
     { extra: {} }, { extra: { author: { bot: true } } }, { extra: { author: { bot: 'false' } } },
     { extra: { author: { bot: false, id: 'different' } } }, { msg_id: '----------------' },
+    { msg_id: '-50974c-364c983fa6cb' }, { msg_id: '50974c-364c983fa6cb-' }, { msg_id: '50974c--364c983fa6cb' },
     { msg_timestamp: NOW - 300001 }, { msg_timestamp: NOW + 60001 }, { msg_timestamp: undefined }, { content: null }];
   for (let n = 0; n < changes.length; n++) await f.send(n + 1, changes[n]);
   assert.equal(f.calls.length, 0); assert.equal(f.replies.length, 0);
@@ -191,6 +202,37 @@ test('retains at most ten complete turn pairs and constrains history plus incomi
   assert.equal(bounded.calls[3].messages[0].role, 'user');
 });
 
+test('full long model output reaches delivery while bounded client history is used for followup', async t => {
+  const fullText = `<svg>${'x'.repeat(31_980)}</svg>`, calls = [];
+  const f = await fixture(t, { generate: async messages => {
+    calls.push(messages); return { text: fullText, historyText: 'A short SVG history summary.', incomplete: true };
+  } });
+  await f.send(1); await f.finish();
+  assert.equal(f.replies[0].content, fullText); assert.equal(f.replies[0].incomplete, true);
+  f.advance(4000); await f.send(2, { content: 'followup' }); await f.finish();
+  assert.deepEqual(calls[1], [{ role: 'user', content: '你好' },
+    { role: 'assistant', content: 'A short SVG history summary.' }, { role: 'user', content: 'followup' }]);
+  f.advance(10_001); await f.send(3, { content: '/帮助' }); await until(() => f.replies.length === 3);
+  assert.equal(f.replies[2].incomplete, false);
+});
+
+test('invalid history metadata falls back to a UTF16 safe local cap and retains current turn', async t => {
+  const invalidHistories = [undefined, null, { toString() { throw new Error('do not coerce'); } }, '', ' ',
+    'x'.repeat(6001), '\uD800', 42];
+  for (const invalid of invalidHistories) {
+    const calls = [], fullText = '😀'.repeat(15_990);
+    const f = await fixture(t, { generate: async messages => { calls.push(messages); return { text: fullText, historyText: invalid, incomplete: 'true' }; } });
+    await f.send(1); await f.finish();
+    assert.equal(f.replies[0].content, fullText); assert.equal(f.replies[0].incomplete, false);
+    f.advance(4000); await f.send(2); await f.finish();
+    assert.equal(calls[1].length, 3);
+    const remembered = calls[1][1].content;
+    assert.ok(remembered.length <= 6000); assert.ok(remembered.isWellFormed());
+    assert.match(remembered, /历史上下文仅保留前部内容/);
+    assert.ok(calls[1].reduce((sum, message) => sum + message.content.length, 0) <= 20_000);
+  }
+});
+
 test('rejects excessive input and credentials without generation or reflection', async t => {
   const f = await fixture(t);
   await f.send(1, { content: 'x'.repeat(4001) }); await until(() => f.replies.length === 1);
@@ -253,6 +295,50 @@ test('generation errors use a fixed safe response and keep no failed history', a
   await f.send(1); await f.finish(); assert.equal(generation, 1);
   assert.equal(f.replies[0].content, 'AI 暂时无法回复，请稍后再试。');
   assert.ok(!JSON.stringify(f.logs).includes('sk-never'));
+});
+
+test('model failure observations expose only whitelisted code and duration, with actionable replies', async t => {
+  const errors = ['TIMEOUT', 'EMPTY_RESPONSE', 'RATE_LIMIT', 'sk-private_fixture_injected_code'];
+  let generated = 0;
+  const f = await fixture(t, { generate: async () => {
+    f.advance(1234);
+    throw Object.assign(new Error('private fixture request content'), { code: errors[generated++] });
+  } });
+  for (let n = 1; n <= errors.length; n++) {
+    await f.send(n); await f.finish(); f.advance(4000);
+    assert.equal(f.bot.snapshot().lastErrorCode, n === 4 ? 'UNKNOWN' : errors[n - 1]);
+  }
+  assert.match(f.replies[0].content, /超时.*拆短/);
+  assert.match(f.replies[1].content, /没有生成/);
+  assert.match(f.replies[2].content, /频率限制/);
+  const logs = f.logs.filter(item => item.event === 'model_failed');
+  assert.deepEqual(logs.map(item => item.code), ['TIMEOUT', 'EMPTY_RESPONSE', 'RATE_LIMIT', 'UNKNOWN']);
+  assert.ok(logs.every(item => item.durationMs === 1234));
+  const exposed = JSON.stringify({ logs: f.logs, replies: f.replies, snapshot: f.bot.snapshot() });
+  assert.ok(!exposed.includes('private_fixture')); assert.ok(!exposed.includes('private fixture'));
+});
+
+test('empty generated text records EMPTY_RESPONSE and cancellation sends no failure reply', async t => {
+  const empty = await fixture(t, { generate: async () => ({ text: ' ' }) });
+  await empty.send(1); await empty.finish();
+  assert.equal(empty.bot.snapshot().lastErrorCode, 'EMPTY_RESPONSE'); assert.match(empty.replies[0].content, /没有生成/);
+  const cancelled = await fixture(t, { generate: async () => { throw Object.assign(new Error('private cancel reason'), { code: 'CANCELLED' }); } });
+  await cancelled.send(1); await cancelled.finish();
+  assert.equal(cancelled.replies.length, 0); assert.equal(cancelled.bot.snapshot().failures, 0);
+});
+
+test('delivery diagnostics are safe and successful next turn clears last failure code', async t => {
+  let attempts = 0;
+  const f = await fixture(t, { reply: async () => {
+    if (++attempts === 1) throw Object.assign(new Error('private delivery payload'), { code: 'KOOK_TIMEOUT' });
+    return { messageId: 'reply' };
+  } });
+  await f.send(1); await f.finish();
+  assert.equal(f.bot.snapshot().lastErrorCode, 'KOOK_TIMEOUT');
+  assert.deepEqual(f.logs.find(item => item.event === 'delivery_failed'), { event: 'delivery_failed', code: 'KOOK_TIMEOUT', durationMs: 0 });
+  f.advance(4000); await f.send(2); await f.finish();
+  assert.equal(f.bot.snapshot().lastError, null); assert.equal(f.bot.snapshot().lastErrorCode, null);
+  assert.ok(!JSON.stringify(f.logs).includes('private delivery'));
 });
 
 test('shutdown aborts active work, returns within its bound, and forbids late replies', async t => {
