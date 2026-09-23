@@ -30,7 +30,7 @@ export class TaskRouter {
     const original = { role: 'user', content: `本话题最初的问题：${context.topic}` };
     while (history.length >= 16 || history.reduce((size, item) => size + item.content.length, original.content.length) > 24000) history.shift();
     history.unshift(original);
-    return { ...options, threadId: context.id, threadContext: history, replyMessageId: context.anchorMessageId };
+    return { ...options, threadId: context.id, threadContext: history, replyMessageId: context.anchorMessageId || options.replyMessageId };
   }
   async start(options) {
     if (!this.isReady()) return { accepted: false, reason: 'NOT_READY' };

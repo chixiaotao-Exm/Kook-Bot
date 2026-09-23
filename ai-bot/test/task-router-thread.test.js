@@ -7,6 +7,14 @@ import { TaskRouter } from '../src/task-router.js';
 import { ConversationThread } from '../src/conversation-thread.js';
 const id = n => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 
+test('unbound migrated context retains the incoming message as its reply fallback', () => {
+  const router = new TaskRouter({ discussion: {} });
+  const context = { id: id(1), topic: '原来的问题', anchorMessageId: null, messages: [] };
+  const input = router.contextOptions({ receiptId: id(2), replyMessageId: id(2) }, context);
+  assert.equal(input.replyMessageId, id(2)); assert.equal(input.threadId, context.id);
+  assert.deepEqual(input.threadContext, [{ role: 'user', content: '本话题最初的问题：原来的问题' }]);
+});
+
 test('completed code follow-up stays in the same topic; only explicit newTopic changes mode and anchor', async t => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), 'kook-code-thread-'));
   t.after(() => rm(dataDir, { recursive: true, force: true }));
