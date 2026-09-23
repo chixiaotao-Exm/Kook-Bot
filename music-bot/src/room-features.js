@@ -261,7 +261,15 @@ export class RoomFeatures {
       // action; missed minutes and the startup minute are deliberately skipped.
       await this.serialize(async () => {
         if (!this.validScheduleControl(guard, minute)) return;
-        this.ledger[rule.id] = { date: local.date, at: now, error: '' }; await this.save();
+        const previous = this.ledger[rule.id];
+        this.ledger[rule.id] = { date: local.date, at: now, error: '' };
+        try { await this.save(); }
+        catch (error) {
+          // No action was dispatched. Keep the due minute eligible for retry
+          // instead of displaying an execution that never reached the player.
+          if (previous) this.ledger[rule.id] = previous; else delete this.ledger[rule.id];
+          throw error;
+        }
       });
       if (!this.validScheduleControl(guard, minute) || this.ledger[rule.id]?.at !== now) continue;
       // Dispatch in saved rule order, but never await a provider here. A slow
@@ -312,24 +320,34 @@ export class RoomFeatures {
     const track = this.player.current ? `${key(this.player.current)}:${this.player.trackEpoch || 0}` : null;
     if (track !== this.voteTrack) { this.votes.clear(); this.requiredVotes = 0; this.voteTrack = track; }
   }
-  vote(userId) {
+  vote(userId, { expectedEpoch = this.player.operationEpoch, expectedTrackEpoch = this.player.trackEpoch,
+    expectedVoiceChannelId = this.player.context?.voiceChannelId, expectedGuildId = this.player.context?.guildId } = {}) {
+    // Bind the intent before waiting behind another vote; that vote may skip
+    // the current song before this one gets its turn to check membership.
+    const guard = this.guard(), trackEpoch = this.player.trackEpoch;
+    const track = this.player.current ? key(this.player.current) : null;
+    const current = () => this.valid(guard) && expectedEpoch === this.player.operationEpoch
+      && expectedTrackEpoch === this.player.trackEpoch && trackEpoch === this.player.trackEpoch
+      && expectedVoiceChannelId === this.player.context?.voiceChannelId && expectedGuildId === this.player.context?.guildId
+      && this.player.current && key(this.player.current) === track;
     const next = this.voteTail.then(async () => {
       if (this.closed) throw new UserError('机器人正在关闭。');
       this.authorize('vote', userId);
       if (!this.rules.enabled || !this.rules.voteSkip) throw new UserError('本房间尚未开启投票切歌。');
       if (!this.player.context || !this.player.current) throw new UserError('当前没有可投票切换的歌曲。');
-      this.syncVotes(); const track = this.voteTrack, guard = this.guard(), trackEpoch = this.player.trackEpoch;
+      this.syncVotes();
+      if (!current()) throw new UserError('歌曲已变化，请为当前歌曲重新投票。');
       const result = await this.read(this.api.request('channel/user-list', { channel_id: guard.context.voiceChannelId }));
       const members = Array.isArray(result) ? result : result?.items;
       if (!Array.isArray(members)) throw new UserError('暂时无法核实频道成员，请稍后重试。');
       const humans = new Set(members.filter((member) => member && !member.bot && member.id && String(member.id) !== String(this.selfId)).map((member) => String(member.id)));
       if (!humans.has(userId)) throw new UserError('请进入机器人所在的语音频道后再投票。');
-      this.syncVotes(); if (!this.valid(guard) || track !== this.voteTrack) throw new UserError('歌曲已变化，请为当前歌曲重新投票。');
+      this.syncVotes(); if (!current()) throw new UserError('歌曲已变化，请为当前歌曲重新投票。');
       for (const id of this.votes) if (!humans.has(id)) this.votes.delete(id);
       this.requiredVotes = Math.min(this.rules.voteThreshold, humans.size);
       const duplicate = this.votes.has(userId); this.votes.add(userId);
       if (this.votes.size >= this.requiredVotes) {
-        await this.player.control('skip', undefined, { expectedEpoch: guard.epoch, expectedVoiceChannelId: guard.context.voiceChannelId, expectedTrackEpoch: trackEpoch, checkState: () => this.valid(guard), automated: true });
+        await this.player.control('skip', undefined, { expectedEpoch: guard.epoch, expectedVoiceChannelId: guard.context.voiceChannelId, expectedTrackEpoch: trackEpoch, checkState: current, automated: true });
         this.syncVotes(); return '投票通过，已切换下一首。';
       }
       return `${duplicate ? '你已投过票' : '已收到切歌投票'}：${this.votes.size}/${this.requiredVotes}。`;

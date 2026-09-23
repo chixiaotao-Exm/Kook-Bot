@@ -112,8 +112,18 @@ class Provider:
                 credential = Credential.model_validate_json(self.file.read_text(encoding="utf-8"))
             except (ValueError, OSError):
                 self.bad_file = True
-        self.client = Client(credential, device_path=str(self.directory / "qq-device.json"), rate=4, capacity=8)
-        await self.client.__aenter__()
+        client = Client(credential, device_path=str(self.directory / "qq-device.json"), rate=4, capacity=8)
+        try:
+            await client.__aenter__()
+        except BaseException as error:
+            # A failed/cancelled startup must not make later requests reuse a
+            # partially initialized client or leave its HTTP resources open.
+            try:
+                await client.__aexit__(type(error), error, error.__traceback__)
+            except BaseException:
+                pass
+            raise
+        self.client = client
 
     def save_credential(self, credential):
         temporary = self.file.with_suffix(".tmp")

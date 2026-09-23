@@ -152,9 +152,9 @@ test('remove waits for the running KOOK command and discards queued commands', a
   const started = new Promise((resolve) => { entered = resolve; });
   const blocked = new Promise((resolve) => { release = resolve; });
   runtime.bot.handle = async () => { entered(); await blocked; await player.add(context('202'), [song(21)]); };
-  runtime.bot.accept({ msg_id: '1', author_id: '41', target_id: '300', type: 1, channel_type: 'GROUP', content: '/点歌 21', extra: { guild_id: '100' } });
+  runtime.bot.accept({ msg_id: '1', author_id: '41', target_id: '300', type: 1, channel_type: 'GROUP', content: '/点歌 21', extra: { guild_id: '100', author: { id: '41', bot: false } } });
   await started;
-  runtime.bot.accept({ msg_id: '2', author_id: '42', target_id: '300', type: 1, channel_type: 'GROUP', content: '/点歌 22', extra: { guild_id: '100' } });
+  runtime.bot.accept({ msg_id: '2', author_id: '42', target_id: '300', type: 1, channel_type: 'GROUP', content: '/点歌 22', extra: { guild_id: '100', author: { id: '42', bot: false } } });
   const removal = manager.remove(extra.id); await tick();
   assert.equal(player.closed, false); release(); await removal;
   const saved = JSON.parse(await readFile(player.file, 'utf8'));
