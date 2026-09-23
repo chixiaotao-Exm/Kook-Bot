@@ -21,7 +21,7 @@ async function fixture(t, options = {}, overrides = []) {
     generate: async (messages, config) => { calls.push({ speaker, messages, signal: config.signal }); return { text: `${label} 的第 ${calls.length} 条观点。` }; },
     reply: async content => { replies.push({ speaker, ...content }); return { messageId: receipt(100 + replies.length) }; },
     ...overrides[speaker] }));
-  const config = { participants, channelId: CHANNEL, dataDir, betweenTurnsMs: 0, now: () => NOW,
+  const config = { participants, channelId: CHANNEL, dataDir, rounds: 6, deadlineMs: 600_000, betweenTurnsMs: 0, now: () => NOW,
     logger: item => logs.push(item), ...options };
   const session = await new DuetSession(config).init();
   t.after(async () => { await session.close(); assert.ok(path.basename(dataDir).startsWith('kook-duet-')); await rm(dataDir, { recursive: true, force: true }); });
@@ -229,9 +229,58 @@ test('progress failure does not trigger extra AI calls and late startup is cance
 test('bad input cannot start sessions and close cancels without a completion or timeout notice', async t => {
   const pending = defer(); let signal;
   const f = await fixture(t, {}, [{ generate: async (_, options) => { signal = options.signal; return pending.promise; } }]);
-  for (const bad of [{ topic: '' }, { topic: 'x'.repeat(2001) }, { rounds: 7 }, { rounds: 0 }, { userId: 'bad' }, { receiptId: '--bad--' }])
+  for (const bad of [{ topic: '' }, { topic: 'x'.repeat(2001) }, { rounds: 7 }, { rounds: -1 }, { userId: 'bad' }, { receiptId: '--bad--' }])
     assert.equal((await f.session.start(request(bad))).reason, 'INVALID_INPUT');
   await f.session.start(request()); await until(() => Boolean(signal)); await f.session.close();
   assert.equal(signal.aborted, true); assert.equal(f.session.snapshot().enabled, false); assert.equal(f.session.snapshot().status, 'interrupted');
   pending.resolve({ text: 'late' }); await new Promise(resolve => setTimeout(resolve, 5)); assert.equal(f.replies.length, 0);
+});
+
+test('constructor defaults keep talking past twelve turns and ten minutes until manual stop', async t => {
+  const pending = defer(), calls = [], timers = []; let now = NOW;
+  const f = await fixture(t, { rounds: undefined, deadlineMs: undefined, now: () => now,
+    setTimeoutImpl: (callback, ms) => { timers.push(ms); return setTimeout(callback, ms); } },
+  [0, 1].map(speaker => ({ generate: async (messages, options) => {
+    now += 60_000;
+    calls.push({ speaker, messages, signal: options.signal, historyMessages: f.session.snapshot().historyMessages });
+    return calls.length === 31 ? pending.promise : { text: 'x'.repeat(2400) };
+  } })));
+  const idle = f.session.snapshot();
+  assert.equal(idle.defaultRounds, 0); assert.equal(idle.deadlineMs, 0);
+  const admitted = await f.session.start(request());
+  assert.equal(admitted.unlimited, true); assert.equal(admitted.rounds, 0); assert.equal(admitted.totalTurns, null);
+  await until(() => calls.length === 31);
+  const running = f.session.snapshot();
+  assert.equal(running.active, true); assert.equal(running.completedTurns, 30); assert.equal(running.currentRound, 16);
+  assert.equal(running.deadlineAt, null); assert.ok(now > NOW + 600_000); assert.deepEqual(timers, []);
+  assert.ok(calls.every(call => call.historyMessages <= 10 && call.messages.length <= 12));
+  assert.ok(calls.every(call => call.messages.reduce((size, message) => size + message.content.length, 0) <= 20_000));
+  assert.equal(running.historyMessages, 10); assert.equal(f.replies.length, 30);
+  assert.match(f.replies[24].content, /第 13 轮/); assert.ok(!f.replies.some(item => item.content.includes('/0')));
+  await f.session.stop(); assert.equal(calls[30].signal.aborted, true);
+  pending.resolve({ text: 'late output after explicit stop' }); await f.done('stopped');
+  const saved = await f.saved('stopped');
+  assert.equal(saved.lastRun.rounds, 0); assert.equal(saved.lastRun.completedTurns, 30);
+  assert.equal(f.replies.length, 30); assert.ok(!f.replies.some(item => /互聊已完成|时间上限|late output/.test(item.content)));
+});
+
+test('unlimited round-zero ledger accepts large safe turn counts and never resumes after restart', async t => {
+  const f = await fixture(t, { rounds: 0, deadlineMs: 0 });
+  await writeFile(path.join(f.dataDir, 'duet-state.json'), JSON.stringify({ version: 1, runs: 1,
+    seen: [{ id: receipt(1), at: NOW }], lastRun: { runId: receipt(9), receiptId: receipt(1),
+      startedAt: NOW, updatedAt: NOW, rounds: 0, completedTurns: 10_000, status: 'running', errorCode: null } }));
+  const restarted = await new DuetSession(f.config).init();
+  assert.equal(restarted.snapshot().enabled, true); assert.equal(restarted.snapshot().active, false);
+  assert.equal(restarted.snapshot().status, 'interrupted'); assert.equal(restarted.snapshot().completedTurns, 10_000);
+  assert.equal(restarted.snapshot().unlimited, true); assert.equal(restarted.snapshot().totalTurns, null);
+  assert.equal((await restarted.start(request())).reason, 'DUPLICATE'); assert.equal(f.calls.length, 0);
+  await restarted.close();
+});
+
+test('explicit positive rounds remain finite under the new unlimited defaults', async t => {
+  const f = await fixture(t, { rounds: undefined, deadlineMs: undefined });
+  const result = await f.session.start(request({ rounds: 2 }));
+  assert.equal(result.unlimited, false); assert.equal(result.totalTurns, 4);
+  await f.done(); assert.equal(f.calls.length, 4); assert.equal(f.replies.length, 5);
+  assert.match(f.replies[3].content, /第 2\/2 轮/);
 });
