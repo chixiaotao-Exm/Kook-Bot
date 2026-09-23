@@ -1,0 +1,73 @@
+# KOOK 仓库执行工具
+
+给“思维1／思维2”提供实际读取、修改、检查与草稿 PR 工作流。当前固定操作 `chixiaotao-Exm/Kook-Bot`，由配置的 KOOK 用户发起。机器人身份、模型凭据和生产配置不进入任务工作区。
+
+## 使用
+
+在“思维”频道直接发送仓库链接和任务，例如：
+
+```text
+https://github.com/chixiaotao-Exm/Kook-Bot
+检查暂停和恢复的实现，修复确认的问题，补充回归测试并创建 PR。
+```
+
+也可以发送“代码任务：检查这个项目的配置加载”。思维1调用真实工具读取和实施，思维2独立读取改动与检查结果。状态卡显示读文件、修改、运行检查、复核和发布等实际步骤。
+
+- `先暂停`：取消当前模型生成或测试，保留工作区。
+- `继续`：恢复暂停的任务。
+- `停止`：停止后续步骤；已经发布的分支或 PR 不会被删除。
+- 中途补充要求：加入后续实施与复核。
+
+普通话题仍进入持续三方讨论。其他仓库链接不会进入代码任务；未经授权的频道用户不能启动、修改或控制代码任务。
+
+## 工作流程
+
+1. 通过仓库专用部署密钥获取 `main`，创建独立基线和工作副本。
+2. 工具提供目录、带行号的代码、字面搜索、带 SHA256 前置条件的修改及实际 diff。
+3. 固定测试在临时 Docker 容器运行。容器无网络、无凭据、无 Docker socket，以非 root 用户运行；输入副本只读，运行文件复制到临时文件系统。
+4. 实施者不能调用发布工具。服务验证当前工作区的实际测试结果，再让第二个模型只读复核。
+5. 测试通过、复核通过且工作区哈希一致，才推送 `kook-agent/task-<UUID>` 分支。
+6. GitHub Actions 读取服务生成的报告，创建草稿 PR。机器人通过 Git 的 PR 引用核实对应同一个提交。
+
+服务不合并 PR、不部署修改、不修改生产目录。未通过验证或达到迭代上限时保留任务副本并报告结果。无代码差异的审查不会制造空 PR。
+
+每个任务默认最多 60 次模型响应和 3 轮实施／复核。私密任务目录最多 30 个，达到容量后由管理员整理。讨论本身的不限轮数设置不改变代码任务的工作边界。
+
+## 支持范围
+
+允许修改常规文本源码、测试和文档。`.env`、密钥目录、运行数据、依赖安装目录与 `.git` 不可访问；`.github` 仅可读取。现有文件修改需匹配读取时的 SHA256。
+
+沙箱提供固定版本依赖。修改依赖声明后需要管理员重建镜像，当前任务不能用原镜像通过发布验证。工具不接受任意 shell 命令。
+
+## 部署
+
+Broker 代码放到 `/opt/kook-code-agent`，安装 Git、Python 3 和 Docker。在仓库根目录构建镜像：
+
+```bash
+docker build -t kook-code-sandbox:1 -f code-agent/runtime/Dockerfile .
+```
+
+配置 `/etc/kook-code-agent/config`，参考 `deploy/broker.env.example`。SSH 私钥仅存该私密目录，使用只关联本仓库的写入部署密钥，固定 GitHub SSH host key。不要复制个人 GitHub OAuth token 到服务器。
+
+安装 `deploy/kook-code-agent.service`，再在互聊服务中配置：
+
+```dotenv
+CODE_AGENT_ENABLED=true
+CODE_AGENT_OPERATOR_IDS=你的KOOK用户数字ID
+CODE_AGENT_SOCKET=/run/kook-code-agent/broker.sock
+```
+
+Broker 仅监听 Unix socket，通过 Linux `SO_PEERCRED` 限定本机调用者。它有管理临时测试容器和推送本仓库任务分支所需权限；模型工具和测试容器均接触不到这些凭据。
+
+GitHub 仓库需允许 Actions 创建 PR。工作流 `.github/workflows/agent-pull-request.yml` 只在任务分支运行，不 checkout 或执行候选代码。保持工作流及 broker 的部署由管理员审核。
+
+## 验证
+
+```bash
+cd code-agent
+python3 -m unittest discover -s tests -v
+cd ../ai-bot
+npm test
+```
+
+测试覆盖路径和符号链接、旧哈希保护、运行边界、取消清理、检查证据伪造、分支范围及模型工具流程；GitHub 和 KOOK 写入使用模拟接口。

@@ -1,0 +1,28 @@
+[Unit]
+Description=Isolated KOOK repository tool broker
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=root
+Group=kook-duet
+WorkingDirectory=/opt/kook-code-agent
+EnvironmentFile=/etc/kook-code-agent/config
+ExecStart=/usr/bin/python3 -m broker.server
+Restart=on-failure
+RestartSec=5
+UMask=0077
+RuntimeDirectory=kook-code-agent
+RuntimeDirectoryMode=0750
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/kook-code-agent /run/kook-code-agent
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=512M
+TasksMax=128
+
+[Install]
+WantedBy=multi-user.target

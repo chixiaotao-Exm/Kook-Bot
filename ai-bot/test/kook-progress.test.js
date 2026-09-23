@@ -30,6 +30,21 @@ function harness(options = {}) {
   return { progress, calls, timers, cleared, advance(ms) { time += ms; }, tick() { for (const timer of timers.values()) timer.callback(); } };
 }
 
+test('pause freezes elapsed time, resume preserves the card and safe action detail shows real work', async () => {
+  const h = harness(); const handle = await h.progress.start(input);
+  h.advance(12000); await handle.setDetail('读取 ai-bot/src/duet-session.js');
+  await handle.pause(); assert.match(text(h.calls.at(-1)), /已暂停/); assert.match(text(h.calls.at(-1)), /00:12/);
+  assert.equal(h.timers.size, 0); const count = h.calls.length;
+  h.advance(60000); h.tick(); await settled(); assert.equal(h.calls.length, count);
+  await handle.resume(); assert.equal(h.timers.size, 1); assert.match(text(h.calls.at(-1)), /00:12/);
+  assert.match(text(h.calls.at(-1)), /读取 ai-bot/);
+  await handle.setDetail('sk-private-secret-do-not-log'); assert.doesNotMatch(text(h.calls.at(-1)), /private-secret/);
+  h.advance(8000); await handle.pause(); h.advance(20000); await handle.finish();
+  assert.match(text(h.calls.at(-1)), /已完成/); assert.match(text(h.calls.at(-1)), /00:20/);
+  const terminalCount=h.calls.length; await handle.resume(); await handle.setDetail('late detail');
+  assert.equal(h.calls.length, terminalCount); assert.equal(h.timers.size, 0);
+});
+
 test('creates one quoted status card using the official endpoint and only fixed stage text', async () => {
   const h = harness(); const handle = await h.progress.start({ ...input, content: TOKEN, model: TOKEN });
   assert.equal(h.calls.length, 1);

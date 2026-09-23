@@ -7,7 +7,7 @@ import { sanitizeFailureCode } from './failure.js';
 const MESSAGE_ID = /^(?=.{16,100}$)[a-f0-9]+(?:-[a-f0-9]+)*$/i;
 const validMessageId = value => typeof value === 'string' && MESSAGE_ID.test(value);
 const validId = value => typeof value === 'string' && /^\d{5,30}$/.test(value);
-const STATUSES = new Set(['running', 'completed', 'stopped', 'timeout', 'failed', 'interrupted']);
+const STATUSES = new Set(['running', 'paused', 'completed', 'stopped', 'timeout', 'failed', 'interrupted']);
 const RECEIPT_TTL = 10 * 60_000;
 const MAX_RECEIPTS = 2048;
 const MAX_TURN_CHARS = 1200;
@@ -70,7 +70,7 @@ export class DuetSession {
       this.#lastRun = run === null ? null : { runId: run.runId, receiptId: run.receiptId, startedAt: run.startedAt,
         updatedAt: run.updatedAt, rounds: run.rounds, completedTurns: run.completedTurns, contributions: run.contributions ?? 0,
         status: run.status, errorCode: run.errorCode === null ? null : safeCode({ code: run.errorCode }) };
-      if (this.#lastRun?.status === 'running') {
+      if (['running', 'paused'].includes(this.#lastRun?.status)) {
         this.#lastRun.status = 'interrupted'; this.#lastRun.updatedAt = this.#now();
         await this.#write();
       }
@@ -86,19 +86,61 @@ export class DuetSession {
     const currentRound = run ? Math.floor(turn / 2) + 1 : null;
     const speaker = run ? this.#participants[turn % 2].label : null;
     const rounds = run?.rounds ?? last?.rounds ?? this.#rounds;
-    return { enabled: this.#ready && !this.#closed, active: Boolean(run), status: run ? 'running' : last?.status || 'idle',
+    return { enabled: this.#ready && !this.#closed, active: Boolean(run), paused: Boolean(run?.paused), status: run ? run.status : last?.status || 'idle',
       rounds, unlimited: rounds === 0, totalTurns: rounds === 0 ? null : rounds * 2,
       defaultRounds: this.#rounds, deadlineMs: this.#deadlineMs, historyMessages: run?.transcript.length ?? 0,
       completedTurns: run?.completedTurns ?? last?.completedTurns ?? 0,
       contributions: run?.contributions ?? last?.contributions ?? 0, pendingInputs: run ? this.#pending(run).length : 0,
       currentRound, round: currentRound, currentSpeaker: speaker, currentParticipant: speaker,
       startedAt: run?.startedAt ?? last?.startedAt ?? null,
-      deadlineAt: run?.deadlineAt ?? null, runs: this.#runs, lastErrorCode: this.#lastErrorCode ?? last?.errorCode ?? null };
+      deadlineAt: run?.deadlineAt ?? null, deadlineRemainingMs: run?.paused ? run.deadlineRemainingMs : null,
+      runs: this.#runs, lastErrorCode: this.#lastErrorCode ?? last?.errorCode ?? null };
   }
 
   start(input = {}) { return this.#serialize(() => this.#admit(input)); }
 
   contribute(input = {}) { return this.#serialize(() => this.#contribute(input)); }
+
+  pause() {
+    if (!this.#ready || this.#closed) return Promise.resolve({ paused: false, reason: 'NOT_READY' });
+    const run = this.#active;
+    if (!run || !this.#current(run)) return Promise.resolve({ paused: false, reason: 'NO_ACTIVE' });
+    if (run.paused) return Promise.resolve({ paused: false, reason: 'ALREADY_PAUSED' });
+    run.paused = true; run.status = 'paused';
+    if (run.deadlineAt !== null) run.deadlineRemainingMs = Math.max(0, run.deadlineAt - this.#now());
+    run.deadlineAt = null; this.#clearTimeout(run.timer); run.timer = null;
+    run.generationController?.abort(failure('PAUSED')); run.delayController?.abort(failure('PAUSED'));
+    return this.#serialize(async () => {
+      if (!this.#current(run)) return { paused: false, reason: 'NO_ACTIVE' };
+      this.#lastRun = this.#metadata(run);
+      try { await this.#write(); }
+      catch {
+        this.#ready = false; run.failureCode = 'STORAGE'; run.endReason = 'failed'; run.controller.abort(failure('STORAGE'));
+        void this.#finalize(run, 'failed', 'STORAGE'); return { paused: false, reason: 'NOT_READY' };
+      }
+      if (!this.#current(run)) return { paused: false, reason: 'NO_ACTIVE' };
+      this.#progressState(run, 'pause'); return { paused: true };
+    });
+  }
+
+  resume() {
+    return this.#serialize(async () => {
+      if (!this.#ready || this.#closed) return { resumed: false, reason: 'NOT_READY' };
+      const run = this.#active;
+      if (!run || !this.#current(run)) return { resumed: false, reason: 'NO_ACTIVE' };
+      if (!run.paused) return { resumed: false, reason: 'NOT_PAUSED' };
+      this.#lastRun = { ...this.#metadata(run), status: 'running' };
+      try { await this.#write(); }
+      catch {
+        this.#ready = false; run.failureCode = 'STORAGE'; run.endReason = 'failed'; run.controller.abort(failure('STORAGE'));
+        void this.#finalize(run, 'failed', 'STORAGE'); return { resumed: false, reason: 'NOT_READY' };
+      }
+      if (!this.#current(run)) return { resumed: false, reason: 'NO_ACTIVE' };
+      run.paused = false; run.status = 'running'; this.#armDeadline(run);
+      for (const resolve of run.resumeWaiters) resolve(); run.resumeWaiters.clear();
+      this.#progressState(run, 'resume'); return { resumed: true };
+    });
+  }
 
   #pending(run) { return run.transcript.filter(item => item.kind === 'human' && item.seenBy !== 3); }
 
@@ -161,6 +203,7 @@ export class DuetSession {
     const run = { runId: randomUUID(), receiptId, replyMessageId, topic: topic.trim(), rounds,
       startedAt: now, deadlineAt: this.#deadlineMs > 0 ? now + this.#deadlineMs : null, completedTurns: 0, nextTurn: 0,
       transcript: [], contributions: 0, revision: 0, stage: 'between', generationController: null,
+      paused: false, resumeWaiters: new Set(), delayController: null, deadlineRemainingMs: this.#deadlineMs || null,
       controller: new AbortController(), progress: null, progressEnded: false,
       status: 'running', endReason: null, finalizing: null, timer: null };
     this.#seen.set(receiptId, now); this.#runs++; this.#lastRun = this.#metadata(run);
@@ -172,16 +215,23 @@ export class DuetSession {
       return { accepted: false, reason: 'NOT_READY' };
     }
     this.#lastErrorCode = null; this.#active = run;
-    if (this.#deadlineMs > 0) run.timer = this.#setTimeout(() => {
-      if (this.#active !== run) return;
-      run.endReason = 'timeout'; run.controller.abort(failure('TIMEOUT'));
-      void this.#finalize(run, 'timeout', 'TIMEOUT');
-    }, Math.max(0, run.deadlineAt - this.#now()));
+    this.#armDeadline(run);
     const task = Promise.resolve().then(() => this.#execute(run)).catch(() => {
       this.#lastErrorCode = 'UNKNOWN'; this.#log('duet_failed', 'UNKNOWN');
     });
     this.#tasks.add(task); task.finally(() => this.#tasks.delete(task));
     return { accepted: true, runId: run.runId, rounds, unlimited: rounds === 0, totalTurns: rounds === 0 ? null : rounds * 2 };
+  }
+
+  #armDeadline(run) {
+    this.#clearTimeout(run.timer); run.timer = null;
+    if (this.#deadlineMs <= 0 || run.paused) return;
+    run.deadlineAt = this.#now() + run.deadlineRemainingMs;
+    run.timer = this.#setTimeout(() => {
+      if (this.#active !== run || run.paused) return;
+      run.endReason = 'timeout'; run.controller.abort(failure('TIMEOUT'));
+      void this.#finalize(run, 'timeout', 'TIMEOUT');
+    }, Math.max(0, run.deadlineRemainingMs));
   }
 
   #metadata(run, errorCode = null) {
@@ -198,7 +248,7 @@ export class DuetSession {
       seen: [...this.#seen].map(([id, at]) => ({ id, at })) });
   }
 
-  #current(run) { return !this.#closed && this.#active === run && run.status === 'running' && !run.controller.signal.aborted; }
+  #current(run) { return !this.#closed && this.#active === run && ['running', 'paused'].includes(run.status) && !run.controller.signal.aborted; }
   #cancelCode(run) { return run.endReason === 'timeout' ? 'TIMEOUT' : run.failureCode || 'CANCELLED'; }
   #assertCurrent(run) { if (!this.#current(run)) throw failure(this.#cancelCode(run)); }
 
@@ -215,11 +265,44 @@ export class DuetSession {
     } finally { signal.removeEventListener('abort', aborted); }
   }
 
+  async #waitUntilResumed(run) {
+    this.#assertCurrent(run);
+    while (run.paused) {
+      let wake;
+      try { await this.#wait(run, () => new Promise(resolve => {
+        if (!run.paused) { resolve(); return; }
+        wake = resolve; run.resumeWaiters.add(resolve);
+      })); }
+      finally { if (wake) run.resumeWaiters.delete(wake); }
+    }
+    this.#assertCurrent(run);
+  }
+
   async #delay(run) {
-    if (!this.#betweenTurnsMs) return;
-    let timer;
-    try { await this.#wait(run, () => new Promise(resolve => { timer = this.#setTimeout(resolve, this.#betweenTurnsMs); })); }
-    finally { this.#clearTimeout(timer); }
+    let remaining = this.#betweenTurnsMs;
+    while (remaining > 0) {
+      await this.#waitUntilResumed(run);
+      let timer, interrupted; const began = this.#now();
+      const controller = new AbortController(); run.delayController = controller;
+      const paused = new Promise((_, reject) => {
+        interrupted = () => reject(failure('PAUSED'));
+        controller.signal.addEventListener('abort', interrupted, { once: true });
+      });
+      void paused.catch(() => {});
+      try {
+        await this.#wait(run, () => {
+          if (run.paused || controller.signal.aborted) throw failure('PAUSED');
+          return Promise.race([new Promise(resolve => { timer = this.#setTimeout(resolve, remaining); }), paused]);
+        });
+        return;
+      } catch (error) {
+        if (error?.code !== 'PAUSED' || !this.#current(run)) throw error;
+        remaining = Math.max(0, remaining - Math.max(0, this.#now() - began));
+      } finally {
+        this.#clearTimeout(timer); controller.signal.removeEventListener('abort', interrupted);
+        if (run.delayController === controller) run.delayController = null;
+      }
+    }
   }
 
   #messages(run, speaker) {
@@ -238,7 +321,8 @@ export class DuetSession {
   }
 
   async #generate(run, participant, view) {
-    this.#assertCurrent(run);
+    await this.#waitUntilResumed(run);
+    if (run.paused) throw failure('PAUSED');
     if (view.revision !== run.revision) throw failure('TURN_UPDATED');
     const controller = new AbortController(); run.generationController = controller; run.stage = 'generating';
     const cancel = () => controller.abort(failure(this.#cancelCode(run)));
@@ -248,9 +332,11 @@ export class DuetSession {
       aborted = () => reject(controller.signal.reason || failure('CANCELLED'));
       controller.signal.addEventListener('abort', aborted, { once: true });
     });
+    void cancellation.catch(() => {});
     try {
       return await this.#wait(run, () => Promise.race([
         Promise.resolve().then(() => {
+          if (run.paused) throw failure('PAUSED');
           if (controller.signal.aborted) throw controller.signal.reason;
           return participant.generate(view.messages, { signal: controller.signal });
         }), cancellation,
@@ -265,7 +351,9 @@ export class DuetSession {
     if (typeof response?.text !== 'string' || !response.text.trim()) throw failure('EMPTY_RESPONSE');
     const round = Math.floor(run.nextTurn / 2) + 1;
     const heading = `【第 ${round}${run.rounds ? `/${run.rounds}` : ''} 轮 · ${this.#participants[speaker].label}】\n`;
-    const body = response.text.toWellFormed().trim();
+    const body = response.text.toWellFormed().trim()
+      .replace(/^(?:【\s*第\s*\d+(?:\s*\/\s*\d+)?\s*轮\s*·\s*[^】\r\n]{1,80}】\s*)+/u, '').trim();
+    if (!body) throw failure('EMPTY_RESPONSE');
     const suffix = body.length + heading.length > MAX_TURN_CHARS ? TRUNCATED : response.incomplete === true ? INCOMPLETE : '';
     return heading + prefix(body, MAX_TURN_CHARS - heading.length - suffix.length).trimEnd() + suffix;
   }
@@ -277,21 +365,33 @@ export class DuetSession {
     catch (error) { this.#log('duet_progress_failed', safeCode(error)); }
   }
 
+  #progressState(run, method) {
+    const task = Promise.resolve().then(async () => {
+      if (!this.#current(run) || run.progressEnded || !run.progress || run.paused !== (method === 'pause')) return;
+      try { await run.progress[method]?.(); }
+      catch (error) { this.#log('duet_progress_failed', safeCode(error)); }
+    });
+    this.#tasks.add(task); task.finally(() => this.#tasks.delete(task));
+  }
+
   async #execute(run) {
     const abortProgress = () => { void this.#progress(run, run.endReason === 'timeout' ? 'fail' : 'cancel', run.endReason === 'timeout' ? 'TIMEOUT' : undefined); };
     run.controller.signal.addEventListener('abort', abortProgress, { once: true });
     try {
+      await this.#waitUntilResumed(run);
       const progress = this.#participants[0].progress;
       if (typeof progress?.start === 'function') {
         try {
           await this.#wait(run, async () => {
+            if (run.paused) throw failure('PAUSED');
             const handle = await progress.start({ targetId: this.#channelId, replyMessageId: run.replyMessageId, signal: run.controller.signal });
             run.progress = handle;
             if (!this.#current(run)) await this.#progress(run, run.endReason === 'timeout' ? 'fail' : 'cancel', run.endReason === 'timeout' ? 'TIMEOUT' : undefined);
+            else if (run.paused) this.#progressState(run, 'pause');
           });
         } catch (error) {
           if (!this.#current(run)) throw error;
-          this.#log('duet_progress_failed', safeCode(error));
+          if (error?.code !== 'PAUSED') this.#log('duet_progress_failed', safeCode(error));
         }
       }
       for (let turn = 0; run.rounds === 0 || turn < run.rounds * 2; turn++) {
@@ -300,15 +400,18 @@ export class DuetSession {
         const speaker = turn % 2, participant = this.#participants[speaker];
         for (;;) {
           try {
+            await this.#waitUntilResumed(run);
             const view = await this.#serialize(() => { this.#assertCurrent(run); return this.#messages(run, speaker); });
             const response = await this.#generate(run, participant, view);
             this.#assertCurrent(run);
+            await this.#waitUntilResumed(run);
             await this.#serialize(() => {
               this.#assertCurrent(run);
               if (view.revision !== run.revision) throw failure('TURN_UPDATED');
             });
             const text = this.#turnText(run, speaker, response);
             const delivered = await this.#wait(run, () => {
+              if (run.paused) throw failure('PAUSED');
               if (view.revision !== run.revision) throw failure('TURN_UPDATED');
               run.stage = 'delivering';
               return participant.reply({ targetId: this.#channelId, replyMessageId: view.replyMessageId,
@@ -326,16 +429,28 @@ export class DuetSession {
             });
             break;
           } catch (error) {
-            if (error?.code === 'TURN_UPDATED' && this.#current(run)) continue;
+            if (['TURN_UPDATED', 'PAUSED'].includes(error?.code) && this.#current(run)) continue;
             throw error;
           }
         }
       }
       // This final notice is fixed text and does not create another model request.
-      try { await this.#wait(run, () => this.#participants[0].reply({ targetId: this.#channelId,
-        replyMessageId: run.replyMessageId, content: `互聊已完成：${run.rounds} 轮，共 ${run.completedTurns} 条 AI 发言。`,
-        incomplete: false, textOnly: true, signal: run.controller.signal })); }
-      catch (error) { if (!this.#current(run)) throw error; this.#log('duet_notice_failed', safeCode(error)); }
+      for (;;) {
+        await this.#waitUntilResumed(run);
+        try {
+          await this.#wait(run, () => {
+            if (run.paused) throw failure('PAUSED');
+            return this.#participants[0].reply({ targetId: this.#channelId,
+              replyMessageId: run.replyMessageId, content: `互聊已完成：${run.rounds} 轮，共 ${run.completedTurns} 条 AI 发言。`,
+              incomplete: false, textOnly: true, signal: run.controller.signal });
+          });
+          break;
+        } catch (error) {
+          if (!this.#current(run)) throw error;
+          if (error?.code === 'PAUSED') continue;
+          this.#log('duet_notice_failed', safeCode(error)); break;
+        }
+      }
       const stored = await this.#finalize(run, 'completed');
       await this.#progress(run, stored === false ? 'fail' : 'finish', stored === false ? 'STORAGE' : undefined);
     } catch (error) {

@@ -461,3 +461,128 @@ test('finite final delivery winning the admission-write race rejects and durably
   assert.equal((await f.session.start(request({ receiptId: receipt(1001), replyMessageId: receipt(1001) }))).accepted, true);
   await f.session.stop();
 });
+
+test('pause discards a late model answer, keeps the speaker and only resumes on an explicit request', async t => {
+  const old = defer(), peer = defer(), calls = [], progress = [];
+  const f = await fixture(t, { rounds: 0, deadlineMs: 0 }, [
+    { progress: { start: async () => ({ pause: async () => progress.push('pause'), resume: async () => progress.push('resume'),
+      cancel: async () => progress.push('cancel'), finish: async () => progress.push('finish') }) },
+    generate: async (messages, options) => { calls.push({ messages, signal: options.signal });
+      return calls.length === 1 ? old.promise : { text: '恢复后结合用户补充继续原话题' }; } },
+    { generate: async () => peer.promise },
+  ]);
+  await f.session.start(request()); await until(() => calls.length === 1);
+  assert.deepEqual(await f.session.pause(), { paused: true }); await until(() => progress.includes('pause'));
+  assert.equal(calls[0].signal.aborted, true); assert.equal(f.session.snapshot().active, true);
+  assert.equal(f.session.snapshot().status, 'paused'); assert.equal(f.session.snapshot().paused, true);
+  assert.equal(f.session.snapshot().currentSpeaker, 'A');
+  assert.equal((await f.session.pause()).reason, 'ALREADY_PAUSED');
+  old.resolve({ text: '必须丢弃的暂停前旧稿' }); await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(f.replies.length, 0); assert.equal(calls.length, 1);
+  assert.equal((await f.session.contribute(contribution(1, '恢复后请只说一句话'))).accepted, true);
+  assert.equal(f.session.snapshot().paused, true); assert.equal(calls.length, 1); assert.equal(f.replies.length, 0);
+  assert.deepEqual(await f.session.resume(), { resumed: true }); await until(() => f.replies.length === 1);
+  assert.equal(calls.length, 2); assert.equal(f.replies[0].speaker, 0); assert.equal(f.replies[0].replyMessageId, receipt(1001));
+  assert.match(calls[1].messages[0].content, /未来的城市/);
+  assert.ok(calls[1].messages.some(message => message.content.includes('只说一句话')));
+  assert.equal(f.session.snapshot().completedTurns, 1); assert.equal(f.session.snapshot().contributions, 1);
+  assert.ok(!f.replies.some(item => item.content.includes('暂停前旧稿')));
+  assert.equal((await f.session.resume()).reason, 'NOT_PAUSED'); await f.session.stop(); peer.resolve({ text: 'late' });
+  assert.deepEqual(progress.slice(0, 2), ['pause', 'resume']);
+});
+
+test('pause during an in-flight reply allows only that confirmed message and preserves it for the peer', async t => {
+  const delivery = defer(), pending = defer(), sent = [], peers = [];
+  const f = await fixture(t, { rounds: 0, deadlineMs: 0 }, [
+    { reply: async item => { sent.push(item); return delivery.promise; } },
+    { generate: async messages => { peers.push(messages); return pending.promise; } },
+  ]);
+  await f.session.start(request()); await until(() => sent.length === 1);
+  await f.session.pause(); assert.equal(sent[0].signal.aborted, false);
+  delivery.resolve({ messageId: receipt(500) }); await until(() => f.session.snapshot().completedTurns === 1);
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(peers.length, 0); assert.equal(f.session.snapshot().paused, true);
+  assert.equal(f.session.snapshot().currentSpeaker, 'B'); assert.equal(sent.length, 1);
+  await f.session.resume(); await until(() => peers.length === 1);
+  assert.ok(peers[0].some(message => message.content === sent[0].content));
+  await f.session.stop(); pending.resolve({ text: 'late' });
+});
+
+test('pause freezes the between-turn delay until resume', async t => {
+  const timers = new Map(), peer = defer(); let serial = 0, now = NOW, peerCalls = 0;
+  const f = await fixture(t, { rounds: 0, deadlineMs: 0, betweenTurnsMs: 2000, now: () => now,
+    setTimeoutImpl: (callback, ms) => { const id = ++serial; timers.set(id, { callback, ms }); return id; },
+    clearTimeoutImpl: id => timers.delete(id) }, [undefined, { generate: async () => { peerCalls++; return peer.promise; } }]);
+  await f.session.start(request()); await until(() => [...timers.values()].some(timer => timer.ms === 2000));
+  now += 500; await f.session.pause(); assert.equal(timers.size, 0);
+  now += 60_000; assert.equal(peerCalls, 0); assert.equal(f.session.snapshot().paused, true);
+  await f.session.resume(); await until(() => [...timers.values()].some(timer => timer.ms === 1500));
+  assert.equal(peerCalls, 0);
+  const [id, timer] = [...timers].find(([, item]) => item.ms === 1500); timers.delete(id); now += 1500; timer.callback();
+  await until(() => peerCalls === 1); await f.session.stop(); peer.resolve({ text: 'late' });
+});
+
+test('explicit session deadline pauses its remaining time and only expires after resumed time elapses', async t => {
+  const timers = new Map(), pending = defer(), signals = []; let serial = 0, now = NOW;
+  const f = await fixture(t, { rounds: 0, deadlineMs: 10_000, now: () => now,
+    setTimeoutImpl: (callback, ms) => { const id = ++serial; timers.set(id, { callback, ms }); return id; },
+    clearTimeoutImpl: id => timers.delete(id) }, [{ generate: async (_, options) => { signals.push(options.signal); return pending.promise; } }]);
+  await f.session.start(request()); await until(() => signals.length === 1);
+  now += 2500; await f.session.pause(); assert.equal(timers.size, 0);
+  assert.equal(f.session.snapshot().deadlineRemainingMs, 7500); assert.equal(f.session.snapshot().deadlineAt, null);
+  now += 20_000; assert.equal(f.session.snapshot().status, 'paused'); assert.equal(f.replies.length, 0);
+  await f.session.resume(); await until(() => signals.length === 2);
+  const [id, timer] = [...timers].find(([, item]) => item.ms === 7500);
+  assert.equal(f.session.snapshot().deadlineAt, now + 7500);
+  timers.delete(id); now += 7500; timer.callback(); await f.done('timeout'); await until(() => f.replies.length === 1);
+  assert.match(f.replies[0].content, /时间上限/); assert.ok(signals.every(signal => signal.aborted)); pending.resolve({ text: 'late' });
+});
+
+test('stop and close release paused waiters without restarting or posting', async t => {
+  for (const method of ['stop', 'close']) {
+    const pending = defer(); let calls = 0;
+    const f = await fixture(t, { rounds: 0, deadlineMs: 0 }, [{ generate: async () => { calls++; return pending.promise; } }]);
+    await f.session.start(request()); await until(() => calls === 1); await f.session.pause();
+    await f.session[method](); assert.equal(f.session.snapshot().active, false);
+    assert.equal(f.session.snapshot().status, method === 'stop' ? 'stopped' : 'interrupted');
+    assert.equal((await f.session.resume()).resumed, false);
+    pending.resolve({ text: 'late' }); await new Promise(resolve => setTimeout(resolve, 5));
+    assert.equal(calls, 1); assert.equal(f.replies.length, 0);
+  }
+});
+
+test('persisted paused sessions become interrupted on restart and do not resume automatically', async t => {
+  const pending = defer(); let calls = 0;
+  const f = await fixture(t, { rounds: 0, deadlineMs: 0 }, [{ generate: async () => { calls++; return pending.promise; } }]);
+  await f.session.start(request()); await until(() => calls === 1); await f.session.pause();
+  const saved = JSON.parse(await readFile(path.join(f.dataDir, 'duet-state.json'), 'utf8'));
+  assert.equal(saved.lastRun.status, 'paused');
+  const restarted = await new DuetSession(f.config).init();
+  assert.equal(restarted.snapshot().status, 'interrupted'); assert.equal(restarted.snapshot().active, false);
+  assert.equal((await restarted.resume()).reason, 'NO_ACTIVE'); assert.equal(calls, 1);
+  await restarted.close(); await f.session.close(); pending.resolve({ text: 'late' });
+});
+
+test('model-repeated leading turn headers are removed while body references stay intact', async t => {
+  const body = '【第1/6轮 · 重复A】\n【第 2 轮 · 重复B】\n正常正文\n引用： 【第9轮 · 原话】';
+  const f = await fixture(t, { rounds: 1 }, [0, 1].map(() => ({ generate: async () => ({ text: body }) })));
+  await f.session.start(request()); await f.done();
+  assert.match(f.replies[0].content, /^【第 1\/1 轮 · A】\n正常正文/);
+  assert.match(f.replies[1].content, /^【第 1\/1 轮 · B】\n正常正文/);
+  assert.ok(!f.replies[0].content.includes('重复A')); assert.ok(!f.replies[0].content.includes('重复B'));
+  assert.ok(f.replies[0].content.includes('引用： 【第9轮 · 原话】'));
+});
+
+test('failed pause or resume persistence disables the session and cannot resume generation', async t => {
+  for (const operation of ['pause', 'resume']) {
+    const pending = defer(); let writes = 0, calls = 0;
+    const f = await fixture(t, { rounds: 0, deadlineMs: 0, writeState: async (file, value) => {
+      if (++writes === (operation === 'pause' ? 2 : 3)) throw new Error('private storage failure'); await atomicJson(file, value);
+    } }, [{ generate: async () => { calls++; return pending.promise; } }]);
+    await f.session.start(request()); await until(() => calls === 1);
+    if (operation === 'resume') await f.session.pause();
+    assert.equal((await f.session[operation]()).reason, 'NOT_READY'); await f.done('failed');
+    assert.equal(f.session.snapshot().enabled, false); assert.equal(calls, 1); assert.equal(f.replies.length, 0);
+    pending.resolve({ text: 'late' });
+  }
+});

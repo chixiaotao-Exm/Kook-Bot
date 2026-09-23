@@ -16,17 +16,27 @@ const event = (number, content = '/互聊 旅行', overrides = {}) => ({ type: 9
 const flush = async () => { for (let n = 0; n < 20; n++) await Promise.resolve(); };
 async function fixture(t, options = {}) {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), 'duet-commands-'));
-  let now = NOW, active = false, rounds = 0;
-  const starts = [], contributions = [], stops = [], replies = [], logs = [];
+  let now = NOW, active = false, paused = false, rounds = 0;
+  const starts = [], contributions = [], pauses = [], resumes = [], stops = [], replies = [], logs = [];
   const session = { async start(input) {
     starts.push(input); if (active) return { accepted: false, reason: 'BUSY' };
-    active = true; rounds = input.rounds;
+    active = true; paused = false; rounds = input.rounds;
     return { accepted: true, rounds, unlimited: rounds === 0, totalTurns: rounds === 0 ? null : rounds * 2 };
   }, async contribute(input) {
     if (!active) return { accepted: false, reason: 'NO_ACTIVE' };
     contributions.push(input); return { accepted: true, contributions: contributions.length, pendingInputs: contributions.length };
-  }, async stop() { stops.push(true); active = false; }, snapshot() {
-    return { active, status: active ? 'running' : 'idle', rounds, unlimited: rounds === 0,
+  }, async pause() {
+    pauses.push(true);
+    if (!active) return { paused: false, reason: 'NO_ACTIVE' };
+    if (paused) return { paused: false, reason: 'ALREADY_PAUSED' };
+    paused = true; return { paused: true };
+  }, async resume() {
+    resumes.push(true);
+    if (!active) return { resumed: false, reason: 'NO_ACTIVE' };
+    if (!paused) return { resumed: false, reason: 'NOT_PAUSED' };
+    paused = false; return { resumed: true };
+  }, async stop() { stops.push(true); active = false; paused = false; }, snapshot() {
+    return { active, paused, status: active ? paused ? 'paused' : 'running' : 'idle', rounds, unlimited: rounds === 0,
       completedTurns: 0, totalTurns: rounds === 0 ? null : rounds * 2, currentRound: active ? 1 : null, currentSpeaker: active ? '机器人 A' : null };
   } };
   const config = { session, reply: async payload => { replies.push(payload); return { messageId: id(999) }; },
@@ -34,7 +44,7 @@ async function fixture(t, options = {}) {
     now: () => now, logger: row => logs.push(row), ...options };
   const bot = await new DuetCommands(config).init();
   t.after(async () => { await bot.close(); await rm(dataDir, { recursive: true, force: true }); });
-  return { bot, config, dataDir, starts, contributions, stops, replies, logs, advance(ms) { now += ms; },
+  return { bot, config, dataDir, starts, contributions, pauses, resumes, stops, replies, logs, advance(ms) { now += ms; },
     send(number, content, overrides = {}) { return bot.handle(event(number, content, { msg_timestamp: now, ...overrides })); } };
 }
 
@@ -57,6 +67,87 @@ test('ordinary questions start continuous discussion while legacy commands remai
     assert.deepEqual(parseDuetCommand(value), { kind: 'start', topic: value, rounds: 0 });
   }
   for (const value of ['/互聊状态 other', '/停止 please', '/admin', '   ']) assert.equal(parseDuetCommand(value, SELF), null);
+});
+
+test('only exact natural pause and resume aliases with optional terminal punctuation are controls', () => {
+  for (const text of ['暂停', '先暂停', '暂停一下', '先暂停一下']) {
+    for (const punctuation of ['', '。', '!', '！']) assert.deepEqual(parseDuetCommand(`${text}${punctuation}`), { kind: 'pause' });
+  }
+  for (const text of ['继续', '恢复', '继续讨论', '开始']) {
+    for (const punctuation of ['', '。', '!', '！']) assert.deepEqual(parseDuetCommand(`${text}${punctuation}`), { kind: 'resume' });
+  }
+  assert.deepEqual(parseDuetCommand(`(met)${SELF}(met) 先暂停一下！`, SELF), { kind: 'pause' });
+  for (const text of ['先暂停有什么含义？', '继续学习有什么好处？', '开始讨论人工智能', '暂停？', '恢复工作需要什么条件？']) {
+    assert.deepEqual(parseDuetCommand(text), { kind: 'start', topic: text, rounds: 0 });
+  }
+});
+
+test('pause and resume bypass command cooldown and confirm only completed state changes', async t => {
+  const f = await fixture(t); await f.send(1, '开始一个新话题'); await flush();
+  await f.send(2, '先暂停一下！'); await flush();
+  assert.equal(f.pauses.length, 1); assert.equal(f.config.session.snapshot().paused, true);
+  assert.equal(f.bot.snapshot().pauses, 1); assert.match(f.replies.at(-1).content, /^已暂停讨论/);
+  await f.send(3, '暂停'); await flush();
+  assert.equal(f.bot.snapshot().pauses, 1); assert.match(f.replies.at(-1).content, /讨论已经暂停/);
+  await f.send(4, '继续'); await flush();
+  assert.equal(f.resumes.length, 1); assert.equal(f.config.session.snapshot().paused, false);
+  assert.equal(f.bot.snapshot().resumes, 1); assert.match(f.replies.at(-1).content, /^已恢复讨论/);
+  await f.send(5, '恢复'); await flush();
+  assert.equal(f.bot.snapshot().resumes, 1); assert.match(f.replies.at(-1).content, /当前讨论没有暂停/);
+  await f.send(4, '继续'); assert.equal(f.resumes.length, 2);
+});
+
+test('pause and resume always persist their receipts before calling session controls', async t => {
+  let gate;
+  const f = await fixture(t, { writeState: async (file, value) => {
+    if (gate) { gate.entered.resolve(); await gate.persisted.promise; }
+    await atomicJson(file, value);
+  } });
+  await f.send(1, '讨论一个问题');
+  gate = { entered: defer(), persisted: defer() };
+  const pause = f.send(2, '先暂停'); await gate.entered.promise;
+  assert.equal(f.pauses.length, 0); gate.persisted.resolve(); await pause;
+  gate = { entered: defer(), persisted: defer() };
+  const resume = f.send(3, '继续'); await gate.entered.promise;
+  assert.equal(f.resumes.length, 0); gate.persisted.resolve(); await resume;
+  assert.equal(f.pauses.length, 1); assert.equal(f.resumes.length, 1);
+});
+
+test('resume words without a paused conversation give guidance and never start a model session', async t => {
+  const f = await fixture(t);
+  for (const [n, text] of ['开始', '继续', '恢复', '继续讨论'].entries()) {
+    await f.send(n + 1, text); await flush();
+    assert.match(f.replies.at(-1).content, /当前没有可恢复的讨论/);
+  }
+  assert.equal(f.starts.length, 0); assert.equal(f.contributions.length, 0); assert.equal(f.bot.snapshot().resumes, 0);
+  await f.send(10, '暂停'); await flush();
+  assert.match(f.replies.at(-1).content, /当前没有可暂停的讨论/); assert.equal(f.bot.snapshot().pauses, 0);
+});
+
+test('paused human input records a contribution without resuming and status describes the pause', async t => {
+  const f = await fixture(t); await f.send(1, '讨论一个问题'); await f.send(2, '先暂停');
+  f.advance(3000); await f.send(3, '暂停期间我补充一个观点'); await flush();
+  assert.equal(f.contributions.length, 1); assert.equal(f.resumes.length, 0);
+  assert.equal(f.config.session.snapshot().paused, true);
+  assert.match(f.replies.at(-1).content, /已记录补充，发送“继续”恢复讨论/);
+  f.advance(3000); await f.send(4, '互聊状态'); await flush();
+  assert.match(f.replies.at(-1).content, /互聊状态：已暂停/); assert.match(f.replies.at(-1).content, /发送“继续”恢复讨论/);
+  f.advance(3000); await f.send(5, '帮助'); await flush();
+  assert.match(f.replies.at(-1).content, /先暂停/); assert.match(f.replies.at(-1).content, /“继续”：恢复/);
+  await f.send(6, '停止'); assert.equal(f.stops.length, 1); assert.equal(f.config.session.snapshot().active, false);
+});
+
+test('pause and resume failures do not pretend the requested operation succeeded', async t => {
+  const f = await fixture(t, { session: {
+    async start() { assert.fail('must not start'); }, async stop() {}, snapshot() { return { active: true }; },
+    async pause() { return { paused: false, reason: 'NOT_READY' }; },
+    async resume() { return { resumed: false, reason: 'NOT_READY' }; },
+  } });
+  await f.send(1, '暂停'); await flush();
+  assert.match(f.replies.at(-1).content, /暂时无法暂停/); assert.doesNotMatch(f.replies.at(-1).content, /已暂停/);
+  await f.send(2, '继续'); await flush();
+  assert.match(f.replies.at(-1).content, /暂时无法恢复/); assert.doesNotMatch(f.replies.at(-1).content, /已恢复/);
+  assert.equal(f.bot.snapshot().pauses, 0); assert.equal(f.bot.snapshot().resumes, 0);
 });
 
 test('persists a private receipt before starting continuous sessions and quotes command', async t => {
