@@ -210,12 +210,69 @@ test('generic oversized tool previews also fit the final budget with escaping an
 test('successful targeted checks do not invalidate a later complete mandatory check', async t => {
   let step = 0;
   const f = await fixture(t, { coder: async () => ++step === 1
-    ? called('run_checks', { project: 'ai-bot', testFiles: ['ai-bot/test/sample.test.js'] }) : final('完成'),
+    ? called('run_checks', { project: 'ai-bot', testFiles: ['ai-bot/test/sample.test.js', 'test/sample.test.js'] }) : final('完成'),
   broker: async (operation, _job, args) => operation === 'run_checks' && args.testFiles.length
     ? { passed: true, complete: false, workHash: HASH, exitCode: 0, project: 'ai-bot' } : undefined });
   await f.session.start(initial()); assert.equal((await f.done()).status, 'completed');
+  assert.deepEqual(f.calls.find(call => call.operation === 'run_checks').args, { project: 'ai-bot', testFiles: ['test/sample.test.js'] });
   const evidence = f.calls.find(call => call.operation === 'publish').args.report.checks;
   assert.equal(evidence.length, 1); assert.equal(evidence[0].complete, true);
+});
+
+test('targeted Python tests use the same project-relative broker contract', async t => {
+  let step = 0;
+  const f = await fixture(t, { coder: async () => ++step === 1
+    ? called('run_checks', { project: 'code-agent', testFiles: ['code-agent/tests/test_sample.py', 'tests/test_sample.py'] }) : final('完成') });
+  await f.session.start(initial()); await f.done();
+  assert.deepEqual(f.calls.find(call => call.operation === 'run_checks').args, { project: 'code-agent', testFiles: ['tests/test_sample.py'] });
+  const description = f.modelCalls[0][0].tools.find(tool => tool.name === 'run_checks').description;
+  assert.match(description, /test\/example\.test\.js/); assert.match(description, /tests\/test_example\.py/);
+  assert.match(description, /不算完整发布验证/);
+});
+
+test('targeted tests preserve Unicode and spaces as a single path argument', async t => {
+  for (const [project, relative] of [['ai-bot', 'test/中文 sample.test.js'], ['code-agent', 'tests/test_中文 sample.py'],
+    ['ai-bot', 'test/' + 'x'.repeat(230) + '.test.js']]) {
+    let step = 0;
+    const f = await fixture(t, { coder: async () => ++step === 1
+      ? called('run_checks', { project, testFiles: [`${project}/${relative}`] }) : final('完成') });
+    await f.session.start(initial()); await f.done();
+    assert.deepEqual(f.calls.find(call => call.operation === 'run_checks').args, { project, testFiles: [relative] });
+  }
+});
+
+test('invalid targeted test selections are rejected before broker execution', async t => {
+  const cases = [
+    { project: null, testFiles: ['ai-bot/test/sample.test.js'] },
+    { project: 'ai-bot', testFiles: ['music-bot/test/sample.test.js'] },
+    { project: 'ai-bot', testFiles: ['ai-bot/../music-bot/test/sample.test.js'] },
+    { project: 'ai-bot', testFiles: ['/ai-bot/test/sample.test.js'] },
+    { project: 'ai-bot', testFiles: ['ai-bot//test/sample.test.js'] },
+    { project: 'ai-bot', testFiles: ['ai-bot/./test/sample.test.js'] },
+    { project: 'ai-bot', testFiles: ['--test-reporter=evil'] },
+    { project: 'ai-bot', testFiles: ['ai-bot/--test-reporter=evil'] },
+    { project: 'ai-bot', testFiles: ['test/[a].test.js'] },
+    { project: 'ai-bot', testFiles: ['ai-bot/test/{a,b}.test.js'] },
+    { project: 'ai-bot', testFiles: ['test/@(a).test.js'] },
+    { project: 'ai-bot', testFiles: ['test/+(a).test.js'] },
+    { project: 'ai-bot', testFiles: ['test/!(a).test.js'] },
+    { project: 'ai-bot', testFiles: ['test/sub[a]/file.test.js'] },
+    { project: 'ai-bot', testFiles: ['test/*.test.js'] },
+    { project: 'ai-bot', testFiles: ['test/a?.test.js'] },
+    { project: 'code-agent', testFiles: ['tests/test_multi.part.py'] },
+    { project: 'code-agent', testFiles: ['tests/a.part/test_new.py'] },
+    { project: 'ai-bot', testFiles: ['src/server.js'] },
+    { project: 'code-agent', testFiles: ['tests/sample.test.js'] },
+  ];
+  for (const args of cases) {
+    let step = 0;
+    const f = await fixture(t, { coder: async input => {
+      if (++step === 1) return called('run_checks', args);
+      assert.match(input.at(-1).output, /TOOL_INVALID/); return final('改为完整验证');
+    } });
+    await f.session.start(initial()); await f.done();
+    assert.deepEqual(f.calls.filter(call => call.operation === 'run_checks').map(call => call.args), [{ project: null, testFiles: [] }]);
+  }
 });
 
 test('no-change audit never publishes and reports accurately', async t => {
