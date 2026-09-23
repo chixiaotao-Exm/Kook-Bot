@@ -135,6 +135,7 @@ OpenAI OAuth 主账号会显示 Sub2API 保存的可邀请人数；未查询的�
 | --- | --- |
 | `GET /quota/health` | 服务和机器人连接状态 |
 | `GET /quota/api/status` | 清理后的账号快照 |
+| `GET /quota/api/account-load` | 独立的账号并发数、配置上限与采样时间 |
 | `GET /quota/api/key-presets` | 快捷查询名称，不含 Key |
 | `POST /quota/api/key-usage` | `{ "key": "sk-..." }` 或 `{ "presetId": "..." }` |
 | `GET /quota/api/invitations` | 缓存的可邀请人数及当前会话的邀请能力 |
@@ -145,6 +146,8 @@ OpenAI OAuth 主账号会显示 Sub2API 保存的可邀请人数；未查询的�
 服务端读取 Sub2API 的账号、本站用量等管理员接口，以提交的 API Key 调用 `GET /v1/usage`。可选主动查询调用 `POST /api/v1/admin/openai/accounts/:id/quota/refresh`。KOOK 侧使用官方网关、资产上传、频道消息与私信接口。
 
 账号的 5h/7d 本站费用统计与上游额度不是同一个指标。比例推算的总费用仅为估算；纯金额余额或未知额度不绘制比例电池。
+
+账号“并发”使用只读的 Sub2API `/api/v1/admin/ops/concurrency` 接口，单独每 10 秒更新；所有访客共享同一个采集请求及缓存，页面隐藏时停止轮询，额度的 10 分钟刷新周期不变。上限是 Sub2API 的并发配置；达到 80% 标记繁忙，达到 100% 标记满载，超出上限仍展示实际计数。缺失数据保持未知，读取失败保留上次记录并标旧，不把旧数据当成当前空闲状态。
 
 OpenAI 账号的“点数”读取 Sub2API 的 `codex_credits_snapshot.credits`，并接收既有半小时主动查询返回的 `credits`。页面分别显示实际余额、明确的 0 点、不限量、有可用点数但余额未知，以及数据未知；不会把重置卡或邀请预计奖励计入已到账点数。点数使用自己的采样时间，查询失败和旧样本保留旧数据标识，新查询缺失点数字段时清除旧余额；升级前未采集点数的历史记录不会覆盖现有缓存。
 

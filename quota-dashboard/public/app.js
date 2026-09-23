@@ -17,6 +17,8 @@
   const expandedAccounts = new Set();
   let pollTimer;
   let toastTimer;
+  const accountLoad = { enabled: null, records: new Map(), checkedAt: null, receivedAt: null, failed: false, error: '', timer: null, controller: null, epoch: 0 };
+  const ACCOUNT_LOAD_INTERVAL_MS = 10000;
   const keyQuery = { epoch: 0, controller: null, presets: [], presetsLoaded: false, loadingPresets: false, activePreset: null };
   const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
   const finite = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
@@ -116,6 +118,7 @@
   function showLogin(message) {
     state.authenticated = false;
     clearTimeout(pollTimer);
+    pauseAccountLoad();
     $('#boot-view').hidden = true;
     $('#app-view').hidden = true;
     $('#login-view').hidden = false;
@@ -149,6 +152,7 @@
     $('#app-view').hidden = false;
     renderAccess();
     await loadStatus();
+    void refreshAccountLoad();
     if (initialInvitationId && state.accounts.some(account => String(account.id) === initialInvitationId)) void openInvitation(initialInvitationId);
     else if (state.publicAccess && manageRequested && isManaging()) await showView('reports');
     schedulePoll();
@@ -164,6 +168,86 @@
       }
       schedulePoll();
     }, state.refreshing ? 2500 : refreshIntervalMs());
+  }
+
+  function canReadAccountLoad() { return canRead() && !document.hidden && !$('#app-view').hidden; }
+  function pauseAccountLoad() {
+    clearTimeout(accountLoad.timer); accountLoad.timer = null; accountLoad.epoch++;
+    const controller = accountLoad.controller; accountLoad.controller = null; controller?.abort();
+  }
+  function scheduleAccountLoad() {
+    clearTimeout(accountLoad.timer); accountLoad.timer = null;
+    if (canReadAccountLoad()) accountLoad.timer = setTimeout(() => { void refreshAccountLoad(); }, ACCOUNT_LOAD_INTERVAL_MS);
+  }
+  async function refreshAccountLoad() {
+    if (!canReadAccountLoad() || accountLoad.controller) return;
+    clearTimeout(accountLoad.timer); accountLoad.timer = null;
+    const controller = new AbortController(), epoch = accountLoad.epoch;
+    accountLoad.controller = controller;
+    renderAccountLoads();
+    const current = () => accountLoad.controller === controller && accountLoad.epoch === epoch;
+    try {
+      const result = await api('account-load', { signal: controller.signal, timeoutMs: 9000 });
+      if (!current()) return;
+      if (typeof result.enabled !== 'boolean' || result.enabled && !Array.isArray(result.accounts)) throw new Error('负载数据暂不可用。');
+      accountLoad.enabled = result.enabled;
+      const records = new Map((result.enabled ? result.accounts : []).filter(record => record && ['string', 'number'].includes(typeof record.id)).map(record => [String(record.id), record]));
+      if (result.enabled && result.lastError) {
+        for (const [id, previous] of accountLoad.records) if (!records.has(id)) records.set(id, previous);
+      }
+      accountLoad.records = records;
+      accountLoad.checkedAt = result.checkedAt || null; accountLoad.receivedAt = performance.now();
+      accountLoad.failed = Boolean(result.lastError);
+      accountLoad.error = typeof result.lastError === 'string' ? result.lastError : result.lastError?.message || '';
+      renderAccountLoads();
+    } catch (error) {
+      if (current() && !controller.signal.aborted) {
+        accountLoad.failed = true; accountLoad.error = error.message || '负载数据暂不可用。';
+        renderAccountLoads();
+      }
+    } finally {
+      if (current()) { accountLoad.controller = null; scheduleAccountLoad(); }
+    }
+  }
+  function accountLoadHtml(account) {
+    return `<div class="account-load" data-account-load="${escapeHtml(account.id)}" hidden><span class="account-load-label">并发</span><strong data-load-value>未知 / 未知</strong><span class="account-load-track" data-load-bar role="progressbar" aria-label="账号并发负载" aria-valuemin="0" aria-valuemax="100"><i></i></span><span class="account-load-status" data-load-status>未知</span></div>`;
+  }
+  function renderAccountLoads() {
+    const show = accountLoad.enabled === true || accountLoad.enabled === null && accountLoad.failed;
+    const oldRead = accountLoad.receivedAt !== null && performance.now() - accountLoad.receivedAt > 3 * ACCOUNT_LOAD_INTERVAL_MS;
+    const hint = $('#account-load-hint');
+    hint.hidden = !show;
+    hint.textContent = `负载每10秒更新${accountLoad.failed ? ' · 暂不可用' : oldRead ? ' · 旧数据' : ''}`;
+    hint.title = [accountLoad.checkedAt ? `最近检查：${formatTime(accountLoad.checkedAt, { second: '2-digit' })}（北京时间）` : '检查时间未知', accountLoad.error].filter(Boolean).join('\n');
+    for (const node of $$('[data-account-load]')) {
+      node.hidden = !show;
+      if (!show) continue;
+      const record = accountLoad.records.get(node.dataset.accountLoad);
+      const validCount = value => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+      const used = validCount(record?.current) ? record.current : null;
+      const limit = validCount(record?.limit) && record.limit > 0 ? record.limit : null;
+      const known = used !== null && limit !== null;
+      const percent = known ? used / limit * 100 : null;
+      const hasTime = typeof record?.observedAt === 'string' && Number.isFinite(Date.parse(record.observedAt));
+      const sampleAge = hasTime ? Date.now() - Date.parse(record.observedAt) : null;
+      const stale = Boolean(record && (accountLoad.failed || oldRead || record.freshness === 'stale' || hasTime && sampleAge > 3 * ACCOUNT_LOAD_INTERVAL_MS));
+      const fresh = record?.freshness === 'fresh' && hasTime && sampleAge >= -3 * ACCOUNT_LOAD_INTERVAL_MS && !stale;
+      const level = !known ? 'unknown' : used === 0 ? 'idle' : percent >= 100 ? 'full' : percent >= 80 ? 'busy' : 'normal';
+      const labels = { unknown: '未知', idle: '空闲', normal: '正常', busy: '繁忙', full: '满载' };
+      const label = accountLoad.failed && !record ? '暂不可用' : stale ? '旧数据' : !known ? '未知' : !fresh ? '时间未知' : labels[level];
+      const tone = stale ? 'stale' : fresh && known ? level : 'unknown';
+      $('[data-load-value]', node).textContent = `${used === null ? '未知' : number(used, 0)} / ${limit === null ? '未知' : number(limit, 0)}`;
+      $('[data-load-status]', node).textContent = label;
+      node.dataset.loadState = tone;
+      const bar = $('[data-load-bar]', node), width = known ? Math.min(100, Math.max(0, percent)) : 0;
+      $('i', bar).style.width = `${width}%`;
+      if (known) bar.setAttribute('aria-valuenow', String(width)); else bar.removeAttribute('aria-valuenow');
+      bar.setAttribute('aria-valuetext', `${label}，当前并发${used === null ? '未知' : used}，上限${limit === null ? '未知' : limit}`);
+      node.title = ['上限为 Sub2API 配置的并发上限，不是上游套餐限额。',
+        hasTime ? `采样：${formatTime(record.observedAt, { second: '2-digit' })}（北京时间）` : '采样时间未知。',
+        stale ? '显示上次记录，当前负载尚未确认。' : !fresh ? '尚未取得可确认的新样本。' : known ? `负载：${number(percent, 1)}%` : '缺少有效并发数或上限；未知不代表空闲或无限制。',
+        accountLoad.error].filter(Boolean).join('\n');
+    }
   }
 
   function renderSummary() {
@@ -518,7 +602,7 @@
     const notices = [stale ? '<span class="warning">旧缓存 · 非实时额度</span>' : '', account.quotaQuery?.message ? `<span class="warning">${escapeHtml(account.quotaQuery.message)}</span>` : '', issue ? `<span class="error" title="${escapeHtml(error || account.status)}">${escapeHtml(error ? String(error).slice(0, 52) + (String(error).length > 52 ? '…' : '') : '账号异常')}</span>` : ''].filter(Boolean).join('');
     const unknown = !known ? '<div class="unknown-block"><span>上游额度未知</span><small>未知 ≠ 0</small></div>' : !primary.length ? '<div class="unknown-block"><span>产品用量见详情</span></div>' : '';
     const metrics = primary.map(metric => `<div class="quota-window">${metricHtml(metric)}${windows.filter(window => window.metricKey && window.metricKey === metric.key).map(window => windowStatsHtml(window, { matched: true })).join('')}</div>`).join('') + windows.filter(window => !window.metricKey || !primaryKeys.has(window.metricKey)).map(window => `<div class="unmatched-window-stats">${windowStatsHtml(window)}</div>`).join('');
-    return `<article class="account-card ${stale ? 'stale' : ''} ${issue ? 'has-error' : ''}" data-account-id="${escapeHtml(account.id)}"><div class="account-header"><span class="provider-icon ${escapeHtml(Object.hasOwn(providers, platformKey(account)) ? platformKey(account) : '')}">${escapeHtml(provider.icon)}</span><div class="account-title"><h3 title="${escapeHtml(account.name)}">${escapeHtml(account.name || `账号 ${account.id}`)}</h3><p class="account-meta"><span>${escapeHtml(provider.name)}</span><span class="account-plan${plan.label === '版本未知' ? ' unknown' : ''}" title="${escapeHtml(`${plan.label} · ${plan.source}`)}">${escapeHtml(plan.label)}</span><span class="account-id">#${escapeHtml(account.id)}</span></p></div><span class="account-scheduling ${scheduling[0]}" data-account-scheduling="${scheduling[0]}" title="Sub2API 参与调度状态，仅展示；开启不代表账号当前一定可用。"><span aria-hidden="true">●</span>${scheduling[1]}</span></div>${creditPanelsHtml(account)}${invitationHtml(account)}${notices ? `<div class="account-notices">${notices}</div>` : ''}<div class="metrics">${unknown}${metrics}</div>${accountDetailsHtml(account, secondary)}</article>`;
+    return `<article class="account-card ${stale ? 'stale' : ''} ${issue ? 'has-error' : ''}" data-account-id="${escapeHtml(account.id)}"><div class="account-header"><span class="provider-icon ${escapeHtml(Object.hasOwn(providers, platformKey(account)) ? platformKey(account) : '')}">${escapeHtml(provider.icon)}</span><div class="account-title"><h3 title="${escapeHtml(account.name)}">${escapeHtml(account.name || `账号 ${account.id}`)}</h3><p class="account-meta"><span>${escapeHtml(provider.name)}</span><span class="account-plan${plan.label === '版本未知' ? ' unknown' : ''}" title="${escapeHtml(`${plan.label} · ${plan.source}`)}">${escapeHtml(plan.label)}</span><span class="account-id">#${escapeHtml(account.id)}</span></p></div><span class="account-scheduling ${scheduling[0]}" data-account-scheduling="${scheduling[0]}" title="Sub2API 参与调度状态，仅展示；开启不代表账号当前一定可用。"><span aria-hidden="true">●</span>${scheduling[1]}</span></div>${accountLoadHtml(account)}${creditPanelsHtml(account)}${invitationHtml(account)}${notices ? `<div class="account-notices">${notices}</div>` : ''}<div class="metrics">${unknown}${metrics}</div>${accountDetailsHtml(account, secondary)}</article>`;
   }
 
   function renderAccounts() {
@@ -531,6 +615,7 @@
     $('#accounts').innerHTML = accounts.map(accountHtml).join('');
     $('#empty-state').hidden = accounts.length > 0;
     $('#accounts').hidden = accounts.length === 0;
+    renderAccountLoads();
   }
 
   function applyStatus(data) {
@@ -875,9 +960,12 @@
     catch (error) { if (error.status !== 401 || state.publicAccess) { if (!isManaging()) toast('管理登录已过期，仍可公开查看额度与播报计划。'); else { feedback.textContent = error.message; feedback.className = 'feedback error'; feedback.hidden = false; } } }
     finally { $('#save-report').disabled = false; }
   });
-  document.addEventListener('visibilitychange', () => { if (!document.hidden && canRead()) { loadStatus(); schedulePoll(); } });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) pauseAccountLoad();
+    else if (canRead()) { loadStatus(); schedulePoll(); void refreshAccountLoad(); }
+  });
   window.addEventListener('pageshow', event => { if (event.persisted) location.reload(); });
-  window.addEventListener('pagehide', () => resetKeyQuery({ clearInput: true }));
+  window.addEventListener('pagehide', () => { resetKeyQuery({ clearInput: true }); pauseAccountLoad(); });
 
   async function boot() {
     $('#boot-retry').hidden = true;
