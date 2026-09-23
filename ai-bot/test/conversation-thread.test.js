@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { ConversationThread } from '../src/conversation-thread.js';
@@ -19,6 +19,43 @@ test('one topic and quote survive new inputs and process restart', async t => {
   const restored = await new ConversationThread({ dataDir }).init();
   assert.deepEqual(restored.context(), next);
   assert.equal(JSON.stringify(restored.snapshot()).includes('原始话题'), false);
+});
+
+test('migrated topic binds only a fresh receipt and preserves its history and mode across restart', async t => {
+  const { thread, dataDir } = await fixture(t);
+  const first = await thread.accept({ text: '检查项目原有要求', receiptId: id(1), mode: 'code' });
+  await thread.recordAssistant({ threadId: first.id, content: '已经检查的源码与结果', speaker: '思维1' });
+  const retained = thread.context(), file = path.join(dataDir, 'conversation-thread.json');
+  await writeFile(file, JSON.stringify({ version: 1, thread: { ...retained, anchorMessageId: null } }));
+
+  const migrated = await new ConversationThread({ dataDir }).init();
+  assert.equal(migrated.snapshot().anchorMessageId, null);
+  assert.deepEqual(await migrated.accept({ text: first.topic, receiptId: id(1) }), { ...retained, anchorMessageId: null });
+  assert.equal(JSON.parse(await readFile(file, 'utf8')).thread.anchorMessageId, null);
+  const rebound = await migrated.accept({ text: '继续刚才的检查', receiptId: id(2), replyMessageId: id(3) });
+  assert.equal(rebound.id, retained.id); assert.equal(rebound.topic, retained.topic); assert.equal(rebound.mode, 'code');
+  assert.deepEqual(rebound.messages.slice(0, -1), retained.messages);
+  assert.deepEqual(rebound.messages.at(-1), { role: 'user', content: '继续刚才的检查' });
+  assert.equal(rebound.anchorMessageId, id(3));
+  const restored = await new ConversationThread({ dataDir }).init();
+  assert.deepEqual(restored.context(), rebound);
+  assert.equal((await restored.accept({ text: '第二条补充', receiptId: id(4) })).anchorMessageId, id(3));
+});
+
+test('migration accepts only an explicit null anchor and failed binding leaves the topic unbound', async t => {
+  const { thread, dataDir } = await fixture(t);
+  const retained = await thread.accept({ text: '保留的讨论', receiptId: id(1) });
+  const file = path.join(dataDir, 'conversation-thread.json');
+  for (const anchorMessageId of [undefined, '', [], 1234567890123456, {}]) {
+    await writeFile(file, JSON.stringify({ version: 1, thread: { ...retained, anchorMessageId } }));
+    await assert.rejects(new ConversationThread({ dataDir }).init(), /THREAD_STORAGE/);
+  }
+  const unbound = { ...retained, anchorMessageId: null };
+  await writeFile(file, JSON.stringify({ version: 1, thread: unbound }));
+  const blocked = await new ConversationThread({ dataDir, writeState: async () => { throw Error('disk'); } }).init();
+  await assert.rejects(blocked.accept({ text: '新频道的输入', receiptId: id(2) }), /disk/);
+  assert.deepEqual(blocked.context(), unbound);
+  assert.deepEqual(JSON.parse(await readFile(file, 'utf8')).thread, unbound);
 });
 test('explicit reset alone creates a new anchor and rejects late old-thread replies', async t => {
   const { thread } = await fixture(t);
