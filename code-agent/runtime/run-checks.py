@@ -20,7 +20,9 @@ def main():
         if (len(value) > 240 or any(part in ('', '.', '..') for part in parts)
                 or parts[0] not in ('test', 'tests') or not re.fullmatch(r'[A-Za-z0-9_./-]+', value)):
             return 2
-    source = Path('/input'); work = Path('/work')
+    # /work is a root-owned tmpfs mount. Copy into a user-owned subdirectory so
+    # copytree can preserve timestamps and permissions without chmod on the mount.
+    source = Path('/input'); work = Path('/work/repo')
     if not source.is_dir() or os.getuid() == 0:
         return 2
     shutil.copytree(source, work, dirs_exist_ok=True)
