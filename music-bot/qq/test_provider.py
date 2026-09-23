@@ -6,8 +6,44 @@ import tempfile
 import sys
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 import provider
+
+
+class ProviderInitializationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_failed_or_cancelled_client_startup_is_cleaned_and_the_next_request_can_retry(self):
+        for original_error in (RuntimeError("startup failure"), asyncio.CancelledError()):
+            with self.subTest(error=type(original_error).__name__), tempfile.TemporaryDirectory(prefix="kook-qq-init-test-") as directory:
+                created = []
+                class Client:
+                    def __init__(self, *args, **kwargs):
+                        self.failed = not created
+                        self.entered = 0
+                        self.closed = 0
+                        created.append(self)
+                    async def __aenter__(self):
+                        self.entered += 1
+                        if self.failed:
+                            raise original_error
+                        return self
+                    async def __aexit__(self, error_type, error, traceback):
+                        self.closed += 1
+                        if self.failed:
+                            # Cleanup errors must not replace the startup error.
+                            raise OSError("cleanup failure")
+                service = provider.Provider(Path(directory))
+                with patch.object(provider, "Client", Client, create=True), patch.object(provider, "Credential", return_value=object(), create=True):
+                    with self.assertRaises(type(original_error)) as caught:
+                        await service.init()
+                    self.assertIs(caught.exception, original_error)
+                    self.assertIsNone(service.client)
+                    self.assertEqual(created[0].closed, 1)
+                    await service.init()
+                    self.assertIs(service.client, created[1])
+                    await service.init()
+                    self.assertEqual(len(created), 2)
+                    self.assertEqual(created[1].entered, 1)
 
 
 @unittest.skipUnless(provider.SDK_READY, "QQ SDK is not installed")

@@ -289,6 +289,35 @@ test('votes ignore departed members and reset after track changes during members
   await assert.rejects(voting, /歌曲已变化/); assert.equal(f.player.current.id, '3');
 });
 
+test('a vote queued behind a successful skip stays bound to the song present when submitted', async (t) => {
+  const f = await fixture(t); await f.features.configure('rules', { enabled: true, voteThreshold: 1 });
+  await f.player.add(context, [track(1), track(2), track(3)]);
+  const pending = deferred(), entered = deferred(); let lookups = 0;
+  f.api.request = async () => {
+    if (++lookups === 1) { entered.resolve(); return pending.promise; }
+    return [{ id: '42', bot: false }, { id: '43', bot: false }];
+  };
+  const first = f.features.vote('42'); await entered.promise;
+  const second = assert.rejects(f.features.vote('43'), /歌曲已变化/);
+  pending.resolve([{ id: '42', bot: false }, { id: '43', bot: false }]);
+  assert.match(await first, /投票通过/); await second;
+  assert.equal(f.player.current.id, '2'); assert.equal(lookups, 1);
+  assert.equal(f.features.snapshot().votes.count, 0);
+});
+
+test('caller vote context is rechecked before any vote is applied to a replacement track', async (t) => {
+  const f = await fixture(t); await f.features.configure('rules', { enabled: true });
+  await f.player.add(context, [track(1), track(2)]);
+  const received = { expectedEpoch: f.player.operationEpoch, expectedTrackEpoch: f.player.trackEpoch,
+    expectedVoiceChannelId: context.voiceChannelId, expectedGuildId: context.guildId };
+  await f.player.control('skip'); let lookups = 0;
+  f.api.request = async () => { lookups++; return [{ id: '42', bot: false }, { id: '43', bot: false }]; };
+  await assert.rejects(f.features.vote('42', received), /歌曲已变化/);
+  assert.equal(lookups, 0); assert.equal(f.features.snapshot().votes.count, 0);
+  assert.equal(f.player.current.id, '2');
+  assert.match(await f.features.vote('42'), /1\/2/);
+});
+
 test('enabling residency reconnects a restored disconnected paused context and current command shows saved progress', async (t) => {
   const f = await fixture(t); f.player.context = { ...context }; f.player.current = track(1); f.player.intent = 'paused'; f.player.position = 52;
   f.player.stayConnected = false; await f.player.control('stay', true); assert.equal(f.player.voiceJoined, true); assert.ok(f.player.keepalive);
