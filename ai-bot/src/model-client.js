@@ -134,9 +134,9 @@ export class ModelResponsesClient {
     this.#url = endpoint(baseUrl);
     if (typeof apiKey !== 'string' || apiKey.length < 8 || apiKey.length > 512 || /[\s\x00-\x1f\x7f]/.test(apiKey)
       || typeof model !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/.test(model)
-      || typeof fetchImpl !== 'function' || !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 180000
+      || typeof fetchImpl !== 'function' || !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 600000
       || !Number.isInteger(maxOutputTokens) || maxOutputTokens < 1 || maxOutputTokens > 16000
-      || !['low', 'medium', 'high'].includes(reasoningEffort)
+      || !['low', 'medium', 'high', 'xhigh'].includes(reasoningEffort)
       || typeof systemPrompt !== 'string' || !systemPrompt.trim() || systemPrompt.length > 12000) {
       throw failure('CONFIG', 'AI 服务配置不正确，请联系管理员。');
     }

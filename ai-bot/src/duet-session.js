@@ -13,6 +13,8 @@ const MAX_RECEIPTS = 2048;
 const MAX_TURN_CHARS = 1200;
 const MAX_PENDING_INPUTS = 10;
 const MAX_PENDING_CHARS = 20_000;
+const THREAD_ID = /^[A-Za-z0-9_-]{1,100}$/;
+const MAX_MODEL_HISTORY_CHARS = 42_000;
 const TRUNCATED = '\n（本轮内容已截短。）';
 const INCOMPLETE = '\n（本轮回复未完整生成。）';
 const failure = code => Object.assign(new Error('Duet operation failed'), { code });
@@ -63,13 +65,14 @@ export class DuetSession {
         || !STATUSES.has(run.status) || !Number.isInteger(run.rounds) || run.rounds < 0 || run.rounds > 6
         || !Number.isSafeInteger(run.completedTurns) || run.completedTurns < 0 || (run.rounds > 0 && run.completedTurns > run.rounds * 2)
         || (run.contributions !== undefined && (!Number.isSafeInteger(run.contributions) || run.contributions < 0))
+        || (run.threadId != null && (typeof run.threadId !== 'string' || !THREAD_ID.test(run.threadId)))
         || !Number.isSafeInteger(run.startedAt) || run.startedAt < 0
         || !Number.isSafeInteger(run.updatedAt) || run.updatedAt < 0)) throw failure('STORAGE');
       this.#runs = saved.runs;
       // Copy only known metadata fields, never arbitrary data from a corrupt ledger.
       this.#lastRun = run === null ? null : { runId: run.runId, receiptId: run.receiptId, startedAt: run.startedAt,
         updatedAt: run.updatedAt, rounds: run.rounds, completedTurns: run.completedTurns, contributions: run.contributions ?? 0,
-        status: run.status, errorCode: run.errorCode === null ? null : safeCode({ code: run.errorCode }) };
+        status: run.status, threadId: run.threadId ?? null, errorCode: run.errorCode === null ? null : safeCode({ code: run.errorCode }) };
       if (['running', 'paused'].includes(this.#lastRun?.status)) {
         this.#lastRun.status = 'interrupted'; this.#lastRun.updatedAt = this.#now();
         await this.#write();
@@ -90,6 +93,7 @@ export class DuetSession {
       rounds, unlimited: rounds === 0, totalTurns: rounds === 0 ? null : rounds * 2,
       defaultRounds: this.#rounds, deadlineMs: this.#deadlineMs, historyMessages: run?.transcript.length ?? 0,
       completedTurns: run?.completedTurns ?? last?.completedTurns ?? 0,
+      threadId: run?.threadId ?? last?.threadId ?? null,
       contributions: run?.contributions ?? last?.contributions ?? 0, pendingInputs: run ? this.#pending(run).length : 0,
       currentRound, round: currentRound, currentSpeaker: speaker, currentParticipant: speaker,
       startedAt: run?.startedAt ?? last?.startedAt ?? null,
@@ -188,21 +192,49 @@ export class DuetSession {
   #trimHistory(run) {
     const recent = new Set(run.transcript.filter(item => item.kind !== 'human' || item.seenBy === 3).slice(-10));
     run.transcript = run.transcript.filter(item => (item.kind === 'human' && item.seenBy !== 3) || recent.has(item));
+    while (run.transcript.reduce((size, item) => size + item.text.length + 80, 0) > MAX_MODEL_HISTORY_CHARS) {
+      const disposable = run.transcript.findIndex(item => item.kind !== 'human' || item.seenBy === 3);
+      if (disposable < 0) break;
+      run.transcript.splice(disposable, 1);
+    }
   }
 
-  async #admit({ topic, userId, receiptId, replyMessageId = receiptId, rounds = this.#rounds }) {
+  #threadContext(value) {
+    if (!Array.isArray(value) || value.length > 20) return null;
+    let total = 0;
+    const transcript = [];
+    for (const item of value) {
+      if (!item || !['user', 'assistant'].includes(item.role) || typeof item.content !== 'string'
+        || !item.content.trim() || !item.content.isWellFormed() || item.content.length > 6000) return null;
+      total += item.content.length;
+      if (total > 24_000) return null;
+      if (item.role === 'user') transcript.push({ kind: 'human', text: item.content, seenBy: 3 });
+      else {
+        const speaker = [0, 1].find(index => item.speaker === index || item.speaker === String(index)
+          || item.speaker === this.#participants[index].label);
+        if (speaker === undefined) return null;
+        transcript.push({ kind: 'ai', speaker, text: item.content });
+      }
+    }
+    return transcript;
+  }
+
+  async #admit({ topic, userId, receiptId, replyMessageId = receiptId, rounds = this.#rounds, threadId = null, threadContext = [] }) {
     if (!this.#ready || this.#closed) return { accepted: false, reason: 'NOT_READY' };
     if (typeof topic !== 'string' || !topic.trim() || topic.length > 2000 || !validId(userId)
       || !validMessageId(receiptId) || !validMessageId(replyMessageId)
-      || !Number.isInteger(rounds) || rounds < 0 || rounds > this.#maxRounds) return { accepted: false, reason: 'INVALID_INPUT' };
+      || !Number.isInteger(rounds) || rounds < 0 || rounds > this.#maxRounds
+      || (threadId !== null && (typeof threadId !== 'string' || !THREAD_ID.test(threadId)))) return { accepted: false, reason: 'INVALID_INPUT' };
+    const transcript = this.#threadContext(threadContext);
+    if (!transcript) return { accepted: false, reason: 'INVALID_INPUT' };
     const now = this.#now();
     for (const [id, at] of this.#seen) if (at < now - RECEIPT_TTL) this.#seen.delete(id);
     if (this.#seen.has(receiptId)) return { accepted: false, reason: 'DUPLICATE' };
     if (this.#active) return { accepted: false, reason: 'BUSY' };
     if (this.#seen.size >= MAX_RECEIPTS) return { accepted: false, reason: 'NOT_READY' };
-    const run = { runId: randomUUID(), receiptId, replyMessageId, topic: topic.trim(), rounds,
+    const run = { runId: randomUUID(), receiptId, replyMessageId, topic: topic.trim(), rounds, threadId,
       startedAt: now, deadlineAt: this.#deadlineMs > 0 ? now + this.#deadlineMs : null, completedTurns: 0, nextTurn: 0,
-      transcript: [], contributions: 0, revision: 0, stage: 'between', generationController: null,
+      transcript, contributions: 0, revision: 0, stage: 'between', generationController: null,
       paused: false, resumeWaiters: new Set(), delayController: null, deadlineRemainingMs: this.#deadlineMs || null,
       controller: new AbortController(), progress: null, progressEnded: false,
       status: 'running', endReason: null, finalizing: null, timer: null };
@@ -236,7 +268,8 @@ export class DuetSession {
 
   #metadata(run, errorCode = null) {
     return { runId: run.runId, receiptId: run.receiptId, startedAt: run.startedAt, updatedAt: this.#now(),
-      rounds: run.rounds, completedTurns: run.completedTurns, contributions: run.contributions, status: run.status, errorCode };
+      rounds: run.rounds, completedTurns: run.completedTurns, contributions: run.contributions, threadId: run.threadId,
+      status: run.status, errorCode };
   }
 
   #serialize(work) {
@@ -308,15 +341,15 @@ export class DuetSession {
   #messages(run, speaker) {
     const participant = this.#participants[speaker], other = this.#participants[1 - speaker];
     const history = run.transcript.map(item => item.kind === 'human'
-      ? { role: 'user', content: `【用户补充】\n${item.text}` }
+      ? { role: 'user', content: prefix(`【用户补充】\n${item.text}`, 6000) }
       : { role: item.speaker === speaker ? 'assistant' : 'user', content: item.text });
     const humans = run.transcript.filter(item => item.kind === 'human'), latest = humans.at(-1);
     const priority = latest ? '请优先回应上文用户最新的补充，将用户意见与已有讨论结合，不要忽略用户。' : '';
-    return { revision: run.revision, humanReceipts: new Set(humans.map(item => item.receiptId)),
-      replyMessageId: latest?.replyMessageId || run.replyMessageId,
+    return { revision: run.revision, humanReceipts: new Set(humans.map(item => item.receiptId).filter(Boolean)),
+      replyMessageId: run.replyMessageId,
       messages: [{ role: 'user', content: `本场互聊话题：${run.topic}` }, ...history,
       { role: 'user', content: run.nextTurn === 0
-        ? `请作为${participant.label}围绕上述话题开始第 1 轮交流。${priority}按用户最新的长度和格式要求回复，未指定时约 100–200 字。直接输出对话内容。`
+        ? `请作为${participant.label}${history.length ? '根据上文既有对话继续本场交流' : '围绕上述话题开始第 1 轮交流'}。${priority}按用户最新的长度和格式要求回复，未指定时约 100–200 字。直接输出对话内容。`
         : `现在是第 ${Math.floor(run.nextTurn / 2) + 1} 轮，请作为${participant.label}回应${other.label}最新的发言，继续围绕本场话题交流。${priority}按用户最新的长度和格式要求回复，未指定时约 100–200 字。直接输出对话内容。` }] };
   }
 

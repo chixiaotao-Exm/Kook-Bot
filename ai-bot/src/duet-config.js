@@ -35,9 +35,9 @@ export function loadDuetConfig(env = process.env) {
   }
   const host = text(env, 'HOST', '127.0.0.1');
   if (!['127.0.0.1', '::1'].includes(host)) throw new Error('互聊健康检查只允许监听本机地址。');
-  const modelTimeoutMs = integer(env, 'MODEL_TIMEOUT_SECONDS', 180, 5, 180) * 1000;
-  const maxOutputTokens = integer(env, 'DUET_MAX_OUTPUT_TOKENS', 1200, 128, 2400);
-  const reasoningEffort = text(env, 'REASONING_EFFORT', 'low');
+  const modelTimeoutMs = integer(env, 'MODEL_TIMEOUT_SECONDS', 600, 5, 600) * 1000;
+  const maxOutputTokens = integer(env, 'DUET_MAX_OUTPUT_TOKENS', 8192, 128, 16000);
+  const reasoningEffort = text(env, 'REASONING_EFFORT', 'xhigh');
   const codeEnabled = text(env, 'CODE_AGENT_ENABLED', 'false') === 'true';
   const codeOperators = text(env, 'CODE_AGENT_OPERATOR_IDS').split(',').map(value => value.trim()).filter(Boolean);
   if (codeEnabled && (!codeOperators.length || codeOperators.some(value => !/^\d{5,30}$/.test(value)))) throw new Error('请配置代码任务操作者 ID。');
