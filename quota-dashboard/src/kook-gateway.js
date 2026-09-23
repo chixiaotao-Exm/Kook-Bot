@@ -35,7 +35,7 @@ export class KookGateway {
     clearTimeoutImpl = clearTimeout, apiTimeoutMs = 10000, handshakeTimeoutMs = 6000,
     heartbeatMs = 30000, heartbeatJitterMs = 5000, pongTimeoutMs = 6000,
     pingRetryBaseMs = 2000, reconnectBaseMs = 2000, resumeBaseMs = 8000, reconnectMaxMs = 60000,
-    eventTimeoutMs = 45000, maxFrameBytes = 512 * 1024, maxBufferedEvents = 100,
+    eventTimeoutMs = 45000, sequenceGapMs = 10000, maxFrameBytes = 512 * 1024, maxBufferedEvents = 100,
     maxBufferedBytes = 4 * 1024 * 1024 } = {}) {
     if (typeof token !== 'string' || !token.trim() || /[\r\n]/.test(token)) throw new Error('KOOK token is required');
     if (typeof onEvent !== 'function') throw new Error('KOOK event handler is required');
@@ -44,10 +44,10 @@ export class KookGateway {
     this.Socket = Socket; this.logger = logger; this.random = random; this.now = now;
     this.setTimeout = setTimeoutImpl; this.clearTimeout = clearTimeoutImpl;
     Object.assign(this, { apiTimeoutMs, handshakeTimeoutMs, heartbeatMs, heartbeatJitterMs,
-      pongTimeoutMs, pingRetryBaseMs, reconnectBaseMs, resumeBaseMs, reconnectMaxMs, eventTimeoutMs,
+      pongTimeoutMs, pingRetryBaseMs, reconnectBaseMs, resumeBaseMs, reconnectMaxMs, eventTimeoutMs, sequenceGapMs,
       maxFrameBytes, maxBufferedEvents, maxBufferedBytes });
     this.running = false; this.connected = false; this.botId = '';
-    this.session = ''; this.gatewayUrl = ''; this.sn = 0; this.pending = new Map();
+    this.session = ''; this.gatewayUrl = ''; this.sn = 0; this.observedSn = 0; this.pending = new Map();
     this.pendingBytes = 0; this.sequenceEpoch = 0; this.runEpoch = 0;
     this.timers = new Map(); this.attempt = 0; this.resumeAttempts = 0;
     this.connectionAttempts = 0; this.lastError = null; this.processing = null;
@@ -178,16 +178,16 @@ export class KookGateway {
   }
 
   resetSession() {
-    this.session = ''; this.gatewayUrl = ''; this.sn = 0;
+    this.session = ''; this.gatewayUrl = ''; this.sn = 0; this.observedSn = 0;
     this.pending.clear(); this.pendingBytes = 0; this.sequenceEpoch++;
     this.processing?.controller.abort(); this.processing = null;
-    this.cancel('event'); this.resumeAttempts = 0;
+    this.cancel('event'); this.cancel('gap'); this.resumeAttempts = 0;
   }
 
   fail(code, fresh = false) {
     if (!this.running) return;
     this.lastError = code; this.connected = false;
-    for (const name of ['hello', 'ping', 'pong', 'pingRetry']) this.cancel(name);
+    for (const name of ['hello', 'ping', 'pong', 'pingRetry', 'gap']) this.cancel(name);
     this.detachSocket();
     if (fresh) this.resetSession();
     if (this.timers.has('reconnect')) return;
@@ -231,8 +231,11 @@ export class KookGateway {
 
   ready() {
     this.cancel('hello'); this.cancel('reconnect');
-    this.connected = true; this.attempt = 0; this.resumeAttempts = 0;
+    // A successful handshake does not prove that missing events were recovered.
+    // Only an acknowledged event resets the consecutive resume budget.
+    this.connected = true; this.attempt = 0;
     this.lastError = null; this.pingRetries = 0; this.schedulePing();
+    this.watchGap();
     this.log('kook_gateway_connected');
   }
   schedulePing() {
@@ -253,13 +256,33 @@ export class KookGateway {
 
   enqueue(sn, data, bytes) {
     if (!Number.isSafeInteger(sn) || sn < 1 || !data || typeof data !== 'object' || Array.isArray(data)) throw new GatewayFailure('invalid_event');
+    this.observedSn = Math.max(this.observedSn, sn);
     if (sn <= this.sn || this.pending.has(sn)) return;
-    if (this.pending.size >= this.maxBufferedEvents || this.pendingBytes + bytes > this.maxBufferedBytes) throw new GatewayFailure('event_buffer_full');
+    const full = () => this.pending.size >= this.maxBufferedEvents || this.pendingBytes + bytes > this.maxBufferedBytes;
+    if (sn === this.sn + 1 && bytes <= this.maxBufferedBytes && full()) {
+      // Make room for the event that unblocks delivery. Evicted future events
+      // remain covered by observedSn, so another gap requests their replay.
+      for (const [futureSn, entry] of [...this.pending].sort((a, b) => b[0] - a[0])) {
+        if (!full()) break;
+        this.pending.delete(futureSn); this.pendingBytes -= entry.bytes;
+      }
+    }
+    if (full()) throw new GatewayFailure('event_buffer_full');
     this.pending.set(sn, { data, bytes }); this.pendingBytes += bytes;
     this.deliverNext();
   }
 
+  watchGap() {
+    if (!this.running || !this.connected || this.processing || this.observedSn <= this.sn || this.pending.has(this.sn + 1)) {
+      this.cancel('gap'); return;
+    }
+    // More out-of-order packets and healthy heartbeats must not extend this wait.
+    if (this.timers.has('gap')) return;
+    this.later('gap', () => this.fail('sequence_gap'), this.sequenceGapMs);
+  }
+
   deliverNext() {
+    this.watchGap();
     if (!this.running || this.processing || !this.pending.has(this.sn + 1)) return;
     const sn = this.sn + 1, epoch = this.sequenceEpoch;
     const entry = this.pending.get(sn), controller = new AbortController();
@@ -278,7 +301,7 @@ export class KookGateway {
     void Promise.race([handled, timeout]).then(ok => {
       if (epoch !== this.sequenceEpoch || this.processing !== current) return;
       this.cancel('event'); this.processing = null;
-      this.pending.delete(sn); this.pendingBytes -= entry.bytes; this.sn = sn;
+      this.pending.delete(sn); this.pendingBytes -= entry.bytes; this.sn = sn; this.resumeAttempts = 0;
       if (!ok) this.log('kook_gateway_event_failed');
       this.deliverNext();
     });

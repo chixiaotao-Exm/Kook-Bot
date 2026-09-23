@@ -58,12 +58,13 @@ export function formatKeyUsageReply(result) {
 
 /** Queries only keys explicitly submitted by real users. No message content is persisted. */
 export class KookKeyQueryBot {
-  #keyUsage; #reply; #getSelfId; #channelIds; #now; #writeState; #logger;
+  #keyUsage; #reply; #getSelfId; #resolveAuthor; #channelIds; #now; #writeState; #logger;
   #file; #seen = new Map(); #users = new Map(); #recent = []; #closed = false;
   #operations = Promise.resolve(); #controller = new AbortController(); #ready = false;
   #counts = { queries: 0, replies: 0, failures: 0 }; #lastReplyAt = null; #lastError = null;
-  constructor({ keyUsage, reply, getSelfId, channelIds = [], dataDir, now = Date.now, writeState = atomicJson, logger = () => {} }) {
+  constructor({ keyUsage, reply, getSelfId, resolveAuthor, channelIds = [], dataDir, now = Date.now, writeState = atomicJson, logger = () => {} }) {
     this.#keyUsage = keyUsage; this.#reply = reply; this.#getSelfId = getSelfId;
+    this.#resolveAuthor = resolveAuthor;
     this.#channelIds = new Set(channelIds.filter(value => ID.test(value)));
     this.#now = now; this.#writeState = writeState; this.#logger = logger;
     this.#file = path.join(dataDir, 'key-query-seen.json');
@@ -90,9 +91,12 @@ export class KookKeyQueryBot {
     this.#operations = run.catch(() => {}); return run;
   }
   async #handle(event) {
-    const selfId = this.#getSelfId?.();
+    const selfId = this.#getSelfId?.(), author = event?.extra?.author;
     if (this.#closed || !this.#ready || !ID.test(selfId || '') || !event || ![1, 9].includes(event.type)
-      || !['GROUP', 'PERSON'].includes(event.channel_type) || event.extra?.author?.bot || event.author_id === selfId
+      || !['GROUP', 'PERSON'].includes(event.channel_type) || event.author_id === selfId
+      || !author || typeof author !== 'object' || Array.isArray(author)
+      || author.bot !== false && author.bot !== undefined
+      || author.id !== undefined && author.id !== event.author_id
       || !ID.test(event.author_id || '') || !/^[a-f0-9-]{16,100}$/i.test(event.msg_id || '')) return;
     if (event.channel_type === 'GROUP' && !this.#channelIds.has(event.target_id)) return;
     const now = this.#now(), time = event.msg_timestamp;
@@ -102,6 +106,15 @@ export class KookKeyQueryBot {
     const candidates = [parseKeyQuery(event.content, selfId), parseKeyQuery(event.extra?.kmarkdown?.raw_content, selfId)];
     const parsed = candidates.find(value => value?.kind === 'key') || candidates.find(Boolean);
     if (!parsed) return;
+    if (author.bot === undefined) {
+      const guildId = event.channel_type === 'PERSON' ? null : event.extra.guild_id;
+      if (typeof this.#resolveAuthor !== 'function' || guildId !== null && !ID.test(guildId || '')) return;
+      let identity;
+      try { identity = await this.#resolveAuthor({ userId: event.author_id, guildId }); }
+      catch { return; }
+      if (!identity || identity.id !== event.author_id || identity.bot !== false
+        || this.#closed || event.msg_timestamp < this.#now() - MAX_AGE) return;
+    }
     for (const [id, at] of this.#seen) if (at < now - MAX_AGE * 2) this.#seen.delete(id);
     for (const [id, at] of this.#users) if (at < now - 3000) this.#users.delete(id);
     this.#recent = this.#recent.filter(at => at > now - 60000);

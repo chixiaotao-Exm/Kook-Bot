@@ -111,6 +111,23 @@ test('cache sanitization retains known data but strips arbitrary text and nested
   assert.equal(applyActiveQuota({ ...raw(), id: 8888 }, result).extra.codex_usage_updated_at, undefined);
 });
 
+test('an accepted active quota sample updates the displayed plan without rewriting credentials', async () => {
+  const { client } = fixture(), result = await client.refreshAccount(6255);
+  const account = { ...raw(), credentials: { plan_type: 'plus', access_token: 'private-token' } };
+  const overlaid = applyActiveQuota(account, result);
+  const [displayed] = normalizeAccounts([overlaid], { now: NOW });
+  assert.equal(displayed.planLabel, 'Pro 5x'); assert.equal(displayed.planSource, 'upstream');
+  assert.equal(account.credentials.plan_type, 'plus'); assert.equal(overlaid.credentials.plan_type, 'plus');
+  assert.doesNotMatch(JSON.stringify(displayed), /private-token|access_token|codex_active_quota_plan_type/);
+
+  const noPlan = applyActiveQuota(account, { ...result, planType: null });
+  assert.equal(normalizeAccounts([noPlan], { now: NOW })[0].planLabel, 'Plus');
+  const newer = { ...account, extra: { ...overlaid.extra, codex_usage_updated_at: new Date(NOW + 1000).toISOString() } };
+  const retained = applyActiveQuota(newer, result);
+  assert.equal(retained.extra.codex_active_quota_plan_type, undefined);
+  assert.equal(normalizeAccounts([retained], { now: NOW + 1000 })[0].planLabel, 'Plus');
+});
+
 test('missing credits remain unknown; actual zero credits remain zero even without dates', async () => {
   for (const [value, expected] of [[null, null], [{}, null], [{ available_count: -1 }, null], [{ available_count: '0' }, null], [{ available_count: 0 }, { availableCount: 0, expiresAt: [] }]]) {
     const payload = usage(); payload.rate_limit_reset_credits = value;

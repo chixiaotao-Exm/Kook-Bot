@@ -78,6 +78,61 @@ test('out of order and repeated events are delivered once, in sequence order', a
   assert.equal(h.gateway.snapshot().pendingEvents, 0);
 });
 
+test('a sequence gap resumes despite healthy heartbeats and additional future events', async t => {
+  const h = harness({ sequenceGapMs: 40, heartbeatMs: 10 }); t.after(() => h.gateway.close());
+  await h.gateway.start(); const first = h.sockets[0]; first.open(); first.hello();
+  first.packet({ s: 0, sn: 2, d: { number: 2 } });
+  for (let i = 0; i < 3; i++) {
+    await h.advance(10); first.packet({ s: 3 });
+    first.packet({ s: 0, sn: i + 3, d: { number: i + 3 } });
+  }
+  await h.advance(9); assert.equal(h.gateway.snapshot().connected, true);
+  await h.advance(1); assert.equal(h.gateway.snapshot().lastError, 'sequence_gap');
+  assert.equal(h.events.length, 0);
+  await h.advance(2); const second = h.sockets[1];
+  assert.equal(new URL(second.url).searchParams.get('resume'), '1');
+  assert.equal(new URL(second.url).searchParams.get('sn'), '0');
+  second.open(); second.packet({ s: 6, d: { session_id: 'session-secret' } });
+  for (const number of [1, 2, 3, 4, 5]) second.packet({ s: 0, sn: number, d: { number } });
+  await h.advance(0);
+  assert.deepEqual(h.events.map(event => event.number), [1, 2, 3, 4, 5]);
+  assert.equal(h.gateway.snapshot().pendingEvents, 0);
+  assert.equal(h.gateway.timers.has('gap'), false);
+});
+
+test('filling a temporary gap cancels recovery without reconnecting', async t => {
+  const h = harness({ sequenceGapMs: 20 }); t.after(() => h.gateway.close());
+  await h.gateway.start(); const socket = h.sockets[0]; socket.open(); socket.hello();
+  socket.packet({ s: 0, sn: 2, d: { number: 2 } });
+  await h.advance(19); socket.packet({ s: 0, sn: 1, d: { number: 1 } });
+  await h.advance(2);
+  assert.deepEqual(h.events.map(event => event.number), [1, 2]);
+  assert.equal(h.gateway.snapshot().connected, true);
+  assert.equal(h.sockets.length, 1);
+  assert.equal(h.gateway.timers.has('gap'), false);
+});
+
+test('an unfinished handler does not start a sequence gap deadline', async t => {
+  let complete;
+  const handled = [];
+  const h = harness({ sequenceGapMs: 20, onEvent: async event => {
+    handled.push(event.number);
+    if (event.number === 1) await new Promise(resolve => { complete = resolve; });
+  } }); t.after(() => h.gateway.close());
+  await h.gateway.start(); const socket = h.sockets[0]; socket.open(); socket.hello();
+  socket.packet({ s: 0, sn: 1, d: { number: 1 } });
+  socket.packet({ s: 0, sn: 3, d: { number: 3 } });
+  await h.advance(30);
+  assert.equal(h.gateway.snapshot().connected, true);
+  assert.equal(h.gateway.timers.has('gap'), false);
+  complete(); await flush();
+  await h.advance(19); socket.packet({ s: 0, sn: 2, d: { number: 2 } });
+  await h.advance(2);
+  assert.deepEqual(handled, [1, 2, 3]);
+  assert.equal(h.sockets.length, 1);
+  assert.equal(h.gateway.timers.has('gap'), false);
+});
+
 test('slow asynchronous handlers do not block heartbeat; ping only acknowledges completed events', async t => {
   let complete;
   const h = harness({ onEvent: () => new Promise(resolve => { complete = resolve; }) });
@@ -152,6 +207,48 @@ test('pending event count and bytes are bounded; overflow reconnects with prior 
   bytes.sockets[0].packet({ s: 0, sn: 2, d: { content: 'x'.repeat(80) } });
   assert.equal(bytes.gateway.snapshot().pendingEvents, 0);
   assert.equal(bytes.gateway.snapshot().lastError, 'event_buffer_full');
+});
+
+test('a full buffer accepts the missing next event and recovers evicted tail events', async t => {
+  const h = harness({ maxBufferedEvents: 2, sequenceGapMs: 20 }); t.after(() => h.gateway.close());
+  await h.gateway.start(); const first = h.sockets[0]; first.open(); first.hello();
+  for (const number of [2, 3, 4]) first.packet({ s: 0, sn: number, d: { number } });
+  assert.equal(h.gateway.snapshot().lastError, 'event_buffer_full');
+  await h.advance(2); const second = h.sockets[1]; second.open(); second.hello();
+  second.packet({ s: 0, sn: 1, d: { number: 1 } });
+  assert.equal(h.gateway.snapshot().pendingEvents, 2);
+  assert.ok(h.gateway.pendingBytes <= h.gateway.maxBufferedBytes);
+  await flush();
+  assert.deepEqual(h.events.map(event => event.number), [1, 2]);
+  assert.equal(h.gateway.snapshot().pendingEvents, 0);
+  // The discarded 3 and rejected 4 must not disappear merely because the queue is empty.
+  await h.advance(20); assert.equal(h.gateway.snapshot().lastError, 'sequence_gap');
+  await h.advance(2); const third = h.sockets[2];
+  assert.equal(new URL(third.url).searchParams.get('sn'), '2');
+  third.open(); third.packet({ s: 6, d: { session_id: 'session-secret' } });
+  for (const number of [1, 2, 3, 4]) third.packet({ s: 0, sn: number, d: { number } });
+  await flush();
+  assert.deepEqual(h.events.map(event => event.number), [1, 2, 3, 4]);
+  assert.equal(h.gateway.snapshot().lastEventSn, 4);
+  assert.equal(h.gateway.timers.has('gap'), false);
+});
+
+test('the missing next event can reclaim multiple future entries without exceeding byte limits', async t => {
+  const frame = (sn, content) => ({ s: 0, sn, d: { content } });
+  const maxBufferedBytes = Buffer.byteLength(JSON.stringify(frame(2, 'x'))) * 3;
+  const content = 'y'.repeat(maxBufferedBytes - Buffer.byteLength(JSON.stringify(frame(1, ''))));
+  const h = harness({ maxBufferedBytes }); t.after(() => h.gateway.close());
+  await h.gateway.start(); const socket = h.sockets[0]; socket.open(); socket.hello();
+  for (const sn of [2, 3, 4]) socket.packet(frame(sn, 'x'));
+  assert.equal(h.gateway.pendingBytes, maxBufferedBytes);
+  socket.packet(frame(1, content));
+  assert.equal(h.gateway.pendingBytes, maxBufferedBytes);
+  assert.equal(h.gateway.snapshot().pendingEvents, 1);
+  await flush();
+  assert.deepEqual(h.events.map(event => event.content), [content]);
+  assert.equal(h.gateway.pendingBytes, 0);
+  assert.equal(h.gateway.snapshot().lastEventSn, 1);
+  assert.equal(h.gateway.timers.has('gap'), true);
 });
 
 test('malformed, oversized and binary frames reconnect without exposing their content', async t => {
@@ -231,6 +328,48 @@ test('two failed resume attempts fall back to a new gateway and clear old sessio
   assert.equal(new URL(h.sockets[3].url).searchParams.has('resume'), false);
   assert.equal(h.calls.length, 3);
   assert.equal(h.gateway.snapshot().pendingEvents, 0);
+});
+
+test('successful resume handshakes without sequence progress eventually use a fresh session', async t => {
+  const h = harness({ sequenceGapMs: 10 }); t.after(() => h.gateway.close());
+  await h.gateway.start(); const first = h.sockets[0]; first.open(); first.hello();
+  first.packet({ s: 0, sn: 2, d: { number: 2 } });
+  for (const delay of [2, 4]) {
+    await h.advance(10); assert.equal(h.gateway.snapshot().lastError, 'sequence_gap');
+    await h.advance(delay); const resumed = h.sockets.at(-1);
+    assert.equal(new URL(resumed.url).searchParams.get('resume'), '1');
+    resumed.open(); resumed.packet({ s: 6, d: { session_id: 'session-secret' } });
+    // Replayed future/duplicate events are not acknowledgement progress.
+    resumed.packet({ s: 0, sn: 2, d: { number: 2 } });
+  }
+  await h.advance(10); await h.advance(2);
+  assert.equal(h.sockets.length, 4);
+  const fresh = h.sockets[3];
+  assert.equal(new URL(fresh.url).searchParams.has('resume'), false);
+  assert.equal(h.calls.length, 3);
+  assert.equal(h.gateway.snapshot().pendingEvents, 0);
+  assert.equal(h.gateway.observedSn, 0);
+  fresh.open(); fresh.hello('fresh-session');
+  first.packet({ s: 0, sn: 1, d: { number: 'abandoned' } });
+  fresh.packet({ s: 0, sn: 1, d: { number: 'fresh' } }); await flush();
+  assert.deepEqual(h.events.map(event => event.number), ['fresh']);
+  h.gateway.close(); await h.advance(100);
+  assert.equal(h.timers.size, 0);
+});
+
+test('acknowledged events renew the resume budget after a successful recovery', async t => {
+  const h = harness(); t.after(() => h.gateway.close());
+  await h.gateway.start(); let socket = h.sockets[0]; socket.open(); socket.hello();
+  socket.packet({ s: 0, sn: 1, d: { number: 1 } }); await flush();
+  for (const sn of [2, 3, 4]) {
+    socket.close(); await h.advance(2); socket = h.sockets.at(-1);
+    assert.equal(new URL(socket.url).searchParams.get('resume'), '1');
+    socket.open(); socket.packet({ s: 6, d: { session_id: 'session-secret' } });
+    socket.packet({ s: 0, sn, d: { number: sn } }); await flush();
+    assert.equal(h.gateway.snapshot().lastEventSn, sn);
+  }
+  assert.deepEqual(h.events.map(event => event.number), [1, 2, 3, 4]);
+  assert.equal(h.calls.length, 2);
 });
 
 test('handshake and HTTP timeouts do not leave a permanently connecting gateway', async t => {

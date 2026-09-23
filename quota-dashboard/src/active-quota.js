@@ -97,10 +97,17 @@ export function applyActiveQuota(rawAccount, inputRecord) {
     extra.codex_usage_updated_at = record.observedAt;
     extra.codex_active_quota_observed_at = record.observedAt;
     delete extra.codex_active_quota_stale;
-    if (record.planType) extra.codex_plan_type = record.planType;
+    // Keep the plan tied to the accepted quota sample, rather than overriding
+    // newer account metadata with an older or missing active-query plan.
+    delete extra.codex_active_quota_plan_type;
+    if (record.planType) {
+      extra.codex_plan_type = record.planType;
+      extra.codex_active_quota_plan_type = record.planType;
+    }
   } else {
     delete extra.codex_active_quota_observed_at;
     delete extra.codex_active_quota_stale;
+    delete extra.codex_active_quota_plan_type;
   }
   const state = object(extra.codex_auto_reset_credit_state);
   const creditTimes = [date(extra.codex_reset_credit_checked_at), date(state?.checked_at)].filter(Boolean).map(Date.parse);
