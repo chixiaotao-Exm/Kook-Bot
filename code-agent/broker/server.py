@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import socket
 import socketserver
 import stat
@@ -175,26 +176,58 @@ class Broker:
                 raise BrokerError("CAPACITY")
             job_id = str(uuid.uuid4())
             root = self.jobs / job_id
+            # mkdir must succeed before this call owns anything to roll back.
+            # A UUID collision must never delete a previously created task.
             root.mkdir(mode=0o700)
-            os.chmod(root, 0o700)
-            meta = self.repository.prepare(job_id, root)
-            if (not isinstance(meta, dict) or meta.get("repository") != REPOSITORY
-                    or not _SHA.fullmatch(meta.get("baseSha", "")) or meta.get("branch") != "kook-agent/task-" + job_id):
-                raise BrokerError("INVALID_PREPARED_STATE")
-            meta = {key: meta[key] for key in ("repository", "baseSha", "branch")}
-            workspace = Workspace(root / "work", root / "baseline")
-            workspace.info()
-            # Snapshot source is mounted read-only and must be readable by uid 1000.
-            for folder, directories, files in os.walk(workspace.root, followlinks=False):
-                _no_links(folder)
-                os.chmod(folder, 0o755)
-                for name in directories:
-                    _no_links(Path(folder) / name)
-                for name in files:
-                    os.chmod(_no_links(Path(folder) / name), 0o644)
-            _private_json(root / "job.json", {"version": 1, "jobId": job_id, "meta": meta,
-                          "status": "ready", "checks": [], "publication": None, "createdAt": time.time()})
-            return {"jobId": job_id, **meta}
+            identity = root.stat()
+            try:
+                return self._initialize_job(job_id, root)
+            except Exception as original:
+                try:
+                    self._discard_failed_creation(job_id, root, identity)
+                except Exception:
+                    code = original.code if isinstance(original, (BrokerError, RepositoryError, WorkspaceError)) else "BROKER_FAILED"
+                    error = BrokerError(code)
+                    error.cleanup_failed = True
+                    raise error from None
+                raise
+
+    def _discard_failed_creation(self, job_id, root, identity):
+        # The broker owns this newly created UUID directory. Do not scan, prune
+        # or infer ownership of other jobs, including completed/published jobs.
+        if root != self.jobs / _canonical_job(job_id) or root.parent != self.jobs:
+            raise BrokerError("INVALID_PATH")
+        _no_links(root)
+        current = root.lstat()
+        if (current.st_dev, current.st_ino) != (identity.st_dev, identity.st_ino):
+            raise BrokerError("INVALID_PATH")
+        if (root / "job.json").exists() or (root / "job.json").is_symlink():
+            raise BrokerError("INVALID_STATE")
+        discard = getattr(self.repository, "discard_prepared", None)
+        if discard is not None:
+            discard(job_id, root)
+        shutil.rmtree(root)
+
+    def _initialize_job(self, job_id, root):
+        os.chmod(root, 0o700)
+        meta = self.repository.prepare(job_id, root)
+        if (not isinstance(meta, dict) or meta.get("repository") != REPOSITORY
+                or not _SHA.fullmatch(meta.get("baseSha", "")) or meta.get("branch") != "kook-agent/task-" + job_id):
+            raise BrokerError("INVALID_PREPARED_STATE")
+        meta = {key: meta[key] for key in ("repository", "baseSha", "branch")}
+        workspace = Workspace(root / "work", root / "baseline")
+        workspace.info()
+        # Snapshot source is mounted read-only and must be readable by uid 1000.
+        for folder, directories, files in os.walk(workspace.root, followlinks=False):
+            _no_links(folder)
+            os.chmod(folder, 0o755)
+            for name in directories:
+                _no_links(Path(folder) / name)
+            for name in files:
+                os.chmod(_no_links(Path(folder) / name), 0o644)
+        _private_json(root / "job.json", {"version": 1, "jobId": job_id, "meta": meta,
+                      "status": "ready", "checks": [], "publication": None, "createdAt": time.time()})
+        return {"jobId": job_id, **meta}
 
     def dispatch(self, operation, jobId, args):
         if not isinstance(operation, str) or operation not in _FIELDS or not isinstance(args, dict):
@@ -411,7 +444,10 @@ class RpcHandler(BaseHTTPRequestHandler):
             result = self.server.broker.dispatch(request["operation"], request["jobId"], request["args"])
             self._send({"ok": True, "data": result})
         except BrokerError as error:
-            self._send({"ok": False, "error": {"code": error.code}}, 403 if error.code == "NOT_AUTHORIZED" else 400)
+            detail = {"code": error.code}
+            if getattr(error, "cleanup_failed", False):
+                detail["cleanupFailed"] = True
+            self._send({"ok": False, "error": detail}, 403 if error.code == "NOT_AUTHORIZED" else 400)
         except Exception:
             self._send({"ok": False, "error": {"code": "BROKER_FAILED"}}, 500)
 

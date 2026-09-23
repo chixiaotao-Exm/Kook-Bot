@@ -6,7 +6,7 @@ const UUID = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/;
 const MAX_BODY = 512 * 1024, MAX_RESPONSE = 256 * 1024;
 
 export class BrokerClientError extends Error {
-  constructor(code) { super('代码工具请求失败。'); this.name = 'BrokerClientError'; this.code = code; }
+  constructor(code, cleanupFailed = false) { super('代码工具请求失败。'); this.name = 'BrokerClientError'; this.code = code; this.cleanupFailed = cleanupFailed === true; }
 }
 
 export class CodeBrokerClient {
@@ -16,14 +16,17 @@ export class CodeBrokerClient {
     this.socketPath = socketPath; this.requestImpl = requestImpl;
   }
 
-  request(operation, jobId, args = {}, { signal } = {}) {
+  request(operation, jobId, args = {}, { signal, timeoutMs } = {}) {
     if (!OPERATIONS.has(operation) || (operation === 'create_job' ? jobId !== null : typeof jobId !== 'string' || !UUID.test(jobId))
       || !args || typeof args !== 'object' || Array.isArray(args)) return Promise.reject(new BrokerClientError('TOOL_INVALID'));
     let body;
     try { body = JSON.stringify({ operation, jobId, args }); } catch { return Promise.reject(new BrokerClientError('TOOL_INVALID')); }
     if (Buffer.byteLength(body) > MAX_BODY) return Promise.reject(new BrokerClientError('TOOL_INVALID'));
     if (signal?.aborted) return Promise.reject(new BrokerClientError('CANCELLED'));
-    const timeoutMs = operation === 'run_checks' ? 210000 : ['create_job', 'publish'].includes(operation) ? 120000 : 30000;
+    const maximumTimeoutMs = operation === 'run_checks' ? 210000 : ['create_job', 'publish'].includes(operation) ? 120000 : 30000;
+    if (timeoutMs !== undefined && (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > maximumTimeoutMs))
+      return Promise.reject(new BrokerClientError('TOOL_INVALID'));
+    timeoutMs ??= maximumTimeoutMs;
     return new Promise((resolve, reject) => {
       let timer, request, finished = false;
       const settle = (error, result) => {
@@ -51,7 +54,7 @@ export class CodeBrokerClient {
             if (value?.ok === true && response.statusCode === 200) settle(null, value.data);
             else {
               const code = typeof value?.error?.code === 'string' && /^[A-Z_]{1,48}$/.test(value.error.code) ? value.error.code : 'BROKER_FAILED';
-              settle(new BrokerClientError(code));
+              settle(new BrokerClientError(code, value?.error?.cleanupFailed));
             }
           });
         });
