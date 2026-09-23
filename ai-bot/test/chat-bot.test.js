@@ -341,6 +341,89 @@ test('delivery diagnostics are safe and successful next turn clears last failure
   assert.ok(!JSON.stringify(f.logs).includes('private delivery'));
 });
 
+test('progress is started before the one model call and actual delivery stages precede finish', async t => {
+  const steps = [], started = defer(), proceed = defer();
+  const handle = { setPhase: async phase => { steps.push(phase); }, finish: async () => { steps.push('finish'); },
+    fail: async code => { steps.push(`fail:${code}`); }, cancel: async () => { steps.push('cancel'); } };
+  const f = await fixture(t, { progress: { start: async input => {
+    assert.equal(input.targetId, CHANNEL); assert.equal(input.replyMessageId, id(1));
+    steps.push('start'); started.resolve(); await proceed.promise; return handle;
+  } }, generate: async () => { steps.push('generate'); return { text: 'answer' }; },
+  reply: async input => {
+    for (const phase of ['rendering', 'uploading', 'sending']) await input.onStage(phase);
+    steps.push('reply'); return { messageId: 'reply' };
+  } });
+  await f.send(1); await started.promise; assert.deepEqual(steps, ['start']);
+  proceed.resolve(); await f.finish();
+  assert.deepEqual(steps, ['start', 'generate', 'rendering', 'uploading', 'sending', 'reply', 'finish']);
+});
+
+test('failed progress startup keeps the model and final reply working without leaking exceptions', async t => {
+  const f = await fixture(t, { progress: { start: async () => {
+    throw Object.assign(new Error('private progress request'), { code: 'sk-private-progress-code' });
+  } } });
+  await f.send(1); await f.finish();
+  assert.equal(f.calls.length, 1); assert.equal(f.replies.length, 1); assert.equal(f.bot.snapshot().failures, 0);
+  assert.deepEqual(f.logs.find(item => item.event === 'progress_failed'), { event: 'progress_failed', code: 'UNKNOWN' });
+  assert.ok(!JSON.stringify(f.logs).includes('private progress')); assert.ok(!JSON.stringify(f.logs).includes('sk-private'));
+});
+
+test('progress update and finish failures never turn a successful answer into model failure', async t => {
+  const f = await fixture(t, { progress: { start: async () => ({
+    setPhase: async () => { throw new Error('private progress update'); },
+    finish: async () => { throw new Error('private progress finish'); },
+  }) }, reply: async input => { await input.onStage('sending'); f.replies.push(input); return { messageId: 'reply' }; } });
+  await f.send(1); await f.finish();
+  assert.equal(f.calls.length, 1); assert.equal(f.replies.length, 1);
+  assert.equal(f.bot.snapshot().lastError, null); assert.equal(f.bot.snapshot().failures, 0);
+  assert.equal(f.logs.filter(item => item.event === 'progress_failed').length, 2);
+});
+
+test('model and final delivery errors terminate progress with safe failure codes', async t => {
+  for (const category of ['model', 'delivery']) {
+    const terminals = [];
+    const options = { progress: { start: async () => ({ finish: async () => terminals.push('finish'),
+      fail: async code => terminals.push(code), cancel: async () => terminals.push('cancel') }) } };
+    if (category === 'model') options.generate = async () => { throw Object.assign(new Error('secret model'), { code: 'TIMEOUT' }); };
+    else options.reply = async () => { throw Object.assign(new Error('secret delivery'), { code: 'KOOK_REJECTED' }); };
+    const f = await fixture(t, options); await f.send(1); await f.finish();
+    assert.deepEqual(terminals, [category === 'model' ? 'TIMEOUT' : 'KOOK_REJECTED']);
+    assert.equal(f.replies.length, category === 'model' ? 1 : 0);
+  }
+});
+
+test('reset while progress starts cancels its late handle and never calls the model', async t => {
+  const entered = defer(), pending = defer(), terminals = [];
+  const f = await fixture(t, { progress: { start: async () => { entered.resolve(); return pending.promise; } } });
+  await f.send(1); await entered.promise; await f.send(2, { content: '/重置' });
+  pending.resolve({ cancel: async () => terminals.push('cancel'), finish: async () => terminals.push('finish') });
+  await f.finish();
+  assert.equal(f.calls.length, 0); assert.deepEqual(terminals, ['cancel']);
+  assert.ok(f.replies.every(item => item.content.includes('清空')));
+});
+
+test('reset cancels in-flight progress immediately and late model output cannot finish it', async t => {
+  const pending = defer(), began = defer(), terminals = [];
+  const f = await fixture(t, { progress: { start: async () => ({
+    cancel: async () => terminals.push('cancel'), finish: async () => terminals.push('finish'),
+    fail: async code => terminals.push(code),
+  }) }, generate: async () => { began.resolve(); return pending.promise; } });
+  await f.send(1); await began.promise; await f.send(2, { content: '/重置' });
+  assert.deepEqual(terminals, ['cancel']);
+  pending.resolve({ text: 'late private answer' }); await f.finish();
+  assert.deepEqual(terminals, ['cancel']); assert.ok(!f.replies.some(item => item.content.includes('late private')));
+});
+
+test('help model and reset commands create no AI progress and cancellation has a cancelled terminal', async t => {
+  let starts = 0; const terminals = [];
+  const f = await fixture(t, { progress: { start: async () => { starts++; return {
+    cancel: async () => terminals.push('cancel'), fail: async code => terminals.push(code), finish: async () => terminals.push('finish'),
+  }; } }, generate: async () => { throw Object.assign(new Error('cancelled'), { code: 'CANCELLED' }); } });
+  for (const [index, command] of ['/帮助', '/模型', '/重置'].entries()) await f.send(index + 1, { content: command });
+  assert.equal(starts, 0);
+  await f.send(4); await f.finish(); assert.equal(starts, 1); assert.deepEqual(terminals, ['cancel']);
+});
+
 test('shutdown aborts active work, returns within its bound, and forbids late replies', async t => {
   const pending = defer(); let signal;
   const f = await fixture(t, { closeTimeoutMs: 20, generate: async (_, request) => { signal = request.signal; return pending.promise; } });

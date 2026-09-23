@@ -9,9 +9,11 @@ const sentId = '50974c-364c983fa6cb';
 const input = { targetId, replyMessageId, content: '你好，我可以帮你。' };
 const success = () => Response.json({ code: 0, data: { msg_id: sentId } });
 const assetSuccess = () => Response.json({ code: 0, data: { url: 'https://img.kookapp.cn/attachments/fixture.svg' } });
+const fixturePng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/WZkAAAAASUVORK5CYII=', 'base64');
 function harness(options = {}) {
   const calls = [];
   return { calls, reply: createKookReply({ token: 'fixture-private-token',
+    renderSvgImpl: async () => fixturePng,
     fetchImpl: async (url, init) => { calls.push({ url, init }); return String(url).endsWith('/asset/create') ? assetSuccess() : success(); }, ...options }) };
 }
 const sections = init => JSON.parse(JSON.parse(init.body).content)[0].modules.map(module => module.text);
@@ -86,18 +88,45 @@ test('preserves long and escape-heavy answers exactly as text attachments', asyn
   }
 });
 
-test('uploads one complete static SVG as exact source even for a short fenced answer', async () => {
+test('renders complete static SVG and uploads PNG for inline image display', async () => {
   const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><defs><linearGradient id="g"><stop offset="0" stop-color="#fff"/></linearGradient></defs><rect width="100" height="100" fill="url(#g)"/><text x="1" y="12">Hello &amp; goodbye</text></svg>';
   for (const content of [svg, `这是生成的图案。\n\n\`\`\`svg\n${svg}\n\`\`\`\n下载后可自行编辑。`]) {
-    const h = harness();
-    assert.deepEqual(await h.reply({ ...input, content }), { messageId: sentId, attachmentType: 'svg' });
+    let rendered; const stages = [];
+    const h = harness({ renderSvgImpl: async source => { rendered = source; return fixturePng; } });
+    assert.deepEqual(await h.reply({ ...input, content, onStage: stage => stages.push(stage) }), { messageId: sentId, attachmentType: 'image' });
+    assert.equal(rendered, svg); assert.deepEqual(stages, ['rendering', 'uploading', 'sending']);
     const file = h.calls[0].init.body.get('file');
-    assert.equal(file.name, 'drawing.zip'); assert.equal(await zipSource(file, 'drawing.svg'), svg);
+    assert.equal(file.name, 'drawing.png'); assert.equal(file.type, 'image/png');
+    assert.deepEqual(Buffer.from(await file.arrayBuffer()), fixturePng);
     assert.equal(h.calls[0].init.headers['Content-Type'], undefined);
     assert.equal(h.calls[0].init.headers.Authorization, 'Bot fixture-private-token');
     assert.equal(h.calls[0].init.method, 'POST'); assert.equal(h.calls[0].init.redirect, 'error');
-    assert.equal(JSON.parse(JSON.parse(h.calls[1].init.body).content)[0].modules.at(-1).title, 'drawing.zip');
+    assert.deepEqual(JSON.parse(JSON.parse(h.calls[1].init.body).content)[0].modules,
+      [{ type: 'image-group', elements: [{ type: 'image', src: 'https://img.kookapp.cn/attachments/fixture.svg', alt: 'AI 生成的图片' }] }]);
+    assert.doesNotMatch(h.calls[1].init.body, /drawing\.zip|解压/);
   }
+});
+
+test('stage callback failures do not block replies, and rendering failure never uploads', async () => {
+  const h = harness();
+  assert.equal((await h.reply({ ...input, content: '<svg></svg>', onStage: () => { throw new Error('private'); } })).attachmentType, 'image');
+  assert.equal((await h.reply({ ...input, onStage: async () => { throw new Error('private'); } })).messageId, sentId);
+  let calls = 0;
+  const failed = harness({ renderSvgImpl: async () => { throw new Error('private svg details'); },
+    fetchImpl: async () => { calls++; return assetSuccess(); } });
+  await assert.rejects(failed.reply({ ...input, content: '<svg></svg>' }), { code: 'KOOK_RENDER_FAILED' });
+  assert.equal(calls, 0);
+});
+
+test('cancellation while rendering prevents uploads and stalled rendering is bounded by the overall deadline', async () => {
+  const controller = new AbortController(); let calls = 0;
+  const h = harness({ renderSvgImpl: async () => { controller.abort(); return fixturePng; },
+    fetchImpl: async () => { calls++; return assetSuccess(); } });
+  await assert.rejects(h.reply({ ...input, content: '<svg></svg>', signal: controller.signal }), { code: 'KOOK_ABORTED' });
+  assert.equal(calls, 0);
+  const stalled = harness({ timeoutMs: 10, renderSvgImpl: async () => new Promise(() => {}) });
+  await assert.rejects(stalled.reply({ ...input, content: '<svg></svg>' }), { code: 'KOOK_RENDER_TIMEOUT' });
+  assert.equal(stalled.calls.length, 0);
 });
 
 test('partial, multiple, nested, malformed or active SVG remains unmodified text source', async () => {

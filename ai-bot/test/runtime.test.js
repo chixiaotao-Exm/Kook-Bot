@@ -17,7 +17,7 @@ test('real controller integrates gateway, model, replies and private local healt
   let received, replied;
   const delivered = new Promise(resolve => { replied = resolve; });
   const config = { token: 'fixture-private-token', apiKey: 'fixture-private-key', model: 'gpt-6-astra', channelId: '88888888', dataDir, host: '127.0.0.1', port: 0 };
-  const runtime = createRuntime({ config, Gateway: FixtureGateway, logger: () => {},
+  const runtime = createRuntime({ config, Gateway: FixtureGateway, progress: null, logger: () => {},
     modelClient: { async generate(messages) { received = messages; return { text: '你好，连接成功', model: 'gpt-6-astra' }; } },
     reply: async payload => { replied(payload); return { messageId: 'reply-fixture' }; } });
   t.after(async () => { await runtime.close(); await rm(dataDir, { recursive: true, force: true }); });

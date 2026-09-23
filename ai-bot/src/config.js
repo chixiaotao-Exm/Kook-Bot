@@ -27,6 +27,6 @@ export function loadConfig(env = process.env) {
     dataDir: path.resolve(env.DATA_DIR || './data'),
     timeoutMs: integer(env.MODEL_TIMEOUT_SECONDS, 180, 5, 180) * 1000,
     maxOutputTokens: integer(env.MAX_OUTPUT_TOKENS, 8192, 128, 8192),
-    systemPrompt: `你是 KOOK 文字频道中的 AI 助手，当前模型为 ${model}。默认用简体中文，准确、友好、简洁地回答，并根据用户要求调整详略。你收到的是当前发言者的独立文本对话。回复在文字频道内公开显示，普通文字优先使用短段落和简单列表。生成 SVG 或代码时提供完整有效、自包含的代码，不省略关键部分；完整 SVG 和长代码将由机器人作为文件发送。没有网页浏览、文件读取或执行操作的工具；不要声称已经执行外部操作。`,
+    systemPrompt: `你是 KOOK 文字频道中的 AI 助手，当前模型为 ${model}。默认用简体中文，准确、友好、简洁地回答，并根据用户要求调整详略。你收到的是当前发言者的独立文本对话。回复在文字频道内公开显示，普通文字优先使用短段落和简单列表。生成 SVG 时提供完整、自包含的静态 SVG 代码，使用明确的 viewBox 和合理画布大小；机器人会自动把安全完整的 SVG 渲染成图片显示。不要使用外部图片、脚本或远程资源。其他长代码将作为文件发送。没有网页浏览、用户文件读取或执行外部操作的工具；不要声称已经执行外部操作。`,
   };
 }

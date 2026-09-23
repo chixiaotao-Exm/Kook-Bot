@@ -38,21 +38,22 @@ export function parseChatMessage(content, selfId = '') {
 
 /** A receipt is persisted before model work; conversation content stays in memory. */
 export class AiChatBot {
-  #generate; #reply; #getSelfId; #resolveAuthor; #channelId; #now; #writeState; #logger; #file; #config;
+  #generate; #reply; #progress; #getSelfId; #resolveAuthor; #channelId; #now; #writeState; #logger; #file; #config;
   #seen = new Map(); #contexts = new Map(); #active = new Set(); #perUser = new Map();
   #controllers = new Set(); #tasks = new Set(); #recent = []; #hints = new Map(); #recentHints = [];
   #receipts = Promise.resolve(); #ready = false; #closed = false;
   #counts = { requests: 0, replies: 0, failures: 0, resets: 0, rejected: 0 };
   #lastReplyAt = null; #lastError = null; #lastErrorCode = null;
 
-  constructor({ generate, reply, getSelfId, resolveAuthor, channelId, dataDir, now = Date.now,
+  constructor({ generate, reply, progress, getSelfId, resolveAuthor, channelId, dataDir, now = Date.now,
     writeState = atomicJson, logger = () => {}, model = 'gpt-6-astra',
     maxInputChars = 4000, maxHistoryChars = 20_000, maxHistoryTurns = 10,
     historyTtlMs = 2 * 60 * 60_000, cooldownMs = 3000, maxConcurrent = 2,
     maxRequestsPerMinute = 30, closeTimeoutMs = 1500 } = {}) {
     if (typeof generate !== 'function' || typeof reply !== 'function' || !validId(channelId) || !dataDir)
       throw new Error('Invalid chat bot configuration');
-    this.#generate = generate; this.#reply = reply; this.#getSelfId = getSelfId; this.#resolveAuthor = resolveAuthor;
+    this.#generate = generate; this.#reply = reply; this.#progress = progress;
+    this.#getSelfId = getSelfId; this.#resolveAuthor = resolveAuthor;
     this.#channelId = channelId; this.#now = now; this.#writeState = writeState; this.#logger = logger;
     this.#file = path.join(dataDir, 'seen.json');
     this.#config = { model, maxInputChars, maxHistoryChars, maxHistoryTurns, historyTtlMs,
@@ -174,24 +175,52 @@ export class AiChatBot {
     this.#track(async () => {
       const startedAt = this.#now();
       const current = () => !this.#closed && !controller.signal.aborted && state.epoch === operation.epoch;
+      let progressHandle, progressEnded = false;
+      const progressCall = async (method, ...args) => {
+        try { await progressHandle?.[method]?.(...args); }
+        catch (error) { this.#log('progress_failed', { code: sanitizeFailureCode(error?.code) }); }
+      };
+      const endProgress = async (method, code) => {
+        if (!progressHandle || progressEnded) return;
+        progressEnded = true;
+        await progressCall(method, ...(code === undefined ? [] : [code]));
+      };
+      const cancelProgress = () => { void endProgress('cancel'); };
+      controller.signal.addEventListener('abort', cancelProgress, { once: true });
       try {
+        if (typeof this.#progress?.start === 'function') {
+          try {
+            progressHandle = await this.#progress.start({ targetId: this.#channelId, replyMessageId: event.msg_id, signal: controller.signal });
+          } catch (error) { this.#log('progress_failed', { code: sanitizeFailureCode(error?.code) }); }
+        }
+        if (!current()) return;
         const messages = [...history, { role: 'user', content: parsed.text }];
         const response = await this.#generate(messages, { signal: controller.signal });
         if (!current()) return;
         if (typeof response?.text !== 'string' || !response.text.trim()) throw Object.assign(new Error('empty'), { code: 'EMPTY_RESPONSE' });
-        if (!await this.#deliver(event, response.text, controller.signal, response.incomplete === true) || !current()) return;
+        let deliveryCode = 'UNKNOWN';
+        const delivered = await this.#deliver(event, response.text, controller.signal, response.incomplete === true, {
+          onStage: phase => current() && !progressEnded ? progressCall('setPhase', phase) : undefined,
+          onFailure: code => { deliveryCode = code; },
+        });
+        if (!current()) return;
+        if (!delivered) { await endProgress('fail', deliveryCode); return; }
         history = [...messages, { role: 'assistant', content: assistantHistory(response) }];
         while (history.length && (history.length > this.#config.maxHistoryTurns * 2
           || history.reduce((size, item) => size + item.content.length, 0) > this.#config.maxHistoryChars)) history.splice(0, 2);
         state.messages = history; state.at = this.#now(); this.#lastError = null; this.#lastErrorCode = null;
+        await endProgress('finish');
       } catch (error) {
         const code = sanitizeFailureCode(error?.code);
         if (current() && code !== 'CANCELLED') {
           this.#counts.failures++; this.#lastError = 'MODEL'; this.#lastErrorCode = code;
           this.#log('model_failed', { code, durationMs: this.#now() - startedAt });
+          await endProgress('fail', code);
           await this.#deliver(event, modelFailureMessage(code), controller.signal);
-        }
+        } else await endProgress('cancel');
       } finally {
+        if (!current()) await endProgress('cancel');
+        controller.signal.removeEventListener('abort', cancelProgress);
         this.#active.delete(operation); this.#controllers.delete(controller);
         if (this.#perUser.get(key) === operation) this.#perUser.delete(key);
       }
@@ -215,16 +244,17 @@ export class AiChatBot {
     this.#tasks.add(task); task.finally(() => this.#tasks.delete(task));
   }
 
-  async #deliver(event, content, signal, incomplete = false) {
+  async #deliver(event, content, signal, incomplete = false, { onStage, onFailure } = {}) {
     if (this.#closed || signal.aborted) return false;
     const startedAt = this.#now();
     try {
-      await this.#reply({ targetId: this.#channelId, replyMessageId: event.msg_id, content, signal, incomplete });
+      await this.#reply({ targetId: this.#channelId, replyMessageId: event.msg_id, content, signal, incomplete, onStage });
       if (this.#closed || signal.aborted) return false;
       this.#counts.replies++; this.#lastReplyAt = new Date(this.#now()).toISOString(); this.#log('reply_sent'); return true;
     } catch (error) {
       if (!this.#closed && !signal.aborted) {
         const code = sanitizeFailureCode(error?.code);
+        onFailure?.(code);
         this.#counts.failures++; this.#lastError = 'DELIVERY'; this.#lastErrorCode = code;
         this.#log('delivery_failed', { code, durationMs: this.#now() - startedAt });
       }

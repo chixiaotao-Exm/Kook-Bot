@@ -4,10 +4,15 @@
   "private": true,
   "type": "module",
   "description": "Dedicated KOOK text chat bot using a Responses-compatible API",
-  "engines": { "node": ">=22.16.0" },
+  "engines": {
+    "node": ">=22.16.0"
+  },
   "scripts": {
     "start": "node --env-file-if-exists=.env src/index.js",
     "doctor": "node --env-file-if-exists=.env src/doctor.js",
     "test": "node --test"
+  },
+  "dependencies": {
+    "sharp": "0.35.4"
   }
 }
