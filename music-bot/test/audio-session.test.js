@@ -119,10 +119,14 @@ test('transport failure reports one source error and disconnect reaps both proce
 }, async (t) => {
   const { session, voice, url } = await setup(t);
   await session.connect(voice, 60);
-  const errors = []; const source = session.start(url('first'), voice, 60, 7, (error) => errors.push(error));
-  session.sender.child.kill('SIGTERM');
+  // Keep the offset inside the four-second fixture, and freeze progress so EOF
+  // cannot win the race against the deliberately failed transport.
+  const errors = []; const source = session.start(url('first'), voice, 60, 1, (error) => errors.push(error));
+  source.pause();
+  assert.equal(session.sender.child.kill('SIGTERM'), true);
   await until(() => errors.length > 0, 'Transport failure reaches current source');
   assert.equal(errors.length, 1); assert.ok(errors[0] instanceof Error); assert.equal(session.connected, false);
-  assert.equal(source.seconds, 7); await session.disconnect();
+  assert.equal(source.seconds, 1); await session.disconnect();
+  assert.equal(errors.length, 1);
   assert.ok(source.child.exitCode !== null || source.child.signalCode !== null); assert.equal(session.pendingStops.size, 0);
 });
