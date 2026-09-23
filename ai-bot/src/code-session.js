@@ -12,6 +12,8 @@ const THREAD = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/;
 const SEEN_TTL = 86400000;
 const MAX_SEEN = 4096;
 const MAX_CONTEXT = 105000;
+const MAX_TOOL_RESULT = 20000;
+const RESULT_TRUNCATED = '\n... [output truncated] ...\n';
 const CREDENTIAL = /(?:\bsk-[a-z0-9_-]{12,}|\badmin-[a-f0-9]{16,}|\b\d{1,4}\/[a-z0-9+/=]{4,}\/[a-z0-9+/=]{10,}|\bauthorization\s*:\s*bearer\s+\S{12,})/gi;
 const CODES = new Set(['PAUSED', 'CANCELLED', 'TIMEOUT', 'AUTH', 'RATE_LIMIT', 'NETWORK', 'UPSTREAM_ERROR', 'MODEL_MISMATCH',
   'FORMAT', 'RESPONSE_LIMIT', 'REFUSAL', 'INPUT_LIMIT', 'INVALID_INPUT', 'REDIRECT', 'CONFIG', 'EMPTY_RESPONSE',
@@ -50,14 +52,37 @@ const READ_TOOLS = TOOLS.filter(item => !WRITE_TOOLS.has(item.name));
 const DETAIL = { create_job: '创建独立工作区', list_files: '查看仓库文件', read_file: '读取代码', search_code: '搜索代码',
   write_file: '修改文件', replace_text: '修改代码', run_checks: '运行检查', get_diff: '检查实际改动', publish: '发布已验证的分支', job_status: '确认 PR 状态' };
 
+function fitResult(text, encode) {
+  const candidate = size => {
+    const head = Math.ceil(size / 2), tail = Math.floor(size / 2);
+    const beginning = text.slice(0, head).replace(/[\uD800-\uDBFF]$/, '');
+    const ending = tail ? text.slice(-tail).replace(/^[\uDC00-\uDFFF]/, '') : '';
+    return encode(beginning + RESULT_TRUNCATED + ending);
+  };
+  let best = candidate(0);
+  if (best.length > MAX_TOOL_RESULT) return null;
+  let low = 1, high = Math.min(text.length, MAX_TOOL_RESULT);
+  // Measure the final JSON, including escaping and UTF-16 surrogate pairs.
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2), result = candidate(middle);
+    if (result.length <= MAX_TOOL_RESULT) { best = result; low = middle + 1; }
+    else high = middle - 1;
+  }
+  return best;
+}
+
 function boundedResult(value) {
   let serialized;
   try { serialized = JSON.stringify(value); } catch { serialized = '{"error":"INVALID_RESULT"}'; }
   // The broker only exposes the approved repository. Preserve exact source,
   // including synthetic key fixtures; redaction here would corrupt edits.
   serialized = serialized || '{}';
-  if (serialized.length <= 20000) return serialized;
-  return JSON.stringify({ truncated: true, preview: serialized.slice(0, 18000).replace(/[\uD800-\uDBFF]$/, '') });
+  if (serialized.length <= MAX_TOOL_RESULT) return serialized;
+  if (object(value) && typeof value.output === 'string') {
+    const result = fitResult(value.output, output => JSON.stringify({ ...value, output, truncated: true }));
+    if (result) return result;
+  }
+  return fitResult(serialized, preview => JSON.stringify({ truncated: true, preview }));
 }
 
 function userMessages(content) {

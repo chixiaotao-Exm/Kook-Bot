@@ -228,11 +228,11 @@ def _markdown(value):
     return re.sub(r"([\\`*_{}\[\]()#+.!|>~:<>=/\-])", r"\\\1", value)
 
 
-def _bounded_markdown(lines):
+def _bounded_markdown(lines, report_json_path):
     text = "\n".join(lines) + "\n"
     if len(text.encode("utf-16-le")) // 2 <= 28000:
         return text.encode("utf-8")
-    marker = "\n\n摘要过长，已截断。完整复核记录见 .kook-agent/report.json。\n"
+    marker = f"\n\n摘要过长，已截断。完整复核记录见 {report_json_path}。\n"
     budget = 28000 - len(marker.encode("utf-16-le")) // 2
     kept = []
     used = 0
@@ -341,7 +341,9 @@ class RepositoryBackend:
             base = self._mirror_run(["rev-parse", "--verify", "refs/heads/source-main^{commit}"]).decode("ascii").strip()
             if not SHA.fullmatch(base):
                 raise RepositoryError("INVALID_BASE")
-            archive = self._mirror_run(["archive", "--format=tar", base], maximum=MAX_ARCHIVE)
+            # Reports are preserved in the publication tree, but are never model
+            # inputs. Exclude their history before applying the archive budget.
+            archive = self._mirror_run(["archive", "--format=tar", base, "--", ".", ":(exclude).kook-agent"], maximum=MAX_ARCHIVE)
             files = {}
             file_modes = {}
             archive_paths = set()
@@ -454,7 +456,9 @@ class RepositoryBackend:
             lines.append("   Suggested change: " + _markdown(finding["solution"]))
         if not safe_findings:
             lines.append("No findings recorded.")
-        return {".kook-agent/report.json": _json_bytes(safe), ".kook-agent/report.md": _bounded_markdown(lines)}
+        report_root = f".kook-agent/reports/{job_id}"
+        report_json = report_root + "/report.json"
+        return {report_json: _json_bytes(safe), report_root + "/report.md": _bounded_markdown(lines, report_json)}
 
     def _remote_branch(self, branch):
         output = self._mirror_run(["ls-remote", "--heads", REMOTE, "refs/heads/" + branch], timeout=20)
