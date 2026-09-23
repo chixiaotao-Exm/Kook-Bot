@@ -33,6 +33,22 @@ test('zero explicitly disables both total discussion limits while request timeou
   assert.equal(finite.rounds, 6); assert.equal(finite.deadlineMs, 600000);
 });
 
+test('both distinct roles prioritize current human contributions and requested brevity without exposing credentials', () => {
+  const config = loadDuetConfig({ ...env, BOT_A_LABEL: '构想者', BOT_B_LABEL: '审阅者' });
+  assert.match(config.systemPrompts[0], /你是构想者.*提出观点、具体方案和例子/);
+  assert.match(config.systemPrompts[1], /你是审阅者.*审阅与改进/);
+  for (const prompt of config.systemPrompts) {
+    assert.match(prompt, /人类参与者与两个 AI 的共同讨论/);
+    assert.match(prompt, /优先回应最新的人类问题、约束与纠正，再回应另一位 AI/);
+    assert.match(prompt, /原始主题和已提供的近期公开上下文/);
+    assert.match(prompt, /人类明确指定一句话、字数、语言或格式时优先遵守，不再套用默认字数/);
+    assert.match(prompt, /不冒充人类或另一位 AI/);
+    assert.match(prompt, /不输出或索取凭据/);
+    assert.ok(Object.values(env).every(secret => !prompt.includes(secret)));
+  }
+  assert.equal(config.rounds, 0); assert.equal(config.deadlineMs, 0);
+});
+
 test('model overrides, limits, role labels and data directory resolve independently', () => {
   const config = loadDuetConfig({ ...env, OPENAI_BASE_URL: 'https://example.invalid/v1', OPENAI_MODEL: 'shared-model',
     DUET_MODEL_B: 'second-model', BOT_A_LABEL: '构想者', BOT_B_LABEL: '审阅者', HOST: '::1', PORT: '19100', DATA_DIR: './duet-data',

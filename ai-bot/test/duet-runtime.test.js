@@ -97,3 +97,52 @@ test('a direct human question starts continuous discussion and plain stop cancel
   assert.deepEqual(sent.map(item => item.index), [0, 1]);
   assert.equal(calls, 3);
 });
+
+test('a human joins during generation, the next speaker answers them and old draft never posts', async t => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), 'duet-three-party-'));
+  const config = { tokens: ['fixture-a', 'fixture-b'], models: ['gpt-6-astra', 'gpt-6-astra'], labels: ['A', 'B'],
+    channelId: '88888888', dataDir, host: '127.0.0.1', port: 0, rounds: 0, deadlineMs: 0, betweenTurnsMs: 0 };
+  const generated = [], delivered = [], notices = [];
+  let releaseOld;
+  const oldDraft = new Promise(resolve => { releaseOld = resolve; });
+  const initial = event('一起规划音乐社区活动', 20), addition = event('补充：预算只有1000元，优先给出免费方案', 21);
+  const runtime = createDuetRuntime({ config, Gateway, progress: null, logger: () => {},
+    verify: async () => ({ channelAccessible: true, bots: [{ botId: '11111111' }, { botId: '22222222' }] }),
+    clients: [0, 1].map(index => ({ async generate(messages, { signal }) {
+      generated.push({ index, messages, signal });
+      if (generated.length === 1) return { text: 'A建议举办社区分享会。' };
+      if (generated.length === 2) return oldDraft;
+      if (index === 1 && JSON.stringify(messages).includes('预算只有1000元')) return { text: 'B回应你的预算，建议使用免费场地。' };
+      return new Promise(() => {});
+    } })),
+    replies: [0, 1].map(index => async payload => {
+      delivered.push({ index, payload });
+      return { messageId: `00000000-0000-4000-8000-${String(100 + delivered.length).padStart(12, '0')}` };
+    }),
+    commandReply: async payload => { notices.push(payload.content); return { messageId: '00000000-0000-4000-8000-000000000099' }; },
+  });
+  t.after(async () => { await runtime.close(); await rm(dataDir, { recursive: true, force: true }); });
+  await runtime.start();
+  await runtime.gateways[0].onEvent(initial);
+  await waitFor(() => generated.length === 2 && delivered.length === 1);
+  await runtime.gateways[0].onEvent(addition);
+  await waitFor(() => generated.length >= 3);
+  releaseOld({ text: '这个过时草稿没有考虑预算。' });
+  await waitFor(() => delivered.length === 2 && generated.length >= 4);
+  assert.equal(generated[1].signal.aborted, true);
+  assert.deepEqual(generated.map(value => value.index), [0, 1, 1, 0]);
+  assert.deepEqual(delivered.map(value => value.index), [0, 1]);
+  assert.match(delivered[1].payload.content, /B回应你的预算/);
+  assert.equal(delivered[1].payload.replyMessageId, addition.msg_id);
+  assert.ok(!JSON.stringify(delivered).includes('过时草稿'));
+  assert.ok(JSON.stringify(generated[2].messages).includes(initial.content));
+  assert.ok(JSON.stringify(generated[2].messages).includes('A建议举办社区分享会'));
+  assert.ok(JSON.stringify(generated[3].messages).includes(addition.content));
+  assert.equal(runtime.snapshot().humanParticipation, true);
+  assert.equal(runtime.session.snapshot().runs, 1);
+  await runtime.gateways[0].onEvent(event('停止', 22));
+  await waitFor(() => !runtime.session.snapshot().active);
+  assert.equal(runtime.session.snapshot().status, 'stopped');
+  assert.equal(delivered.length, 2);
+  assert.ok(!(await readFile(path.join(dataDir, 'duet-state.json'), 'utf8')).includes('预算只有1000元'));
+});

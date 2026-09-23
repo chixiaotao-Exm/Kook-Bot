@@ -17,11 +17,14 @@ const flush = async () => { for (let n = 0; n < 20; n++) await Promise.resolve()
 async function fixture(t, options = {}) {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), 'duet-commands-'));
   let now = NOW, active = false, rounds = 0;
-  const starts = [], stops = [], replies = [], logs = [];
+  const starts = [], contributions = [], stops = [], replies = [], logs = [];
   const session = { async start(input) {
     starts.push(input); if (active) return { accepted: false, reason: 'BUSY' };
     active = true; rounds = input.rounds;
     return { accepted: true, rounds, unlimited: rounds === 0, totalTurns: rounds === 0 ? null : rounds * 2 };
+  }, async contribute(input) {
+    if (!active) return { accepted: false, reason: 'NO_ACTIVE' };
+    contributions.push(input); return { accepted: true, contributions: contributions.length, pendingInputs: contributions.length };
   }, async stop() { stops.push(true); active = false; }, snapshot() {
     return { active, status: active ? 'running' : 'idle', rounds, unlimited: rounds === 0,
       completedTurns: 0, totalTurns: rounds === 0 ? null : rounds * 2, currentRound: active ? 1 : null, currentSpeaker: active ? '机器人 A' : null };
@@ -31,7 +34,7 @@ async function fixture(t, options = {}) {
     now: () => now, logger: row => logs.push(row), ...options };
   const bot = await new DuetCommands(config).init();
   t.after(async () => { await bot.close(); await rm(dataDir, { recursive: true, force: true }); });
-  return { bot, config, dataDir, starts, stops, replies, logs, advance(ms) { now += ms; },
+  return { bot, config, dataDir, starts, contributions, stops, replies, logs, advance(ms) { now += ms; },
     send(number, content, overrides = {}) { return bot.handle(event(number, content, { msg_timestamp: now, ...overrides })); } };
 }
 
@@ -187,11 +190,12 @@ test('stop is always admitted during sender cooldown and while notices are in fl
   waiting.resolve({ messageId: id(900) }); await closing;
 });
 
-test('only one active session is accepted and duplicate session receipts receive no notice', async t => {
+test('new questions join the active discussion and duplicate session receipts receive no notice', async t => {
   const f = await fixture(t); await f.send(1);
   f.advance(3000); await f.send(2, '不同话题'); await flush();
-  assert.equal(f.bot.snapshot().starts, 1); assert.match(f.replies.at(-1).content, /已有讨论正在进行/);
-  assert.match(f.replies.at(-1).content, /先发送“停止”，再发送新问题/);
+  assert.equal(f.bot.snapshot().starts, 1); assert.equal(f.contributions.length, 1);
+  assert.match(f.replies.at(-1).content, /已加入讨论，下一位机器人会先回应你的补充/);
+  assert.doesNotMatch(f.replies.at(-1).content, /先发送“停止”/);
   assert.doesNotMatch(f.replies.at(-1).content, /\/停止|\/互聊/);
   const duplicate = await fixture(t, { session: { async start() { return { accepted: false, reason: 'DUPLICATE' }; },
     async stop() {}, snapshot() { return { active: false }; } } });
@@ -204,10 +208,125 @@ test('numeric-leading questions keep their complete topic and only exact stop me
   assert.equal(f.starts[0].topic, '2026 年有哪些值得讨论的科技趋势？'); assert.equal(f.starts[0].rounds, 0);
   f.advance(3000); await f.send(2, '为什么有些机器会突然停止运行？'); await flush();
   assert.equal(f.stops.length, 0); assert.equal(f.bot.snapshot().starts, 1);
-  assert.match(f.replies.at(-1).content, /已有讨论正在进行/);
+  assert.equal(f.contributions[0].text, '为什么有些机器会突然停止运行？');
+  assert.match(f.replies.at(-1).content, /已加入讨论/);
   f.advance(3000); await f.send(3, '停止'); await flush();
   assert.equal(f.stops.length, 1); assert.match(f.replies.at(-1).content, /已停止讨论/);
   assert.doesNotMatch(f.replies.at(-1).content, /\/互聊|\/停止/);
+});
+
+test('rapid interjections are all durably admitted despite user cooldown; only acknowledgements are throttled', async t => {
+  const f = await fixture(t); await f.send(1, '开始讨论');
+  for (let n = 2; n <= 35; n++) await f.send(n, `补充观点 ${n}`);
+  await flush();
+  assert.equal(f.starts.length, 1); assert.equal(f.contributions.length, 34);
+  assert.equal(f.bot.snapshot().contributions, 34);
+  assert.deepEqual(f.contributions[0], { text: '补充观点 2', userId: USER, receiptId: id(2), replyMessageId: id(2) });
+  assert.ok(f.replies.length <= 1);
+  await f.send(2, '补充观点 2'); assert.equal(f.contributions.length, 34);
+  const ledger = await readFile(path.join(f.dataDir, 'duet-seen.json'), 'utf8');
+  assert.equal(JSON.parse(ledger).seen.length, 35); assert.doesNotMatch(ledger, /补充观点/);
+});
+
+test('active contributions bypass the global command admission budget without starting a second session', async t => {
+  const f = await fixture(t); await f.send(1, '开始讨论');
+  for (let n = 2; n <= 30; n++) {
+    const user = String(200000100 + n);
+    await f.send(n, '互聊状态', { author_id: user, extra: { author: { id: user, bot: false } } }); await flush();
+  }
+  await f.send(31, '仍然需要回应的补充');
+  assert.equal(f.contributions.length, 1); assert.equal(f.starts.length, 1);
+  await f.send(32, '停止'); assert.equal(f.stops.length, 1);
+});
+
+test('contributions cannot enter a session before command receipt persistence', async t => {
+  const ready = defer(), persisted = defer(); let paused = false;
+  const f = await fixture(t, { writeState: async (file, value) => {
+    if (paused) { ready.resolve(); await persisted.promise; }
+    await atomicJson(file, value);
+  } });
+  await f.send(1, '开始讨论'); paused = true;
+  const handling = f.send(2, '补充'); await ready.promise;
+  assert.equal(f.contributions.length, 0); persisted.resolve(); await handling;
+  assert.equal(f.contributions.length, 1);
+});
+
+test('snapshot/admission races use one alternate route with the same receipt', async t => {
+  for (const active of [false, true]) {
+    const calls = [];
+    const f = await fixture(t, { session: {
+      async start(input) { calls.push({ kind: 'start', input }); return active
+        ? { accepted: true, rounds: 0, unlimited: true, totalTurns: null } : { accepted: false, reason: 'BUSY' }; },
+      async contribute(input) { calls.push({ kind: 'contribute', input }); return active
+        ? { accepted: false, reason: 'NO_ACTIVE' } : { accepted: true, pendingInputs: 1 }; },
+      async stop() {}, snapshot() { return { active }; },
+    } });
+    await f.send(1, '竞态中的问题'); await flush();
+    assert.deepEqual(calls.map(call => call.kind), active ? ['contribute', 'start'] : ['start', 'contribute']);
+    assert.ok(calls.every(call => call.input.receiptId === id(1) && call.input.replyMessageId === id(1)));
+    assert.equal(f.bot.snapshot()[active ? 'starts' : 'contributions'], 1);
+  }
+});
+
+test('repeated state changes and FINISHING do not cause retry loops or start a replacement run', async t => {
+  for (const reason of ['NO_ACTIVE', 'FINISHING']) {
+    const calls = [];
+    const f = await fixture(t, { session: {
+      async start() { calls.push('start'); return { accepted: false, reason: 'BUSY' }; },
+      async contribute() { calls.push('contribute'); return { accepted: false, reason }; },
+      async stop() {}, snapshot() { return { active: true }; },
+    } });
+    await f.send(1, '未被接纳的问题'); await flush();
+    assert.deepEqual(calls, reason === 'NO_ACTIVE' ? ['contribute', 'start'] : ['contribute']);
+    assert.match(f.replies[0].content, /暂未加入/);
+    if (reason === 'FINISHING') assert.match(f.replies[0].content, /这轮讨论正在结束/);
+    assert.equal(f.bot.snapshot().starts, 0); assert.equal(f.bot.snapshot().contributions, 0);
+  }
+});
+
+test('full pending-input queue produces an explicit rejection even during acknowledgement cooldown', async t => {
+  let contributions = 0;
+  const f = await fixture(t, { session: {
+    async start() { assert.fail('active discussion must not start twice'); },
+    async contribute() { contributions++; return { accepted: false, reason: 'CAPACITY' }; },
+    async stop() {}, snapshot() { return { active: true }; },
+  } });
+  await f.send(1, '帮助'); await flush();
+  await f.send(2, '不应回显的补充'); await flush();
+  assert.equal(contributions, 1); assert.equal(f.replies.length, 2);
+  assert.match(f.replies.at(-1).content, /补充暂未加入/); assert.match(f.replies.at(-1).content, /请稍后重新发送/);
+  assert.doesNotMatch(f.replies.at(-1).content, /不应回显的补充/);
+  await f.send(2, '不应回显的补充'); assert.equal(contributions, 1);
+});
+
+test('active secret, oversized, robot and foreign-channel messages never reach contribute', async t => {
+  const f = await fixture(t); await f.send(1, '开始讨论');
+  await f.send(2, 'sk-privatefixture123456789'); await f.send(3, '长'.repeat(2001));
+  await f.send(4, 'bot supplement', { extra: { author: { id: USER, bot: true } } });
+  await f.send(5, 'foreign supplement', { target_id: '900000001' });
+  assert.equal(f.contributions.length, 0); assert.equal(f.starts.length, 1);
+});
+
+test('closing before a delayed NO_ACTIVE response prevents a late fallback start', async t => {
+  const pending = defer(); let starts = 0;
+  const f = await fixture(t, { session: {
+    async start() { starts++; return { accepted: true }; }, contribute() { return pending.promise; },
+    async stop() {}, snapshot() { return { active: true }; },
+  } });
+  const handling = f.send(1, '迟到的问题');
+  // Wait for durable admission before closing; the session promise itself remains pending.
+  for (let n = 0; n < 100 && !f.bot.snapshot().commands; n++) await new Promise(resolve => setTimeout(resolve, 2));
+  assert.equal(f.bot.snapshot().commands, 1);
+  const closing = f.bot.close(); pending.resolve({ accepted: false, reason: 'NO_ACTIVE' });
+  await Promise.all([handling, closing]); assert.equal(starts, 0); assert.equal(f.replies.length, 0);
+});
+
+test('stopping a discussion prevents replayed late input from starting it again', async t => {
+  const f = await fixture(t); await f.send(1, '开始讨论'); await f.send(2, '我的补充');
+  await f.send(3, '停止'); assert.equal(f.stops.length, 1);
+  f.advance(3000); await f.send(2, '我的补充'); await f.send(1, '开始讨论');
+  assert.equal(f.starts.length, 1); assert.equal(f.contributions.length, 1);
+  assert.equal(f.config.session.snapshot().active, false);
 });
 
 test('secret and invalid topics produce fixed safe guidance without starting or echoing input', async t => {

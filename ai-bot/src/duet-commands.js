@@ -10,8 +10,9 @@ const MAX_AGE = 5 * 60_000, SEEN_TTL = 10 * 60_000, MAX_RECEIPTS = 2048;
 const MAX_TOPIC = 2000;
 const CREDENTIAL = /(?:\bsk-[a-z0-9_-]{12,}|\badmin-[a-f0-9]{16,}|\b\d{1,4}\/[a-z0-9+/=]{4,}\/[a-z0-9+/=]{10,}|\bauthorization\s*:\s*bearer\s+\S{12,})/i;
 const help = rounds => (rounds === 0
-  ? '直接发送问题，让两个机器人持续讨论，发送“停止”即可结束。\n'
+  ? '直接发送问题，与两个机器人一起持续讨论，发送“停止”即可结束。\n'
   : `直接发送问题，让两个机器人轮流讨论，默认 ${rounds} 轮，共 ${rounds * 2} 次发言。\n`)
+  + '讨论中可以随时补充或调整话题，下一位机器人会先回应你的补充。\n'
   + '“停止”：结束当前讨论，任何用户都可以停止。\n“互聊状态”：查看进度\n“帮助”：查看说明\n问题最多 2000 字，请勿包含密码或密钥。';
 
 export function parseDuetCommand(content, selfId = '', defaultRounds = 0) {
@@ -53,7 +54,7 @@ export class DuetCommands {
   #now; #writeState; #logger; #defaultRounds; #seen = new Map(); #users = new Map(); #recent = [];
   #noticeUsers = new Map(); #recentNotices = []; #tasks = new Set(); #controllers = new Set();
   #operations = Promise.resolve(); #ready = false; #closed = false;
-  #counts = { commands: 0, starts: 0, stops: 0, replies: 0, failures: 0 };
+  #counts = { commands: 0, starts: 0, contributions: 0, stops: 0, replies: 0, failures: 0 };
   #lastError = null; #lastReplyAt = null;
 
   constructor({ session, reply, getSelfId, getParticipantIds = () => [], resolveAuthor,
@@ -145,7 +146,15 @@ export class DuetCommands {
     }
     const time = this.#now();
     this.#prune(time);
-    if (this.#users.has(event.author_id) || this.#recent.length >= 30) return;
+    // Discussion inputs are admitted by the session's bounded pending-input
+    // queue. Command/notice cooldowns must never silently discard an interjection.
+    if (parsed.kind === 'start' && this.#session.snapshot().active) {
+      await this.#input(event, parsed, true); return;
+    }
+    if (this.#users.has(event.author_id) || this.#recent.length >= 30) {
+      if (parsed.kind === 'start') this.#notice(event, '问题暂未加入，请稍后重新发送。', true);
+      return;
+    }
     this.#users.set(event.author_id, time); this.#recent.push(time);
     if (parsed.kind === 'help') { this.#notice(event, help(this.#defaultRounds)); return; }
     if (parsed.kind === 'credential') { this.#notice(event, '问题似乎包含密钥，未开始讨论。请删除敏感内容后重试。'); return; }
@@ -161,25 +170,49 @@ export class DuetCommands {
         const speaker = typeof status.currentSpeaker === 'string' && /^[\p{L}\p{N} _·-]{1,40}$/u.test(status.currentSpeaker)
           && !CREDENTIAL.test(status.currentSpeaker) ? status.currentSpeaker : '等待中';
         this.#notice(event, header + (status.active
-          ? `第 ${Math.max(1, count(status.currentRound))} 轮 · 已发 ${count(status.completedTurns)} 条\n当前发言方：${speaker}`
+          ? `第 ${Math.max(1, count(status.currentRound))} 轮 · 已发 ${count(status.completedTurns)} 条\n当前发言方：${speaker}\n你可以随时补充问题。`
           : `已发 ${count(status.completedTurns)} 条。`));
-      } else this.#notice(event, header + `已完成 ${count(status.completedTurns)} / ${count(status.totalTurns)} 次发言。`);
+      } else this.#notice(event, header + `已完成 ${count(status.completedTurns)} / ${count(status.totalTurns)} 次发言。`
+        + (status.active ? '\n你可以随时补充问题。' : ''));
       return;
     }
+    await this.#input(event, parsed, false);
+  }
+
+  async #input(event, parsed, contributeFirst) {
+    const start = () => this.#session.start({ topic: parsed.topic, rounds: parsed.rounds,
+      userId: event.author_id, receiptId: event.msg_id, replyMessageId: event.msg_id });
+    const contribute = () => typeof this.#session.contribute === 'function'
+      ? this.#session.contribute({ text: parsed.topic, userId: event.author_id, receiptId: event.msg_id, replyMessageId: event.msg_id })
+      : { accepted: false, reason: 'NOT_READY' };
+    let contribution = contributeFirst;
     try {
-      const result = await this.#session.start({ topic: parsed.topic, rounds: parsed.rounds,
-        userId: event.author_id, receiptId: event.msg_id, replyMessageId: event.msg_id });
+      let result = await (contribution ? contribute() : start());
+      if (this.#closed) return;
+      // The active state can change between snapshot and admission. Permit one
+      // alternate route with the same receipt; never retry either operation.
+      if (contribution && result?.reason === 'NO_ACTIVE') {
+        contribution = false; result = await start();
+      } else if (!contribution && result?.reason === 'BUSY') {
+        contribution = true; result = await contribute();
+      }
+      if (this.#closed) return;
       if (result?.accepted === true) {
+        if (contribution) {
+          this.#counts.contributions++; this.#lastError = null;
+          this.#notice(event, '已加入讨论，下一位机器人会先回应你的补充。'); return;
+        }
         this.#counts.starts++; this.#lastError = null;
         const rounds = Number.isInteger(result.rounds) && result.rounds >= 0 && result.rounds <= 6 ? result.rounds : parsed.rounds;
         const totalTurns = Number.isInteger(result.totalTurns) && result.totalTurns >= 2 && result.totalTurns <= 12 ? result.totalTurns : rounds * 2;
         this.#notice(event, result.unlimited === true || rounds === 0
-          ? '已开始持续讨论。发送“停止”可随时结束。'
-          : `已开始讨论：${rounds} 轮，共 ${totalTurns} 次发言。发送“停止”可随时结束。`);
+          ? '已开始持续讨论。你可以随时补充问题，发送“停止”可结束。'
+          : `已开始讨论：${rounds} 轮，共 ${totalTurns} 次发言。你可以随时补充问题，发送“停止”可结束。`);
       } else if (result?.reason !== 'DUPLICATE') {
-        this.#notice(event, result?.reason === 'BUSY' ? '已有讨论正在进行。如需更换话题，请先发送“停止”，再发送新问题。'
+        this.#notice(event, result?.reason === 'CAPACITY' ? '补充暂未加入：待回应内容较多，请稍后重新发送。'
+          : result?.reason === 'FINISHING' ? '这轮讨论正在结束，这条补充暂未加入，请稍后再发。'
           : result?.reason === 'INVALID_INPUT' ? '问题或轮数不符合要求，请发送“帮助”查看说明。'
-            : '互聊暂时不可用，请稍后重试。');
+            : '问题暂未加入，讨论状态正在变化或暂时不可用，请稍后重新发送。', true);
       }
     } catch { this.#failed(event); }
   }
@@ -189,9 +222,9 @@ export class DuetCommands {
     this.#notice(event, '互聊暂时不可用，请稍后重试。');
   }
 
-  #notice(event, content) {
+  #notice(event, content, important = false) {
     const now = this.#now(); this.#prune(now);
-    if (this.#closed || this.#tasks.size >= 2 || this.#noticeUsers.has(event.author_id) || this.#recentNotices.length >= 30) return;
+    if (this.#closed || this.#tasks.size >= 2 || (!important && this.#noticeUsers.has(event.author_id)) || this.#recentNotices.length >= 30) return;
     this.#noticeUsers.set(event.author_id, now); this.#recentNotices.push(now);
     const controller = new AbortController(); this.#controllers.add(controller);
     const task = (async () => {
