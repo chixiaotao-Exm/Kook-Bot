@@ -76,6 +76,52 @@ test('ignores other channels, system/bot/self events, stale messages and unrelat
   assert.equal(f.calls.length, 0); assert.equal(f.replies.length, 0);
 });
 
+test('unverified or conflicting author identities cannot submit keys', async t => {
+  const f = await fixture(t);
+  for (const extra of [undefined, {}, { author: [] }, { author: {} }, { author: { bot: 0 } },
+    { author: { bot: 'false' } }, { author: { bot: false, id: '9988776655' } }]) {
+    await f.bot.handle(message({ extra }));
+  }
+  assert.equal(f.calls.length, 0); assert.equal(f.replies.length, 0);
+});
+
+test('missing bot flags require a confirmed human, including private queries without a guild', async t => {
+  const lookups = [];
+  const f = await fixture(t, { resolveAuthor: async input => { lookups.push(input); return { id: USER, bot: false }; } });
+  await f.bot.handle(message({ extra: { author: { id: USER }, guild_id: '123456789' } }));
+  assert.equal(f.calls.length, 1);
+  assert.deepEqual(lookups, [{ userId: USER, guildId: '123456789' }]);
+  f.advance(4000);
+  await f.bot.handle(message({ channel_type: 'PERSON', target_id: SELF,
+    msg_id: '00000000-0000-0000-0000-000000000002', extra: { author: { id: USER } } }));
+  assert.equal(f.calls.length, 2); assert.deepEqual(lookups[1], { userId: USER, guildId: null });
+  f.advance(4000);
+  await f.bot.handle(message({ msg_id: '00000000-0000-0000-0000-000000000003' }));
+  assert.equal(f.calls.length, 3); assert.equal(lookups.length, 2);
+});
+
+test('failed, robot and mismatched author lookups do not query or consume the receipt', async t => {
+  for (const resolveAuthor of [async () => ({ id: USER, bot: true }), async () => ({ id: SELF, bot: false }),
+    async () => ({ id: USER }), async () => null, async () => { throw Error('private details'); }]) {
+    const f = await fixture(t, { resolveAuthor });
+    await f.bot.handle(message({ extra: { author: { id: USER }, guild_id: '123456789' } }));
+    assert.equal(f.calls.length, 0); assert.equal(f.replies.length, 0);
+    await f.bot.handle(message());
+    assert.equal(f.calls.length, 1);
+    assert.doesNotMatch(JSON.stringify(f.logs), /private details/);
+  }
+});
+
+test('shutdown during author verification prevents later key use', async t => {
+  let resolve, started;
+  const began = new Promise(done => { started = done; });
+  const f = await fixture(t, { resolveAuthor: () => { started(); return new Promise(done => { resolve = done; }); } });
+  const handling = f.bot.handle(message({ extra: { author: { id: USER }, guild_id: '123456789' } }));
+  await began; const closing = f.bot.close(); resolve({ id: USER, bot: false });
+  await Promise.all([handling, closing]);
+  assert.equal(f.calls.length, 0); assert.equal(f.replies.length, 0);
+});
+
 test('safe hints and failures reply without querying invalid keys or echoing errors', async t => {
   let failure = new Error(KEY);
   const f = await fixture(t, { keyUsage: { query: async () => { throw failure; } } });
