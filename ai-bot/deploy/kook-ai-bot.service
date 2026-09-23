@@ -1,0 +1,28 @@
+[Unit]
+Description=KOOK AI text chat bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kook-ai
+Group=kook-ai
+WorkingDirectory=/opt/kook-ai-bot
+EnvironmentFile=/opt/kook-ai-bot/.env
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node /opt/kook-ai-bot/src/index.js
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/kook-ai-bot/data
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=256M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target
