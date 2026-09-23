@@ -9,7 +9,15 @@ const raw = (changes = {}) => ({ model: 'gpt-6-astra', status: 'completed',
   usage: { input_tokens: 12, output_tokens: 8, total_tokens: 20 }, ...changes });
 const response = (body = raw(), options) => new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' }, ...options });
 const make = (fetchImpl = async () => response(), options = {}) => new ModelResponsesClient({ baseUrl: 'https://example.invalid', apiKey: KEY, fetchImpl, ...options });
-const hasCode = code => error => error instanceof ModelClientError && error.code === code && !error.message.includes(KEY);
+const hasCode = code => error => error instanceof ModelClientError && error.code === code
+  && typeof error.retryable === 'boolean' && !error.message.includes(KEY) && !JSON.stringify(error).includes(KEY);
+const classified = (code, retryable) => error => hasCode(code)(error) && error.retryable === retryable;
+
+test('errors carry explicit conservative retry metadata without inferring it from the category', () => {
+  assert.equal(new ModelClientError('NETWORK', 'safe message').retryable, false);
+  assert.equal(new ModelClientError('UPSTREAM_ERROR', 'safe message', { retryable: true }).retryable, true);
+  assert.equal(new ModelClientError('UPSTREAM_ERROR', 'safe message', { retryable: 'true' }).retryable, false);
+});
 
 test('sends the exact Responses request to normalized /v1 with no tools or storage', async () => {
   const calls = [];
@@ -54,7 +62,7 @@ test('explicit xhigh timeout permits ten minutes without changing the normal def
   let requestSignal, sent;
   const pending = make(async (_url, options) => { requestSignal = options.signal; sent = JSON.parse(options.body); return new Promise(() => {}); },
     { timeoutMs: 600000, reasoningEffort: 'xhigh', maxOutputTokens: 8192 }).generate(messages);
-  const rejected = assert.rejects(pending, hasCode('TIMEOUT'));
+  const rejected = assert.rejects(pending, classified('TIMEOUT', true));
   assert.equal(sent.reasoning.effort, 'xhigh'); assert.equal(sent.model, 'gpt-6-astra');
   t.mock.timers.tick(599999); assert.equal(requestSignal.aborted, false);
   t.mock.timers.tick(1); assert.equal(requestSignal.aborted, true); await rejected;
@@ -115,7 +123,26 @@ test('reasoning-only incomplete output remains an explicit empty response failur
 
 test('rejects absent, non-text, refused, failed and wrong-model responses without leaking upstream text', async () => {
   const cases = [[raw({ output: [] }), 'EMPTY_RESPONSE'], [raw({ output: [{ type: 'message', role: 'assistant', content: [{ type: 'refusal', refusal: KEY }] }] }), 'REFUSAL'], [raw({ status: 'failed', error: { message: KEY } }), 'UPSTREAM_ERROR'], [raw({ error: { message: KEY } }), 'UPSTREAM_ERROR'], [raw({ status: 'queued' }), 'FORMAT'], [raw({ model: 'gpt-other' }), 'MODEL_MISMATCH'], [null, 'FORMAT']];
-  for (const [body, code] of cases) await assert.rejects(make(async () => response(body)).generate(messages), hasCode(code));
+  for (const [body, code] of cases) await assert.rejects(make(async () => response(body)).generate(messages), classified(code, false));
+});
+
+test('only known temporary response errors are marked retryable and never retried by the client', async () => {
+  for (const [code, retryable] of [['server_error', true], ['rate_limit_exceeded', true],
+    ['invalid_prompt', false], ['insufficient_quota', false], ['content_policy_violation', false],
+    ['unknown_error', false], [undefined, false], [null, false], [500, false]]) {
+    for (const status of ['failed', 'completed']) {
+      let calls = 0;
+      await assert.rejects(make(async () => {
+        calls++;
+        return response(raw({ status, error: { code, message: `private upstream ${KEY}` } }));
+      }).generate(messages), classified('UPSTREAM_ERROR', retryable));
+      assert.equal(calls, 1);
+    }
+  }
+  for (const code of ['server_error', 'rate_limit_exceeded', undefined]) {
+    await assert.rejects(make(async () => response(raw({ status: 'cancelled', error: { code, message: KEY } })))
+      .generate(messages), classified('UPSTREAM_ERROR', false));
+  }
 });
 
 test('proxies that omit the model retain the exact requested model', async () => {
@@ -133,27 +160,44 @@ test('rejects invalid JSON, UTF-8 and oversized responses by length header and a
 });
 
 test('never follows redirects, exposes upstream errors, or retries billable requests', async () => {
-  for (const [status, code] of [[301, 'REDIRECT'], [302, 'REDIRECT'], [307, 'REDIRECT'], [401, 'AUTH'], [403, 'AUTH'], [429, 'RATE_LIMIT'], [400, 'UPSTREAM_ERROR'], [500, 'UPSTREAM_ERROR']]) {
+  for (const [status, code, retryable] of [[301, 'REDIRECT', false], [302, 'REDIRECT', false], [307, 'REDIRECT', false],
+    [401, 'AUTH', false], [403, 'AUTH', false], [429, 'RATE_LIMIT', true],
+    ...[400, 404, 409, 413, 422, 501, 505].map(status => [status, 'UPSTREAM_ERROR', false]),
+    ...[408, 500, 502, 503, 504].map(status => [status, 'UPSTREAM_ERROR', true])]) {
     let calls = 0;
-    await assert.rejects(make(async () => { calls++; return response({ error: { message: KEY } }, { status }); }).generate(messages), hasCode(code));
+    await assert.rejects(make(async () => {
+      calls++;
+      return response({ error: { code: 'server_error', message: KEY } }, { status });
+    }).generate(messages), classified(code, retryable));
     assert.equal(calls, 1);
   }
-  await assert.rejects(make(async () => { throw new Error(`secret upstream error ${KEY}`); }).generate(messages), hasCode('NETWORK'));
+  let calls = 0;
+  await assert.rejects(make(async () => { calls++; throw new Error(`secret upstream error ${KEY}`); })
+    .generate(messages), classified('NETWORK', true));
+  assert.equal(calls, 1);
+});
+
+test('response stream connection errors are retryable without exposing the cause or making another request', async () => {
+  let calls = 0;
+  const body = new ReadableStream({ start(controller) { controller.error(new Error(`private stream failure ${KEY}`)); } });
+  await assert.rejects(make(async () => { calls++; return new Response(body); }).generate(messages), classified('NETWORK', true));
+  assert.equal(calls, 1);
 });
 
 test('timeout bounds even a hanging fetch that ignores abort', async () => {
-  let requestSignal;
+  let requestSignal, calls = 0;
   const start = Date.now();
-  await assert.rejects(make(async (_url, options) => { requestSignal = options.signal; return new Promise(() => {}); }, { timeoutMs: 15 }).generate(messages), hasCode('TIMEOUT'));
+  await assert.rejects(make(async (_url, options) => { calls++; requestSignal = options.signal; return new Promise(() => {}); }, { timeoutMs: 15 }).generate(messages), classified('TIMEOUT', true));
   assert.ok(Date.now() - start < 1000);
   assert.equal(requestSignal.aborted, true);
+  assert.equal(calls, 1);
 });
 
 test('default timeout allows long output generation for 180 seconds', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   let requestSignal;
   const pending = make(async (_url, options) => { requestSignal = options.signal; return new Promise(() => {}); }).generate(messages);
-  const rejected = assert.rejects(pending, hasCode('TIMEOUT'));
+  const rejected = assert.rejects(pending, classified('TIMEOUT', true));
   t.mock.timers.tick(179999);
   assert.equal(requestSignal.aborted, false);
   t.mock.timers.tick(1);
@@ -164,7 +208,7 @@ test('default timeout allows long output generation for 180 seconds', async t =>
 test('timeout also bounds reading a hanging response body and cancels the reader', async () => {
   let cancelled = false;
   const body = new ReadableStream({ pull() { return new Promise(() => {}); }, cancel() { cancelled = true; } });
-  await assert.rejects(make(async () => new Response(body), { timeoutMs: 15 }).generate(messages), hasCode('TIMEOUT'));
+  await assert.rejects(make(async () => new Response(body), { timeoutMs: 15 }).generate(messages), classified('TIMEOUT', true));
   assert.equal(cancelled, true);
 });
 
@@ -174,8 +218,8 @@ test('caller abort cancels active requests, and pre-aborted callers never send a
   const client = make(async (_url, options) => { calls++; requestSignal = options.signal; return new Promise(() => {}); });
   const pending = client.generate(messages, { signal: controller.signal });
   controller.abort(new Error(KEY));
-  await assert.rejects(pending, hasCode('CANCELLED'));
+  await assert.rejects(pending, classified('CANCELLED', false));
   assert.equal(requestSignal.aborted, true);
-  await assert.rejects(client.generate(messages, { signal: controller.signal }), hasCode('CANCELLED'));
+  await assert.rejects(client.generate(messages, { signal: controller.signal }), classified('CANCELLED', false));
   assert.equal(calls, 1);
 });

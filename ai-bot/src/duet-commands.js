@@ -209,7 +209,10 @@ export class DuetCommands {
       const count = value => Number.isSafeInteger(value) && value >= 0 ? value : 0;
       const paused = status.paused === true || status.status === 'paused';
       const header = `互聊状态：${paused ? '已暂停' : labels[status.status] || (status.active ? '进行中' : '未开始')}\n`;
-      const inputHint = paused ? '补充会被记录，发送“继续”恢复讨论。' : '你可以随时补充问题。';
+      const recoveryHint = status.retryPaused === true ? 'AI 服务连续出错，当前发言位置和上下文已保留。\n'
+        : status.retryWaiting === true ? `AI 服务暂时不可用，等待第 ${count(status.retryAttempt)} 次重试。\n`
+          : count(status.retryAttempt) > 0 ? `正在第 ${count(status.retryAttempt)} 次重试生成。\n` : '';
+      const inputHint = recoveryHint + (paused ? '补充会被记录，发送“继续”恢复讨论。' : '你可以随时补充问题。');
       if (status.unlimited === true || status.rounds === 0) {
         const speaker = typeof status.currentSpeaker === 'string' && /^[\p{L}\p{N} _·-]{1,40}$/u.test(status.currentSpeaker)
           && !CREDENTIAL.test(status.currentSpeaker) ? status.currentSpeaker : '等待中';

@@ -72,6 +72,21 @@ test('ordinary questions start continuous discussion while legacy commands remai
   for (const value of ['/互聊状态 other', '/停止 please', '/admin', '   ']) assert.equal(parseDuetCommand(value, SELF), null);
 });
 
+test('status distinguishes waiting for a retry from a recoverable automatic pause', async t => {
+  for (const paused of [false, true]) {
+    const f = await fixture(t, { session: { start: async () => ({}), stop: async () => ({}), snapshot: () => ({
+      active: true, paused, status: paused ? 'paused' : 'running', unlimited: true, rounds: 0,
+      currentRound: 3, completedTurns: 4, currentSpeaker: '思维1', retryWaiting: !paused,
+      retryPaused: paused, retryAttempt: 2,
+    }) } });
+    await f.send(1, '互聊状态'); await flush();
+    assert.equal(f.replies.length, 1);
+    assert.match(f.replies[0].content, paused ? /AI 服务连续出错，当前发言位置和上下文已保留/ : /等待第 2 次重试/);
+    if (paused) assert.match(f.replies[0].content, /发送“继续”恢复讨论/);
+    assert.match(f.replies[0].content, /第 3 轮/);
+  }
+});
+
 test('only exact natural pause and resume aliases with optional terminal punctuation are controls', () => {
   for (const text of ['暂停', '先暂停', '暂停一下', '先暂停一下']) {
     for (const punctuation of ['', '。', '!', '！']) assert.deepEqual(parseDuetCommand(`${text}${punctuation}`), { kind: 'pause' });
