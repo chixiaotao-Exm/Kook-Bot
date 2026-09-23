@@ -3,15 +3,18 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { AdminAuth, AuthError } from './auth.js';
 import { KeyUsageError, validateUsageKey } from './key-usage.js';
+import { InvitationError } from './invitations.js';
 
 const staticRoot = fileURLToPath(new URL('../public/', import.meta.url));
 export class QuotaServer {
-  #keyPresets; #keyUsage; #keyQueryTimes = [];
-  constructor({ host = '127.0.0.1', port = 18998, publicUrl, sub2apiUrl, dashboard, scheduler, reporter = {}, auth, preview = false, publicAccess = false, keyUsage, keyPresets = [], queryBotStatus, activeQuotaStatus }) {
+  #keyPresets; #keyUsage; #keyQueryTimes = []; #invitations;
+  constructor({ host = '127.0.0.1', port = 18998, publicUrl, sub2apiUrl, dashboard, scheduler, reporter = {}, auth, preview = false, publicAccess = false, keyUsage, keyPresets = [], queryBotStatus, activeQuotaStatus, invitations, publicInvites = false }) {
     Object.assign(this, { host, port, dashboard, scheduler, reporter, preview, publicAccess });
     this.queryBotStatus = queryBotStatus;
     this.activeQuotaStatus = activeQuotaStatus;
     this.#keyUsage = keyUsage;
+    this.#invitations = invitations;
+    this.publicInvites = publicInvites === true;
     this.#keyPresets = keyPresets.filter(preset => preset.key).map(({ id, label, key }) => ({ id, label, key: validateUsageKey(key) }));
     this.publicUrl = new URL(publicUrl); this.basePath = this.publicUrl.pathname.replace(/\/$/, '');
     this.auth = auth || new AdminAuth({ baseUrl: sub2apiUrl, preview });
@@ -21,6 +24,57 @@ export class QuotaServer {
   cookie(res, session) { res.setHeader('Set-Cookie', `quota_session=${session?.id || ''}; HttpOnly; SameSite=Strict; Path=${this.basePath || ''}/; Max-Age=${session ? Math.max(1, Math.floor((session.expires - Date.now()) / 1000)) : 0}${this.publicUrl.protocol === 'https:' ? '; Secure' : ''}`); }
   status() { return { ...this.dashboard.snapshot(), reporter: this.reportConfig(), preview: this.preview, ...(this.activeQuotaStatus ? { activeQuota: this.activeQuotaStatus() } : {}) }; }
   reportConfig() { return { ...this.scheduler.snapshot(), configured: this.scheduler.snapshot().available, ...this.reporter }; }
+  invitationCapabilities(session) {
+    const enabled = Boolean(this.#invitations);
+    return { enabled, publicInvites: this.publicInvites, canInvite: enabled && (this.publicInvites || Boolean(session?.user)) };
+  }
+  authorizeInvitation(req) {
+    // Re-read the original request's session for every preflight/dispatch check.
+    // Logout and login rotate/delete it even if an earlier request is still waiting.
+    if (req.headers.origin) {
+      let origin;
+      try { origin = new URL(req.headers.origin); } catch {}
+      if (!origin || origin.origin !== req.headers.origin || origin.host !== req.headers.host || origin.protocol !== this.publicUrl.protocol) {
+        throw new AuthError('请求来源不匹配。', 403);
+      }
+    }
+    const session = this.auth.get(req.headers.cookie);
+    if (!session) throw new AuthError('会话已失效，请刷新页面后重试。');
+    if (req.headers['x-csrf-token'] !== session.csrf) throw new AuthError('会话已更新，请刷新页面重试。', 403);
+    if (!this.publicInvites && !session.user) throw new AuthError('请使用 sub2api 管理员身份发送邀请。');
+    return true;
+  }
+  async invitationRoute(req, res, route, url, session) {
+    if (route !== '/api/invitations' && !route.startsWith('/api/invitations/')) return false;
+    if (url.search) throw new InvitationError('INVALID_REQUEST', '邀请参数只能通过表单提交。', 400);
+    if (route === '/api/invitations') {
+      if (req.method !== 'GET') throw new InvitationError('METHOD', '请求方法不支持。', 405);
+      if (!this.publicAccess && !session?.user) throw new AuthError('请先登录管理员账号。');
+      const accounts = this.dashboard.snapshot().accounts.filter(account => account.invitation)
+        .map(({ id, invitation }) => ({ id, invitation }));
+      this.json(res, 200, { ...this.invitationCapabilities(session), accounts }); return true;
+    }
+    const target = /^\/api\/invitations\/([1-9]\d{0,15})\/(refresh|invite)$/.exec(route);
+    if (!target) throw new InvitationError('NOT_FOUND', '邀请接口不存在。', 404);
+    if (req.method !== 'POST') throw new InvitationError('METHOD', '请求方法不支持。', 405);
+    this.authorizeInvitation(req);
+    if (!this.#invitations) throw new InvitationError('UNAVAILABLE', '邀请功能暂未配置。', 503);
+    const body = await this.body(req), fields = Object.keys(body), [, id, action] = target;
+    if (action === 'refresh' ? fields.length !== 0
+      : fields.length !== 4 || !['email', 'programId', 'confirmed', 'requestId'].every(field => Object.hasOwn(body, field))
+        || typeof body.confirmed !== 'boolean' || typeof body.requestId !== 'string'
+        || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(body.requestId)) {
+      throw new InvitationError('INVALID_REQUEST', '邀请请求格式不正确，请重新填写表单。', 400);
+    }
+    const authorize = () => this.authorizeInvitation(req);
+    authorize();
+    // requestTimeout bounds incoming headers/body; it does not impose a 30s
+    // response deadline on the upstream invitation plus its preflight reads.
+    const result = action === 'refresh' ? await this.#invitations.refresh(id, { authorize })
+      : await this.#invitations.invite(id, body, { authorize });
+    this.json(res, 200, { ...(action === 'invite' ? { sent: result.sent === true, refreshFailed: result.refreshFailed === true } : {}),
+      invitation: result.invitation, cachePersisted: result.cachePersisted === true }); return true;
+  }
   reportImage(req, res, route) {
     if (!route.startsWith('/api/report-images/')) return false;
     const id = /^\/api\/report-images\/([a-f0-9]{32,64})\.png$/.exec(route)?.[1];
@@ -81,8 +135,10 @@ export class QuotaServer {
       let session = this.auth.get(req.headers.cookie);
       if (route === '/api/session' && req.method === 'GET') {
         if (!session) { session = this.auth.create(); this.cookie(res, session); }
-        return this.json(res, 200, { authenticated: Boolean(session.user), publicAccess: this.publicAccess, canManage: Boolean(session.user), csrf: session.csrf, user: session.user, preview: this.preview });
+        return this.json(res, 200, { authenticated: Boolean(session.user), publicAccess: this.publicAccess, canManage: Boolean(session.user), csrf: session.csrf, user: session.user, preview: this.preview,
+          invitations: this.invitationCapabilities(session) });
       }
+      if (await this.invitationRoute(req, res, route, url, session)) return;
       if (this.publicAccess && await this.keyRoute(req, res, route, url)) return;
       if (this.publicAccess && this.reportImage(req, res, route)) return;
       if (this.publicAccess) {
@@ -101,7 +157,8 @@ export class QuotaServer {
       if (route === '/api/login' && req.method === 'POST') {
         const verified = await this.auth.login(await this.body(req), req.socket.remoteAddress || 'unknown'); this.auth.logout(session);
         session = this.auth.create(verified.user, verified.expires); this.cookie(res, session);
-        return this.json(res, 200, { authenticated: true, publicAccess: this.publicAccess, canManage: true, user: session.user, csrf: session.csrf });
+        return this.json(res, 200, { authenticated: true, publicAccess: this.publicAccess, canManage: true, user: session.user, csrf: session.csrf,
+          invitations: this.invitationCapabilities(session) });
       }
       if (!session.user) throw new AuthError('请使用 sub2api 管理员身份登录。');
       if (this.reportImage(req, res, route)) return;
@@ -124,7 +181,7 @@ export class QuotaServer {
       return this.json(res, 404, { error: '接口不存在。' });
     } catch (error) {
       if (res.headersSent) return;
-      if (error instanceof KeyUsageError) {
+      if (error instanceof KeyUsageError || error instanceof InvitationError) {
         if (error.retryAfterSeconds) res.setHeader('Retry-After', String(error.retryAfterSeconds));
         return this.json(res, error.status, { error: { code: error.code, message: error.message } });
       }

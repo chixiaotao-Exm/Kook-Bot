@@ -5,6 +5,15 @@ import { normalizeAccounts } from '../src/sub2api.js';
 
 const NOW = Date.parse('2026-09-19T14:00:00Z');
 const SECRET = 'fixture-personal-query-token+/=';
+test('NewAPI enrichment preserves the other accounts invitation snapshot without contacting that source', async () => {
+  const account = { id: '1', platform: 'openai', type: 'oauth', invitation: { supported: true, availableCount: 3 } };
+  const source = new NewApiAccountSource({ baseUrl: 'https://api.ark717.com', queryKey: SECRET, accountId: '99',
+    fetchImpl: () => { throw new Error('No matching NewAPI account'); } });
+  const result = await source.enrich([account]);
+  assert.deepEqual(result[0].invitation, account.invitation);
+  result[0].invitation.availableCount = 0;
+  assert.equal(account.invitation.availableCount, 3);
+});
 const envelope = data => ({ success: true, data });
 const fixture = (overrides = {}) => ({
   self: envelope({ quota: 5000035198613, used_quota: 842903443, request_count: 18950,
