@@ -13,6 +13,7 @@ const help = rounds => (rounds === 0
   ? '直接发送问题，与两个机器人一起持续讨论，发送“停止”即可结束。\n'
   : `直接发送问题，让两个机器人轮流讨论，默认 ${rounds} 轮，共 ${rounds * 2} 次发言。\n`)
   + '讨论中可以随时补充或调整话题，下一位机器人会先回应你的补充。\n'
+  + '“先暂停”：暂停讨论并保留上下文；“继续”：恢复暂停的讨论。\n'
   + '“停止”：结束当前讨论，任何用户都可以停止。\n“互聊状态”：查看进度\n“帮助”：查看说明\n问题最多 2000 字，请勿包含密码或密钥。';
 
 export function parseDuetCommand(content, selfId = '', defaultRounds = 0) {
@@ -21,6 +22,8 @@ export function parseDuetCommand(content, selfId = '', defaultRounds = 0) {
   if (validId(selfId)) text = text.replace(new RegExp(`^\\(met\\)${selfId}\\(met\\)\\s*`), '').trim();
   if (!text) return null;
   if (['停止', '停止互聊', '/停止互聊', '/停止'].includes(text)) return { kind: 'stop' };
+  if (/^(?:暂停|先暂停|暂停一下|先暂停一下)[。!！]*$/.test(text)) return { kind: 'pause' };
+  if (/^(?:继续|恢复|继续讨论|开始)[。!！]*$/.test(text)) return { kind: 'resume' };
   if (text === '互聊状态' || text === '/互聊状态') return { kind: 'status' };
   if (['帮助', '/互聊帮助', '/帮助', '/互聊'].includes(text)) return { kind: 'help' };
   if (!/^\/互聊\s/.test(text)) {
@@ -54,7 +57,7 @@ export class DuetCommands {
   #now; #writeState; #logger; #defaultRounds; #seen = new Map(); #users = new Map(); #recent = [];
   #noticeUsers = new Map(); #recentNotices = []; #tasks = new Set(); #controllers = new Set();
   #operations = Promise.resolve(); #ready = false; #closed = false;
-  #counts = { commands: 0, starts: 0, contributions: 0, stops: 0, replies: 0, failures: 0 };
+  #counts = { commands: 0, starts: 0, contributions: 0, pauses: 0, resumes: 0, stops: 0, replies: 0, failures: 0 };
   #lastError = null; #lastReplyAt = null;
 
   constructor({ session, reply, getSelfId, getParticipantIds = () => [], resolveAuthor,
@@ -139,17 +142,25 @@ export class DuetCommands {
     if (parsed.kind === 'stop') {
       try {
         const active = this.#session.snapshot().active;
-        await this.#session.stop(); this.#counts.stops++;
+        const result = await this.#session.stop({ userId: event.author_id });
+        if (result?.reason === 'NOT_AUTHORIZED') { this.#notice(event, '只有已授权的操作者可以控制代码任务。', true); return; }
+        this.#counts.stops++;
         this.#notice(event, active ? '已停止讨论。直接发送新问题即可重新开始。' : '当前没有正在进行的讨论。直接发送问题即可开始。');
       } catch { this.#failed(event); }
       return;
+    }
+    if (parsed.kind === 'pause' || parsed.kind === 'resume') {
+      await this.#pauseResume(event, parsed.kind); return;
     }
     const time = this.#now();
     this.#prune(time);
     // Discussion inputs are admitted by the session's bounded pending-input
     // queue. Command/notice cooldowns must never silently discard an interjection.
-    if (parsed.kind === 'start' && this.#session.snapshot().active) {
-      await this.#input(event, parsed, true); return;
+    if (parsed.kind === 'start') {
+      const state = this.#session.snapshot();
+      if (state.active || state.paused || state.status === 'paused') {
+        await this.#input(event, parsed, true); return;
+      }
     }
     if (this.#users.has(event.author_id) || this.#recent.length >= 30) {
       if (parsed.kind === 'start') this.#notice(event, '问题暂未加入，请稍后重新发送。', true);
@@ -162,21 +173,53 @@ export class DuetCommands {
     if (parsed.kind === 'invalid') { this.#notice(event, '轮数不符合要求。直接发送问题即可开始讨论，发送“停止”结束。'); return; }
     if (parsed.kind === 'status') {
       const status = this.#session.snapshot();
-      const labels = { idle: '未开始', running: '进行中', completed: '已完成', stopped: '已停止',
+      if (status.mode === 'code') {
+        const state = { creating: '准备工作区', coding: '实施中', reviewing: '复核中', running: '处理中', paused: '已暂停',
+          publishing: '正在创建 PR', completed: '已完成', audited: '审查完成', needs_input: '需要补充信息', stopped: '已停止', interrupted: '已中断' }[status.status] || '处理中';
+        this.#notice(event, `代码任务：${state}\n工具步骤：${Number.isSafeInteger(status.steps) ? status.steps : 0}`
+          + (status.prUrl ? `\n${status.prUrl}` : '') + '\n可发送“先暂停”“继续”或“停止”。'); return;
+      }
+      const labels = { idle: '未开始', running: '进行中', paused: '已暂停', completed: '已完成', stopped: '已停止',
         timeout: '已超时停止', failed: '已因错误停止', interrupted: '已中断' };
       const count = value => Number.isSafeInteger(value) && value >= 0 ? value : 0;
-      const header = `互聊状态：${labels[status.status] || (status.active ? '进行中' : '未开始')}\n`;
+      const paused = status.paused === true || status.status === 'paused';
+      const header = `互聊状态：${paused ? '已暂停' : labels[status.status] || (status.active ? '进行中' : '未开始')}\n`;
+      const inputHint = paused ? '补充会被记录，发送“继续”恢复讨论。' : '你可以随时补充问题。';
       if (status.unlimited === true || status.rounds === 0) {
         const speaker = typeof status.currentSpeaker === 'string' && /^[\p{L}\p{N} _·-]{1,40}$/u.test(status.currentSpeaker)
           && !CREDENTIAL.test(status.currentSpeaker) ? status.currentSpeaker : '等待中';
-        this.#notice(event, header + (status.active
-          ? `第 ${Math.max(1, count(status.currentRound))} 轮 · 已发 ${count(status.completedTurns)} 条\n当前发言方：${speaker}\n你可以随时补充问题。`
+        this.#notice(event, header + (status.active || paused
+          ? `第 ${Math.max(1, count(status.currentRound))} 轮 · 已发 ${count(status.completedTurns)} 条\n当前发言方：${speaker}\n${inputHint}`
           : `已发 ${count(status.completedTurns)} 条。`));
       } else this.#notice(event, header + `已完成 ${count(status.completedTurns)} / ${count(status.totalTurns)} 次发言。`
-        + (status.active ? '\n你可以随时补充问题。' : ''));
+        + (status.active || paused ? `\n${inputHint}` : ''));
       return;
     }
     await this.#input(event, parsed, false);
+  }
+
+  async #pauseResume(event, kind) {
+    try {
+      const method = this.#session[kind];
+      const result = typeof method === 'function' ? await method.call(this.#session, { userId: event.author_id }) : { reason: 'NOT_READY' };
+      if (this.#closed) return;
+      if (result?.reason === 'NOT_AUTHORIZED') { this.#notice(event, '只有已授权的操作者可以控制代码任务。', true); return; }
+      if (kind === 'pause') {
+        if (result?.paused === true) {
+          this.#counts.pauses++; this.#lastError = null;
+          this.#notice(event, '已暂停讨论，保留当前上下文。发送“继续”恢复，发送“停止”结束。', true);
+        } else this.#notice(event, result?.reason === 'ALREADY_PAUSED'
+          ? '讨论已经暂停。发送“继续”恢复，发送“停止”结束。'
+          : result?.reason === 'NO_ACTIVE' ? '当前没有可暂停的讨论。直接发送一个问题即可开始。'
+            : '暂时无法暂停讨论，请稍后重试。', true);
+      } else if (result?.resumed === true) {
+        this.#counts.resumes++; this.#lastError = null;
+        this.#notice(event, '已恢复讨论，会继续回应暂停期间记录的补充。', true);
+      } else this.#notice(event, result?.reason === 'NOT_PAUSED'
+        ? '当前讨论没有暂停，你可以直接补充问题。'
+        : result?.reason === 'NO_ACTIVE' ? '当前没有可恢复的讨论。直接发送一个问题即可开始。'
+          : '暂时无法恢复讨论，请稍后重试。', true);
+    } catch { this.#failed(event); }
   }
 
   async #input(event, parsed, contributeFirst) {
@@ -198,9 +241,19 @@ export class DuetCommands {
       }
       if (this.#closed) return;
       if (result?.accepted === true) {
+        if (result.mode === 'code') {
+          this.#lastError = null;
+          if (result.taskStarted || !contribution) this.#counts.starts++; else this.#counts.contributions++;
+          this.#notice(event, result.taskStarted || !contribution
+            ? '已开始代码任务：思维1读取和修改隔离副本，思维2复核；测试通过后创建 PR。可发送“先暂停”“继续”或“停止”。'
+            : '已记录你的补充，后续代码操作与复核会结合新要求。'); return;
+        }
         if (contribution) {
           this.#counts.contributions++; this.#lastError = null;
-          this.#notice(event, '已加入讨论，下一位机器人会先回应你的补充。'); return;
+          const state = this.#session.snapshot();
+          this.#notice(event, state.paused === true || state.status === 'paused'
+            ? '已记录补充，发送“继续”恢复讨论。'
+            : '已加入讨论，下一位机器人会先回应你的补充。'); return;
         }
         this.#counts.starts++; this.#lastError = null;
         const rounds = Number.isInteger(result.rounds) && result.rounds >= 0 && result.rounds <= 6 ? result.rounds : parsed.rounds;
@@ -209,7 +262,10 @@ export class DuetCommands {
           ? '已开始持续讨论。你可以随时补充问题，发送“停止”可结束。'
           : `已开始讨论：${rounds} 轮，共 ${totalTurns} 次发言。你可以随时补充问题，发送“停止”可结束。`);
       } else if (result?.reason !== 'DUPLICATE') {
-        this.#notice(event, result?.reason === 'CAPACITY' ? '补充暂未加入：待回应内容较多，请稍后重新发送。'
+        this.#notice(event, result?.reason === 'NOT_AUTHORIZED' ? '只有已授权的操作者可以启动或修改代码任务。'
+          : result?.reason === 'REPOSITORY_NOT_ALLOWED' ? '目前代码任务只支持 chixiaotao-Exm/Kook-Bot。'
+          : result?.reason === 'CODE_DISABLED' ? '代码执行能力尚未启用。'
+          : result?.reason === 'CAPACITY' ? '补充暂未加入：待回应内容较多，请稍后重新发送。'
           : result?.reason === 'FINISHING' ? '这轮讨论正在结束，这条补充暂未加入，请稍后再发。'
           : result?.reason === 'INVALID_INPUT' ? '问题或轮数不符合要求，请发送“帮助”查看说明。'
             : '问题暂未加入，讨论状态正在变化或暂时不可用，请稍后重新发送。', true);

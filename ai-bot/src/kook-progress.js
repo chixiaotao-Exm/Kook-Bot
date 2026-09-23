@@ -30,14 +30,15 @@ function elapsedLabel(duration) {
     : `${digits(Math.floor(seconds / 60))}:${digits(seconds % 60)}`;
 }
 
-function card({ visited, phase, terminal, duration }) {
-  const title = terminal ? { finished: '已完成', failed: '处理失败', cancelled: '已取消' }[terminal.kind] : 'AI 正在处理';
+function card({ visited, phase, terminal, duration, paused = false, detail = '' }) {
+  const title = terminal ? { finished: '已完成', failed: '处理失败', cancelled: '已取消' }[terminal.kind] : paused ? '已暂停' : 'AI 正在处理';
   const lines = visited.map(step => {
     if (step !== phase || terminal?.kind === 'finished') return `✓ ${PHASES[step].done}`;
-    if (terminal) return `${terminal.kind === 'failed' ? '✕' : '—'} ${PHASES[step].active}`;
+    if (terminal || paused) return `${terminal?.kind === 'failed' ? '✕' : '—'} ${PHASES[step].active}`;
     return `⏳ ${PHASES[step].active}`;
   });
   const modules = [{ type: 'header', text: plain(title) }, { type: 'section', text: plain(lines.join('\n')) }];
+  if (detail) modules.push({ type: 'section', text: plain(detail) });
   if (terminal?.kind === 'failed') modules.push({ type: 'section', text: plain(modelFailureMessage(terminal.code)) });
   modules.push({ type: 'context', elements: [plain(`已用时 ${elapsedLabel(duration)}`)] });
   return JSON.stringify([{ type: 'card', size: 'sm', theme: terminal
@@ -123,7 +124,9 @@ export function createKookProgress({ token, fetchImpl = globalThis.fetch, now = 
       const visited = ['received', 'generating'];
       let phase = 'generating', terminal = null, interval = null, dirty = false, running = null;
       let updatesStopped = false, terminalAttempted = false;
-      const content = () => card({ visited, phase, terminal, duration: (terminal?.at ?? now()) - startedAt });
+      let pausedAt = null, pausedDuration = 0, detail = '';
+      const content = () => card({ visited, phase, terminal, paused: pausedAt !== null, detail,
+        duration: (terminal?.at ?? pausedAt ?? now()) - startedAt - pausedDuration });
       const created = await request(CREATE_URL, { type: 10, target_id: targetId,
         content: card({ visited, phase, terminal, duration: 0 }), quote: replyMessageId, reply_msg_id: replyMessageId }, signal);
       if (typeof created?.msg_id !== 'string' || !MESSAGE_ID.test(created.msg_id)) throw error('KOOK_INVALID_RESPONSE');
@@ -163,12 +166,29 @@ export function createKookProgress({ token, fetchImpl = globalThis.fetch, now = 
 
       function close(kind, code) {
         if (terminal) return running || Promise.resolve();
-        terminal = { kind, code: sanitizeFailureCode(code), at: now() };
+        const at = now();
+        if (pausedAt !== null) { pausedDuration += Math.max(0, at - pausedAt); pausedAt = null; }
+        terminal = { kind, code: sanitizeFailureCode(code), at };
         clearTicker(); signal?.removeEventListener('abort', onAbort);
         return queue();
       }
 
       const handle = {
+        setDetail(value) {
+          if (terminal || typeof value !== 'string' || value.length > 160
+            || /(?:sk-[A-Za-z0-9_-]{12,}|admin-[a-f0-9]{16,}|\d+\/[A-Za-z0-9+/=]+\/[A-Za-z0-9+/=]+)/i.test(value)) return running || Promise.resolve();
+          detail = value.replace(/[\u0000-\u001f\u007f]/g, ' ').trim(); return queue();
+        },
+        pause() {
+          if (terminal || pausedAt !== null) return running || Promise.resolve();
+          pausedAt = now(); clearTicker(); return queue();
+        },
+        resume() {
+          if (terminal || pausedAt === null) return running || Promise.resolve();
+          pausedDuration += Math.max(0, now() - pausedAt); pausedAt = null;
+          if (!updatesStopped) interval = setIntervalImpl(() => { void queue(); }, intervalMs);
+          return queue();
+        },
         setPhase(next) {
           if (terminal || typeof next !== 'string' || !Object.hasOwn(PHASES, next)
             || PHASE_ORDER.indexOf(next) <= PHASE_ORDER.indexOf(phase)) return running || Promise.resolve();

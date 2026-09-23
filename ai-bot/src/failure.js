@@ -24,6 +24,12 @@ const MODEL_MESSAGES = Object.freeze({
   KOOK_REJECTED: 'KOOK 拒绝了这次回复，请联系管理员检查频道权限。',
   KOOK_TIMEOUT: '回复发送超时，送达状态暂时无法确认。',
   KOOK_NETWORK: '回复发送时连接中断，送达状态暂时无法确认。',
+  CHECKS_FAILED: '实际检查尚未通过，代码工作区已保留。',
+  REVIEW_FAILED: '独立复核尚未通过，代码工作区已保留。',
+  PUBLISH_UNKNOWN: '分支发布或 PR 状态尚未确认，未重复执行发布。',
+  BUDGET: '本次任务已达到迭代上限，已有代码和检查报告已保留。',
+  BROKER_FAILED: '代码执行工具暂不可用，当前任务未确认完成。',
+  STORAGE: '任务状态保存失败，已暂停后续操作。',
 });
 const CODES = new Set([...Object.keys(MODEL_MESSAGES),
   'KOOK_INVALID_INPUT', 'KOOK_RESPONSE_TOO_LARGE', 'KOOK_INVALID_RESPONSE', 'KOOK_ABORTED',
