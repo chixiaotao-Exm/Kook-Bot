@@ -39,7 +39,7 @@ const TOOLS = [
   tool('search_code', '在当前仓库中搜索代码，最多返回 100 项。', { query: stringSchema, path: nullable('string'), maxResults: { type: 'integer', minimum: 1, maximum: 100 } }),
   tool('write_file', '创建或更新仓库文件。现有文件使用读取时的 expectedSha256，防止覆盖新内容。', { path: stringSchema, content: stringSchema, expectedSha256: nullable('string') }),
   tool('replace_text', '替换文件中明确的一段文本，必须提供读取时的 expectedSha256。', { path: stringSchema, oldText: stringSchema, newText: stringSchema, expectedSha256: nullable('string') }),
-  tool('run_checks', '运行服务提供的固定检查，不接受命令。project 为 null 时检查全部项目。', { project: nullable('string'), testFiles: { type: 'array', items: stringSchema } }),
+  tool('run_checks', '运行固定检查，不接受命令。project 为 null 且 testFiles 为空时检查全部项目；指定 project 且 testFiles 为空时运行该项目完整检查。定向测试接受项目内路径 test/example.test.js 或同项目仓库路径 ai-bot/test/example.test.js，均须位于 test/ 或 tests/；code-agent 使用 tests/test_example.py。Node 定向路径不支持 glob 元字符 *?[]{}()，这类文件请运行完整项目检查。定向测试不算完整发布验证。', { project: nullable('string'), testFiles: { type: 'array', items: stringSchema } }),
   tool('get_diff', '取得工作区实际变更、完整文件列表和 workHash。', { path: nullable('string'), maxChars: numberSchema }),
 ];
 const REVIEW = tool('finish_review', '提交基于实际代码与检查证据的独立审阅。发现问题时 approved 必须为 false。', {
@@ -143,8 +143,21 @@ function argumentsFor(name, args) {
     }
     if (name === 'replace_text' && !args.oldText) throw fault('TOOL_INVALID');
   }
-  if (name === 'run_checks' && (!(args.project === null || ['ai-bot', 'music-bot', 'quota-dashboard', 'code-agent'].includes(args.project))
-    || !Array.isArray(args.testFiles) || args.testFiles.length > 30 || args.testFiles.some(file => !relativeFile(file)))) throw fault('TOOL_INVALID');
+  if (name === 'run_checks') {
+    if (!(args.project === null || ['ai-bot', 'music-bot', 'quota-dashboard', 'code-agent'].includes(args.project))
+      || !Array.isArray(args.testFiles) || args.testFiles.length > 30 || args.project === null && args.testFiles.length) throw fault('TOOL_INVALID');
+    const testFiles = args.testFiles.map(file => {
+      if (!relativeFile(file)) throw fault('TOOL_INVALID');
+      const parts = file.split('/');
+      if (parts[0] === args.project) parts.shift();
+      const relative = parts.join('/'), name = parts.at(-1);
+      if (parts.length < 2 || !['test', 'tests'].includes(parts[0]) || parts.some(part => !part || part === '.' || part === '..')
+        || !(args.project === 'code-agent' ? /^test_.*\.py$/.test(name) && [...parts.slice(0, -1), name.slice(0, -3)].every(part => !part.includes('.'))
+          : !/[\[\]{}()*?]/.test(relative) && /\.(?:test|spec)\.(?:js|cjs|mjs)$/.test(name))) throw fault('TOOL_INVALID');
+      return relative;
+    });
+    args = { ...args, testFiles: [...new Set(testFiles)] };
+  }
   if (name === 'get_diff' && !integer(args.maxChars, 100, 20000)) throw fault('TOOL_INVALID');
   return args;
 }

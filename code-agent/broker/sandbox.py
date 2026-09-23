@@ -98,11 +98,19 @@ class SandboxRunner:
         for value in test_files:
             value = validate_path(value)
             parts = value.split("/")
+            # Repository tools return paths rooted at the checkout. Accept that
+            # spelling only for this project, then keep the image's existing
+            # project-relative argv contract.
+            if parts[0] == project:
+                parts = parts[1:]
+                value = "/".join(parts)
             if len(parts) < 2 or parts[0] not in ("test", "tests"):
                 raise WorkspaceError("INVALID_TEST_FILES")
             name = parts[-1]
             valid = name.startswith("test_") and name.endswith(".py") if project == "code-agent" else name.endswith((".test.js", ".test.cjs", ".test.mjs", ".spec.js", ".spec.cjs", ".spec.mjs"))
-            if not valid:
+            if not valid or project == "code-agent" and any("." in part for part in [*parts[:-1], name[:-3]]):
+                raise WorkspaceError("INVALID_TEST_FILES")
+            if project != "code-agent" and re.search(r"[\[\]{}()]", value):
                 raise WorkspaceError("INVALID_TEST_FILES")
             workspace.read_file(f"{project}/{value}", max_lines=1)
             if value not in result:
