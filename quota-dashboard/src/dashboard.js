@@ -2,10 +2,13 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { atomicJson } from './storage.js';
 import { sanitizeInvitation } from './invitation-snapshot.js';
+import { sanitizePoints } from './points.js';
 
 const invitationFor = (account, now) => account.platform === 'openai' && account.type === 'oauth'
   && (account.parent_account_id === undefined || account.parent_account_id === null) && account.is_shadow !== true
   ? sanitizeInvitation(account.invitation, { now }) : null;
+const pointsFor = (account, now, stale = false) => account.platform === 'openai' && ['oauth', 'setup-token'].includes(account.type)
+  ? sanitizePoints(account.points, { now, stale }) : null;
 const observedInvitationTime = (invitation, now) => {
   const time = Date.parse(invitation?.checkedAt);
   return Number.isFinite(time) && time <= now + 60000 ? time : null;
@@ -28,7 +31,7 @@ export class Dashboard {
       const saved = JSON.parse(await readFile(this.file, 'utf8'));
       if (saved.version !== 1 || !Array.isArray(saved.accounts) || saved.accounts.length > 10000 || typeof saved.updatedAt !== 'string' || !Number.isFinite(Date.parse(saved.updatedAt)) ||
           !saved.accounts.every((account) => account && typeof account.id === 'string' && typeof account.name === 'string' && Array.isArray(account.metrics) && account.metrics.every((metric) => metric && typeof metric === 'object'))) throw new Error('Invalid snapshot');
-      this.data = { accounts: saved.accounts.map(account => ({ ...account, invitation: invitationFor(account, this.now()) })), updatedAt: saved.updatedAt };
+      this.data = { accounts: saved.accounts.map(account => ({ ...account, invitation: invitationFor(account, this.now()), points: pointsFor(account, this.now()) })), updatedAt: saved.updatedAt };
       for (const provider of this.providers) provider.seed?.(saved.accounts);
     } catch (error) { if (error.code !== 'ENOENT') this.storageError = '上次额度快照无法读取；等待本次安全读取后更新。'; }
     return this;
@@ -54,7 +57,7 @@ export class Dashboard {
         else if (Number.isFinite(resetCredits.availableCount) && resetCredits.availableCount > 0 && expiries.length > 0) resetCredits.availableCount = Math.min(resetCredits.availableCount, valid.length);
         if (stale || expired || resetCredits.checkedAt && this.now() - Date.parse(resetCredits.checkedAt) > (resetCredits.source === 'sub2api-active-quota' ? 35 * 60000 : 900000)) resetCredits.freshness = 'stale';
       }
-      return { ...account, metrics, freshness, windowStats, resetCredits, invitation: invitationFor(account, this.now()) };
+      return { ...account, metrics, freshness, windowStats, resetCredits, points: pointsFor(account, this.now(), stale), invitation: invitationFor(account, this.now()) };
     });
     const known = (account) => account.metrics.some((metric) => metric.scope !== 'local' &&
       ['value', 'used', 'remaining', 'limit', 'usedPercent', 'remainingPercent'].some((field) => typeof metric[field] === 'number' && Number.isFinite(metric[field])));
@@ -96,7 +99,7 @@ export class Dashboard {
         const now = this.now(), previous = new Map(this.data.accounts.map(account => [account.id, invitationFor(account, now)]));
         const accounts = result.accounts.map(account => {
           const invitation = invitationFor(account, now);
-          return { ...account, invitation: invitation ? latestInvitation(previous.get(account.id), invitation, now) : null };
+          return { ...account, points: pointsFor(account, now), invitation: invitation ? latestInvitation(previous.get(account.id), invitation, now) : null };
         });
         this.data = { accounts, updatedAt: result.checkedAt }; this.lastError = '';
         try { await this.persist(); this.storageError = ''; }

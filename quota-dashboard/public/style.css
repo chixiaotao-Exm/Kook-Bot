@@ -353,6 +353,15 @@ select option{background:#172940;color:var(--text)}
 .reset-credit-panel.credits-muted .reset-credit-count{color:#b9c6da}
 @media(max-width:760px){.account-reset.reset-credit-panel{padding:11px 12px}.reset-credit-label{font-size:12px}.reset-credit-source{font-size:10px}}
 
+/* Actual Codex points sit alongside reset cards without adding another full row. */
+.account-credit-pair{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;margin:0 0 15px;align-items:stretch}
+.account-credit-pair .account-reset.reset-credit-panel{margin:0;padding:10px 11px;grid-template-columns:minmax(0,1fr);gap:5px;align-content:start}
+.account-credit-pair .reset-credit-label{gap:4px;font-size:11px;min-height:18px}.account-credit-pair .reset-credit-icon{font-size:17px}.account-credit-pair .reset-credit-source{font-size:9px;padding:1px 4px}
+.account-credit-pair .reset-credit-count{grid-column:auto;grid-row:auto;font-size:23px;white-space:normal;overflow-wrap:anywhere}.account-credit-pair .reset-credit-count>span{font-size:16px}.account-credit-pair .reset-credit-note{font-size:10px;line-height:1.5}
+.account-points{min-width:0;display:grid;grid-template-columns:minmax(0,1fr);gap:5px;align-content:start;padding:10px 11px;border:1px solid #91cce636;border-top-color:#b6e5f94a;border-radius:13px;background:linear-gradient(125deg,#7fcbd914,#88aef008),#14264038;box-shadow:inset 0 1px 0 #c3eff61a}
+.points-label{color:#c6e6f2;font-size:11px;min-height:18px;display:flex;align-items:center}.points-value{font-size:23px;font-weight:600;line-height:1.2;color:#bceaf2;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}.points-value small{font-size:11px;font-weight:400;color:#c6d0e4;margin-left:5px}.points-value.points-text{font-size:16px;line-height:1.75}.points-note{font-size:10px;color:#aebed7;line-height:1.5}.account-points.stale .points-note{color:var(--amber)}
+@media(max-width:390px){.account-credit-pair{gap:7px}.account-credit-pair .account-reset.reset-credit-panel,.account-points{padding:9px}.account-credit-pair .reset-credit-label{font-size:10px}.account-credit-pair .reset-credit-icon{font-size:15px}}
+
 /* Referral invitations share the account cards' compact glass treatment. */
 .account-invitations{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 12px;margin:0 0 14px;border:1px solid #a9d5ff30;border-radius:12px;background:linear-gradient(115deg,#81beef17,#94a8ed07);box-shadow:inset 0 1px 0 #d7eeff13}
 .account-invitations>div{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap;min-width:0}.invitation-label{color:#d4e7fa;font-size:12px}.invitation-label strong{font-size:20px;font-weight:600;color:#c4e4ff;font-variant-numeric:tabular-nums}.account-invitations small{font-size:10px;color:var(--muted)}.account-invitations .button{padding:5px 12px;min-height:31px;font-size:11px;flex:none}.account-invitations.unavailable .invitation-label strong{color:#bac8dc}

@@ -1,6 +1,7 @@
 // Audited against Sub2API e8cb019f: quota/refresh also notifies its automatic
 // reset service. Never call it until the account's automatic-use flag is off.
 // This adapter does not call a reset endpoint or change account configuration.
+import { cleanPointCredits, sanitizePointCredits } from './points.js';
 const ORIGIN = 'http://127.0.0.1:8080';
 const MAX_BYTES = 1024 * 1024;
 const PLANS = new Set(['free', 'basic', 'plus', 'chatgptplus', 'pro', 'chatgptpro', 'prolite', 'team', 'business', 'enterprise', 'edu', 'selfservebusiness', 'selfservebusinessprolite', 'selfservebusinessusagebased']);
@@ -59,7 +60,8 @@ export function sanitizeActiveQuotaRecord(value) {
   const row = object(value), id = accountId(row?.accountId), queriedAt = date(row?.queriedAt), observedAt = date(row?.observedAt), usage = object(row?.usage);
   if (!row || !id || !queriedAt || !observedAt || !usage || Date.parse(observedAt) > Date.parse(queriedAt) + 60000) return null;
   return { accountId: id, queriedAt, observedAt, cachePersisted: row.cachePersisted === true,
-    usage: { primary: cleanWindow(usage.primary), secondary: cleanWindow(usage.secondary), resetCredits: cleanCredits(usage.resetCredits) }, planType: plan(row.planType) };
+    usage: { primary: cleanWindow(usage.primary), secondary: cleanWindow(usage.secondary), resetCredits: cleanCredits(usage.resetCredits),
+      ...(Object.hasOwn(usage, 'points') ? { points: sanitizePointCredits(usage.points) } : {}) }, planType: plan(row.planType) };
 }
 
 function normalizeUsage(data, id, now) {
@@ -75,7 +77,8 @@ function normalizeUsage(data, id, now) {
   const rate = object(data.rate_limit), credits = object(data.rate_limit_reset_credits);
   return sanitizeActiveQuotaRecord({ accountId: id, queriedAt, observedAt, cachePersisted: data.cache_persisted === true,
     usage: { primary: window(rate?.primary_window), secondary: window(rate?.secondary_window),
-      resetCredits: credits ? { availableCount: credits.available_count, expiresAt: Array.isArray(credits.credits) ? credits.credits.slice(0, 1000).map(row => row?.expires_at) : [] } : null }, planType: data.plan_type });
+      resetCredits: credits ? { availableCount: credits.available_count, expiresAt: Array.isArray(credits.credits) ? credits.credits.slice(0, 1000).map(row => row?.expires_at) : [] } : null,
+      points: cleanPointCredits(data.credits) }, planType: data.plan_type });
 }
 
 /** Overlay only data newer than the original account cache; never mutate it. */
@@ -116,6 +119,18 @@ export function applyActiveQuota(rawAccount, inputRecord) {
     extra.codex_reset_credit_snapshot = { available_count: record.usage.resetCredits.availableCount,
       credits: record.usage.resetCredits.expiresAt.map(expires_at => ({ expires_at })) };
     extra.codex_reset_credit_checked_at = record.queriedAt;
+  }
+  // Older stored records did not collect points. Only a new explicit sample
+  // may replace/clear the separately dated point balance.
+  if (Object.hasOwn(record.usage, 'points')) {
+    const previousPointsAt = date(object(extra.codex_credits_snapshot)?.fetched_at);
+    if (!previousPointsAt || Date.parse(record.observedAt) >= Date.parse(previousPointsAt)) {
+      const points = record.usage.points;
+      extra.codex_credits_snapshot = { credits: points ? { balance: points.balance === null ? null : String(points.balance),
+        has_credits: points.hasCredits, unlimited: points.unlimited } : null, fetched_at: record.observedAt };
+      extra.codex_active_points_observed_at = record.observedAt;
+      delete extra.codex_active_points_stale;
+    }
   }
   return { ...row, extra };
 }
