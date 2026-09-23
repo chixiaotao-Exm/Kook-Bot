@@ -288,6 +288,16 @@
     return `${days ? `${days}d ${hours % 24}h` : hours ? `${hours}h ${minutes % 60}m` : `${minutes}m`} 后重置`;
   }
 
+  function resetDetailsHtml(metric) {
+    const quotaWindow = metric.scope !== 'local' && [300, 10080].includes(metric.windowMinutes);
+    const reset = resetLabel(metric);
+    if (!quotaWindow) return reset ? `<span class="metric-details">${escapeHtml(reset)}</span>` : '';
+    const timestamp = metric.resetAt ? Date.parse(metric.resetAt) : NaN;
+    if (!Number.isFinite(timestamp)) return '<span class="metric-reset-time">下次重置：未提供</span>';
+    const ended = timestamp <= Date.now();
+    return `<span class="metric-reset-group"><span class="metric-reset-time">${ended ? '上次窗口结束' : '下次重置'}：<time datetime="${new Date(timestamp).toISOString()}">${escapeHtml(formatTime(metric.resetAt))}</time><small>北京时间</small></span><span class="metric-reset-countdown">${escapeHtml(reset)}</span></span>`;
+  }
+
   function overviewBattery(metric) {
     const valid = value => typeof value === 'number' && Number.isFinite(value) && value >= 0;
     const used = valid(metric.usedPercent) ? metric.usedPercent
@@ -307,9 +317,9 @@
     if (metric.kind === 'percent' && !String(metric.key || '').startsWith('grok-product-')) {
       const battery = overviewBattery(metric);
       const freshnessTag = local && metric.freshness === 'stale' ? '<span class="metric-tag old">旧</span>' : '';
-      if (!battery) return `<div class="metric metric-unknown"><span>${label}${tag}${freshnessTag}</span><span class="muted">未知</span></div>`;
+      if (!battery) return `<div class="metric metric-window-unknown"><div class="metric-head"><span>${label}${tag}${freshnessTag}</span><span class="muted">未知</span></div>${resetDetailsHtml(metric)}</div>`;
       const stale = metric.freshness === 'stale' ? ' · 旧缓存' : metric.freshness === 'unknown' ? ' · 时间未知' : '';
-      return `<div class="metric overview-charge${local ? ' local-metric' : ''}" data-charge="${battery.tone}"><div class="metric-head"><span class="metric-label">${label}${tag}${freshnessTag}</span><span class="metric-value overview-remaining" title="${escapeHtml(`已用 ${number(battery.used, 8)}% · 剩余 ${number(battery.remaining, 8)}%${stale}`)}">${escapeHtml(battery.label)}<small>% 剩余</small></span></div><div class="overview-battery" role="meter" aria-label="${label}剩余额度${stale}" aria-valuenow="${battery.remaining}" aria-valuemin="0" aria-valuemax="100" aria-valuetext="${escapeHtml(`剩余 ${battery.label}%${stale}`)}">${Array.from({ length: 10 }, (_, index) => `<span class="overview-battery-cell${index < battery.filled ? ' filled' : ''}" aria-hidden="true"></span>`).join('')}</div><div class="overview-charge-footer">${battery.tone === 'low' ? '<span class="overview-charge-status">电量低</span>' : ''}${reset ? `<span class="metric-details" title="${escapeHtml(formatTime(metric.resetAt))}">${escapeHtml(reset)}</span>` : ''}</div></div>`;
+      return `<div class="metric overview-charge${local ? ' local-metric' : ''}" data-charge="${battery.tone}"><div class="metric-head"><span class="metric-label">${label}${tag}${freshnessTag}</span><span class="metric-value overview-remaining" title="${escapeHtml(`已用 ${number(battery.used, 8)}% · 剩余 ${number(battery.remaining, 8)}%${stale}`)}">${escapeHtml(battery.label)}<small>% 剩余</small></span></div><div class="overview-battery" role="meter" aria-label="${label}剩余额度${stale}" aria-valuenow="${battery.remaining}" aria-valuemin="0" aria-valuemax="100" aria-valuetext="${escapeHtml(`剩余 ${battery.label}%${stale}`)}">${Array.from({ length: 10 }, (_, index) => `<span class="overview-battery-cell${index < battery.filled ? ' filled' : ''}" aria-hidden="true"></span>`).join('')}</div><div class="overview-charge-footer">${battery.tone === 'low' ? '<span class="overview-charge-status">电量低</span>' : ''}${resetDetailsHtml(metric)}</div></div>`;
     }
     if (!knownMetric(metric)) return `<div class="metric metric-unknown"><span>${label}</span><span class="muted">未知</span></div>`;
     if (metric.kind === 'balance' || finite(metric.balance)) {
