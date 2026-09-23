@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="dark">
   <meta name="theme-color" content="#0e1e32">
   <title>额度看板 · Sub2API</title>
-  <link rel="stylesheet" href="./style.css?v=18">
-  <script src="./app.js?v=19" defer></script>
+  <link rel="stylesheet" href="./style.css?v=19">
+  <script src="./app.js?v=20" defer></script>
 </head>
 <body>
   <section id="login-view" class="login-shell" hidden>
@@ -47,7 +47,7 @@
         <div id="active-quota-status" class="active-quota-status" role="status" hidden></div>
         <div class="update-strip"><span><span id="update-dot" class="status-dot"></span><span id="refresh-state">正在读取数据</span> · <span id="refresh-interval">每10分钟自动刷新</span></span><span id="updated-at">等待首次同步</span></div>
         <div id="summary" class="summary-grid" aria-live="polite"></div>
-        <div class="section-title"><h2>账号监控 <span id="account-count" class="count-label">—</span></h2></div>
+        <div class="section-title"><h2>账号监控 <span id="account-count" class="count-label">—</span></h2><span id="account-load-hint" class="subtle account-load-hint" hidden>负载每10秒更新</span></div>
         <div class="filters"><div id="platform-filters" class="chips" aria-label="按平台筛选"></div><label class="search-field"><span>⌕</span><input id="search" type="search" placeholder="搜索账号名称 / ID" aria-label="搜索账号名称或 ID"></label><label class="sr-only" for="status-filter">账号状态</label><select id="status-filter"><option value="all">全部状态</option><option value="issue">有异常</option><option value="stale">数据陈旧</option><option value="unknown">额度未知</option></select></div>
         <div id="accounts" class="account-grid" aria-live="polite"></div>
         <div id="empty-state" class="empty-state" hidden><div class="empty-symbol">⌕</div><h3>没有找到匹配的账号</h3><p class="muted">试试其他名称，或调整筛选条件。</p><button id="reset-filters" class="button secondary">清除筛选</button></div>

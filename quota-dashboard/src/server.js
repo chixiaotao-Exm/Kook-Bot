@@ -7,13 +7,14 @@ import { InvitationError } from './invitations.js';
 
 const staticRoot = fileURLToPath(new URL('../public/', import.meta.url));
 export class QuotaServer {
-  #keyPresets; #keyUsage; #keyQueryTimes = []; #invitations;
-  constructor({ host = '127.0.0.1', port = 18998, publicUrl, sub2apiUrl, dashboard, scheduler, reporter = {}, auth, preview = false, publicAccess = false, keyUsage, keyPresets = [], queryBotStatus, activeQuotaStatus, invitations, publicInvites = false }) {
+  #keyPresets; #keyUsage; #keyQueryTimes = []; #invitations; #accountLoad;
+  constructor({ host = '127.0.0.1', port = 18998, publicUrl, sub2apiUrl, dashboard, scheduler, reporter = {}, auth, preview = false, publicAccess = false, keyUsage, keyPresets = [], queryBotStatus, activeQuotaStatus, invitations, publicInvites = false, accountLoad }) {
     Object.assign(this, { host, port, dashboard, scheduler, reporter, preview, publicAccess });
     this.queryBotStatus = queryBotStatus;
     this.activeQuotaStatus = activeQuotaStatus;
     this.#keyUsage = keyUsage;
     this.#invitations = invitations;
+    this.#accountLoad = accountLoad;
     this.publicInvites = publicInvites === true;
     this.#keyPresets = keyPresets.filter(preset => preset.key).map(({ id, label, key }) => ({ id, label, key: validateUsageKey(key) }));
     this.publicUrl = new URL(publicUrl); this.basePath = this.publicUrl.pathname.replace(/\/$/, '');
@@ -137,6 +138,13 @@ export class QuotaServer {
         if (!session) { session = this.auth.create(); this.cookie(res, session); }
         return this.json(res, 200, { authenticated: Boolean(session.user), publicAccess: this.publicAccess, canManage: Boolean(session.user), csrf: session.csrf, user: session.user, preview: this.preview,
           invitations: this.invitationCapabilities(session) });
+      }
+      if (route === '/api/account-load') {
+        if (req.method !== 'GET') return this.json(res, 405, { error: '请求方法不支持。' });
+        if (!this.publicAccess && !session?.user) throw new AuthError('请先登录管理员账号。');
+        const snapshot = this.#accountLoad ? await this.#accountLoad.get()
+          : { enabled: false, accounts: [], refreshIntervalMs: 10000, checkedAt: null, lastError: '' };
+        return this.json(res, 200, snapshot);
       }
       if (await this.invitationRoute(req, res, route, url, session)) return;
       if (this.publicAccess && await this.keyRoute(req, res, route, url)) return;
