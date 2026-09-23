@@ -155,6 +155,58 @@ test('actual broker single-check envelope passes only with complete zero-exit cu
   assert.equal(bad.calls.some(call => call.operation === 'publish'), false);
 });
 
+test('long check logs retain both ends and structured failure evidence at the actual model boundary', async t => {
+  for (const [name, middle] of [['emoji', '😀'.repeat(15900)], ['newlines', '\n'.repeat(15900)],
+    ['escaped', '\"\\\u0000'.repeat(5000)]]) {
+    await t.test(name, async t => {
+      const result = { ...checked(HASH, false), complete: true, exitCode: 1, project: 'all',
+        output: `BEGIN_LOG\n${middle}\nFAILED_END`, truncated: false };
+      let step = 0;
+      const f = await fixture(t, { config: { maxCycles: 1 }, coder: async input => {
+        if (++step === 1) return called('run_checks', { project: null, testFiles: [] });
+        const encoded = input.at(-1).output, actual = JSON.parse(encoded);
+        assert.ok(encoded.length <= 20000); assert.ok(actual.output.isWellFormed());
+        assert.ok(actual.output.startsWith('BEGIN_LOG')); assert.ok(actual.output.endsWith('FAILED_END'));
+        assert.match(actual.output, /\[output truncated\]/); assert.equal(actual.truncated, true);
+        for (const key of ['passed', 'complete', 'exitCode', 'workHash', 'checks']) assert.deepEqual(actual[key], result[key]);
+        return final('检查失败，保留真实检查证据。');
+      }, reviewer: async input => {
+        assert.match(JSON.stringify(input), /FAILED_END/);
+        return review();
+      }, broker: async operation => operation === 'run_checks' ? result : undefined });
+      await f.session.start(initial());
+      assert.equal((await f.done()).status, 'needs_input');
+      assert.equal(step, 2); assert.equal(f.modelCalls[1].length, 1);
+      assert.equal(f.calls.some(call => call.operation === 'publish'), false);
+      assert.equal(result.truncated, false);
+    });
+  }
+});
+
+test('short check evidence is unchanged and keeps an existing upstream truncation marker', async t => {
+  const result = { ...checked(), output: 'short log', truncated: true }; let step = 0;
+  const f = await fixture(t, { coder: async input => {
+    if (++step === 1) return called('run_checks', { project: null, testFiles: [] });
+    assert.deepEqual(JSON.parse(input.at(-1).output), result);
+    return final('完成。');
+  }, broker: async operation => operation === 'run_checks' ? result : undefined });
+  await f.session.start(initial()); assert.equal((await f.done()).status, 'completed'); assert.equal(step, 2);
+});
+
+test('generic oversized tool previews also fit the final budget with escaping and preserve the tail', async t => {
+  let step = 0;
+  const f = await fixture(t, { coder: async input => {
+    if (++step === 1) return called('read_file', { path: 'ai-bot/src/sample.js', startLine: 1, maxLines: 100 });
+    const encoded = input.at(-1).output, result = JSON.parse(encoded);
+    assert.ok(encoded.length <= 20000); assert.equal(result.truncated, true);
+    assert.ok(result.preview.isWellFormed()); assert.match(result.preview, /BEGIN_SOURCE/);
+    assert.match(result.preview, /END_SOURCE/); assert.match(result.preview, /\[output truncated\]/);
+    return final('完成。');
+  }, broker: async operation => operation === 'read_file'
+    ? { content: 'BEGIN_SOURCE' + '\"\\\u0000😀'.repeat(9000) + 'END_SOURCE', sha256: HASH } : undefined });
+  await f.session.start(initial()); assert.equal((await f.done()).status, 'completed'); assert.equal(step, 2);
+});
+
 test('successful targeted checks do not invalidate a later complete mandatory check', async t => {
   let step = 0;
   const f = await fixture(t, { coder: async () => ++step === 1
