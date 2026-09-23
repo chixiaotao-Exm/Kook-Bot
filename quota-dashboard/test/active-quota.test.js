@@ -33,7 +33,7 @@ test('active quota uses exact guarded endpoints once and returns only safe quota
   assert.deepEqual(result, { accountId: '6255', queriedAt: new Date(NOW).toISOString(), observedAt: new Date(NOW).toISOString(), cachePersisted: true,
     usage: { primary: { usedPercent: 60, windowMinutes: 300, resetAt: new Date(NOW + 600000).toISOString(), resetAfterSeconds: 600 },
       secondary: { usedPercent: 15, windowMinutes: 10080, resetAt: new Date(NOW + 86400000).toISOString(), resetAfterSeconds: 86400 },
-      resetCredits: { availableCount: 1, expiresAt: ['2026-10-01T12:00:00.000Z'] } }, planType: 'prolite' });
+      resetCredits: { availableCount: 1, expiresAt: ['2026-10-01T12:00:00.000Z'] }, points: null }, planType: 'prolite' });
   assert.doesNotMatch(JSON.stringify(result), /secret|private|token|email|user_id|account_id/i);
 });
 
