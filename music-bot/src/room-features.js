@@ -261,7 +261,15 @@ export class RoomFeatures {
       // action; missed minutes and the startup minute are deliberately skipped.
       await this.serialize(async () => {
         if (!this.validScheduleControl(guard, minute)) return;
-        this.ledger[rule.id] = { date: local.date, at: now, error: '' }; await this.save();
+        const previous = this.ledger[rule.id];
+        this.ledger[rule.id] = { date: local.date, at: now, error: '' };
+        try { await this.save(); }
+        catch (error) {
+          // No action was dispatched. Keep the due minute eligible for retry
+          // instead of displaying an execution that never reached the player.
+          if (previous) this.ledger[rule.id] = previous; else delete this.ledger[rule.id];
+          throw error;
+        }
       });
       if (!this.validScheduleControl(guard, minute) || this.ledger[rule.id]?.at !== now) continue;
       // Dispatch in saved rule order, but never await a provider here. A slow

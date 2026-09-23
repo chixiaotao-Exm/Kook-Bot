@@ -129,3 +129,27 @@ test('owner revocation during queued settings, room configuration and slow catal
     assert.equal(runtime.player.stayConnected, false); assert.equal(runtime.features.radio.enabled, false); assert.equal(f.calls.voiceJoin, 0);
   }
 });
+
+test('queued music-account operations recheck administrator access before reaching the shared account', async (t) => {
+  for (const operation of ['logout', 'qr-status']) await t.test(operation, async (t) => {
+    const f = await fixture(t), admin = await f.client('Admin', true);
+    let providerCalls = 0;
+    f.web.music.forSource = () => ({
+      async logout() { providerCalls++; },
+      async qrStatus() { providerCalls++; return { status: 'waiting' }; },
+    });
+    const entered = deferred(), gate = deferred();
+    const blocking = f.web.accountExclusive(async () => { entered.resolve(); await gate.promise; });
+    await entered.promise;
+    const before = f.web.accountTail;
+    const request = operation === 'logout' ? admin.request('/api/account/logout', { source: 'qq' })
+      : admin.request('/api/account/qr?source=qq');
+    try {
+      await until(() => f.web.accountTail !== before);
+      await f.access.logoutAdmin(admin.id);
+    } finally { gate.resolve(); }
+    await blocking;
+    assert.equal((await request).status, 403);
+    assert.equal(providerCalls, 0);
+  });
+});
