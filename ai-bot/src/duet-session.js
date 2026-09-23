@@ -15,6 +15,7 @@ const MAX_PENDING_INPUTS = 10;
 const MAX_PENDING_CHARS = 20_000;
 const THREAD_ID = /^[A-Za-z0-9_-]{1,100}$/;
 const MAX_MODEL_HISTORY_CHARS = 42_000;
+const RECOVERABLE_MODEL_ERRORS = new Set(['NETWORK', 'TIMEOUT', 'RATE_LIMIT', 'UPSTREAM_ERROR']);
 const TRUNCATED = '\n（本轮内容已截短。）';
 const INCOMPLETE = '\n（本轮回复未完整生成。）';
 const failure = code => Object.assign(new Error('Duet operation failed'), { code });
@@ -25,19 +26,23 @@ const prefix = (text, limit) => text.slice(0, Math.max(0, limit)).replace(/[\uD8
 export class DuetSession {
   #participants; #channelId; #file; #rounds; #maxRounds; #deadlineMs; #betweenTurnsMs;
   #now; #writeState; #logger; #setTimeout; #clearTimeout; #closeTimeoutMs;
+  #modelRetryDelaysMs;
   #ready = false; #closed = false; #runs = 0; #lastRun = null; #lastErrorCode = null;
   #seen = new Map(); #active = null; #operations = Promise.resolve(); #tasks = new Set(); #notices = new Set();
 
   constructor({ participants, channelId, dataDir, rounds = 0, maxRounds = 6, deadlineMs = 0,
     betweenTurnsMs = 2000, now = Date.now, writeState = atomicJson, logger = () => {},
-    setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout, closeTimeoutMs = 1500 } = {}) {
+    setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout, closeTimeoutMs = 1500,
+    modelRetryDelaysMs = [5000, 15000] } = {}) {
     if (!Array.isArray(participants) || participants.length !== 2
       || participants.some(item => typeof item?.generate !== 'function' || typeof item?.reply !== 'function')
       || !validId(channelId) || typeof dataDir !== 'string' || !dataDir
       || !Number.isInteger(maxRounds) || maxRounds < 1 || maxRounds > 6
       || !Number.isInteger(rounds) || rounds < 0 || rounds > maxRounds
       || !Number.isInteger(deadlineMs) || deadlineMs < 0 || deadlineMs > 600_000
-      || !Number.isInteger(betweenTurnsMs) || betweenTurnsMs < 0 || betweenTurnsMs > 30_000)
+      || !Number.isInteger(betweenTurnsMs) || betweenTurnsMs < 0 || betweenTurnsMs > 30_000
+      || !Array.isArray(modelRetryDelaysMs) || modelRetryDelaysMs.length > 4
+      || [...modelRetryDelaysMs].some(delay => !Number.isInteger(delay) || delay < 1 || delay > 60000))
       throw new Error('Invalid duet session configuration');
     this.#participants = participants.map((item, index) => ({ ...item,
       label: typeof item.label === 'string' && item.label.trim() && item.label.length <= 32
@@ -46,6 +51,7 @@ export class DuetSession {
     this.#rounds = rounds; this.#maxRounds = maxRounds; this.#deadlineMs = deadlineMs; this.#betweenTurnsMs = betweenTurnsMs;
     this.#now = now; this.#writeState = writeState; this.#logger = logger;
     this.#setTimeout = setTimeoutImpl; this.#clearTimeout = clearTimeoutImpl; this.#closeTimeoutMs = closeTimeoutMs;
+    this.#modelRetryDelaysMs = [...modelRetryDelaysMs];
   }
 
   async init() {
@@ -96,6 +102,9 @@ export class DuetSession {
       threadId: run?.threadId ?? last?.threadId ?? null,
       contributions: run?.contributions ?? last?.contributions ?? 0, pendingInputs: run ? this.#pending(run).length : 0,
       currentRound, round: currentRound, currentSpeaker: speaker, currentParticipant: speaker,
+      retryWaiting: Boolean(run?.retryWaiting), retryPaused: Boolean(run?.retryPaused),
+      retryAttempt: run?.retryAttempt ?? 0, maxModelRetries: this.#modelRetryDelaysMs.length,
+      retryErrorCode: run?.retryErrorCode ?? null,
       startedAt: run?.startedAt ?? last?.startedAt ?? null,
       deadlineAt: run?.deadlineAt ?? null, deadlineRemainingMs: run?.paused ? run.deadlineRemainingMs : null,
       runs: this.#runs, lastErrorCode: this.#lastErrorCode ?? last?.errorCode ?? null };
@@ -141,6 +150,7 @@ export class DuetSession {
       }
       if (!this.#current(run)) return { resumed: false, reason: 'NO_ACTIVE' };
       run.paused = false; run.status = 'running'; this.#armDeadline(run);
+      if (run.retryPaused) this.#clearRecovery(run);
       for (const resolve of run.resumeWaiters) resolve(); run.resumeWaiters.clear();
       this.#progressState(run, 'resume'); return { resumed: true };
     });
@@ -237,6 +247,7 @@ export class DuetSession {
       transcript, contributions: 0, revision: 0, stage: 'between', generationController: null,
       paused: false, resumeWaiters: new Set(), delayController: null, deadlineRemainingMs: this.#deadlineMs || null,
       controller: new AbortController(), progress: null, progressEnded: false,
+      retryAttempt: 0, retryWaiting: false, retryPaused: false, retryErrorCode: null, progressDetail: '',
       status: 'running', endReason: null, finalizing: null, timer: null };
     this.#seen.set(receiptId, now); this.#runs++; this.#lastRun = this.#metadata(run);
     try { await this.#write(); }
@@ -311,8 +322,8 @@ export class DuetSession {
     this.#assertCurrent(run);
   }
 
-  async #delay(run) {
-    let remaining = this.#betweenTurnsMs;
+  async #delay(run, duration = this.#betweenTurnsMs) {
+    let remaining = duration;
     while (remaining > 0) {
       await this.#waitUntilResumed(run);
       let timer, interrupted; const began = this.#now();
@@ -358,6 +369,7 @@ export class DuetSession {
     if (run.paused) throw failure('PAUSED');
     if (view.revision !== run.revision) throw failure('TURN_UPDATED');
     const controller = new AbortController(); run.generationController = controller; run.stage = 'generating';
+    if (run.retryAttempt) this.#progressDetail(run, `正在第 ${run.retryAttempt} 次重试生成（最多 ${this.#modelRetryDelaysMs.length} 次重试）。`);
     const cancel = () => controller.abort(failure(this.#cancelCode(run)));
     run.controller.signal.addEventListener('abort', cancel, { once: true });
     let aborted;
@@ -378,6 +390,44 @@ export class DuetSession {
       run.controller.signal.removeEventListener('abort', cancel); controller.signal.removeEventListener('abort', aborted);
       if (run.generationController === controller) run.generationController = null;
     }
+  }
+
+  #progressDetail(run, detail) {
+    run.progressDetail = detail;
+    const task = Promise.resolve().then(async () => {
+      if (!this.#current(run) || run.progressEnded || !run.progress) return;
+      try { await run.progress.setDetail?.(run.progressDetail); }
+      catch (error) { this.#log('duet_progress_failed', safeCode(error)); }
+    });
+    this.#tasks.add(task); task.finally(() => this.#tasks.delete(task));
+  }
+
+  #clearRecovery(run) {
+    if (run.retryErrorCode) this.#progressDetail(run, '');
+    run.retryAttempt = 0; run.retryWaiting = false; run.retryPaused = false; run.retryErrorCode = null;
+  }
+
+  async #recoverGeneration(run, error) {
+    // Only the model adapter may classify a failure as retryable. This method
+    // is called before delivery, never for an uncertain KOOK send or tool write.
+    if (error?.retryable !== true || !RECOVERABLE_MODEL_ERRORS.has(error.code)) return false;
+    this.#assertCurrent(run);
+    run.retryErrorCode = safeCode(error); run.stage = 'retrying';
+    if (run.retryAttempt < this.#modelRetryDelaysMs.length) {
+      const delay = this.#modelRetryDelaysMs[run.retryAttempt++];
+      run.retryWaiting = true;
+      this.#log('duet_model_retry', run.retryErrorCode);
+      this.#progressDetail(run, `AI 服务暂时不可用，${delay / 1000} 秒后重试（${run.retryAttempt}/${this.#modelRetryDelaysMs.length}）。`);
+      try { await this.#delay(run, delay); }
+      finally { run.retryWaiting = false; }
+    } else {
+      run.retryPaused = true;
+      this.#log('duet_model_retries_exhausted', run.retryErrorCode);
+      this.#progressDetail(run, 'AI 服务连续出错，已保留当前发言位置和上下文。发送“继续”重试。');
+      await this.pause();
+      await this.#waitUntilResumed(run);
+    }
+    return true;
   }
 
   #turnText(run, speaker, response) {
@@ -435,7 +485,13 @@ export class DuetSession {
           try {
             await this.#waitUntilResumed(run);
             const view = await this.#serialize(() => { this.#assertCurrent(run); return this.#messages(run, speaker); });
-            const response = await this.#generate(run, participant, view);
+            let response;
+            try { response = await this.#generate(run, participant, view); }
+            catch (error) {
+              if (await this.#recoverGeneration(run, error)) continue;
+              throw error;
+            }
+            this.#clearRecovery(run);
             this.#assertCurrent(run);
             await this.#waitUntilResumed(run);
             await this.#serialize(() => {

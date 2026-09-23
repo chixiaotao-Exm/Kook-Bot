@@ -3,19 +3,22 @@ const MAX_MESSAGES = 40;
 const MAX_MESSAGE_CHARS = 6000;
 const MAX_INPUT_CHARS = 48000;
 const MAX_OUTPUT_CHARS = 32000;
+const RETRYABLE_HTTP_STATUS = new Set([408, 429, 500, 502, 503, 504]);
+const RETRYABLE_RESPONSE_CODE = new Set(['server_error', 'rate_limit_exceeded']);
 const INCOMPLETE_MARKER = '\n\n（回复未完整生成，可发送“继续”接着聊。）';
 const HISTORY_MARKER = '\n\n[前文较长，完整内容已作为附件提供]';
 const DEFAULT_PROMPT = '你是 KOOK 文字频道里的 AI 助手。请用简洁、自然的中文回复用户；用户指定其他语言时按其要求回复。';
 
 export class ModelClientError extends Error {
-  constructor(code, message) {
+  constructor(code, message, { retryable = false } = {}) {
     super(message);
     this.name = 'ModelClientError';
     this.code = code;
+    this.retryable = retryable === true;
   }
 }
 
-const failure = (code, message) => new ModelClientError(code, message);
+const failure = (code, message, retryable = false) => new ModelClientError(code, message, { retryable });
 const withMarker = (text, limit, marker) => text.slice(0, limit - marker.length)
   .replace(/[\uD800-\uDBFF]$/, '').trimEnd() + marker;
 
@@ -95,7 +98,10 @@ async function boundedJson(response, signal) {
 
 function normalize(raw, model) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw failure('FORMAT', 'AI 服务返回的数据格式不正确。');
-  if (raw.error || ['failed', 'cancelled'].includes(raw.status)) throw failure('UPSTREAM_ERROR', 'AI 服务暂时未能生成回复，请稍后重试。');
+  if (raw.error || ['failed', 'cancelled'].includes(raw.status)) {
+    const retryable = raw.status !== 'cancelled' && RETRYABLE_RESPONSE_CODE.has(raw.error?.code);
+    throw failure('UPSTREAM_ERROR', 'AI 服务暂时未能生成回复，请稍后重试。', retryable);
+  }
   if (raw.model != null && raw.model !== model) throw failure('MODEL_MISMATCH', 'AI 服务返回的模型与设置不一致，已停止本次回复。');
   if (!['completed', 'incomplete'].includes(raw.status) || !Array.isArray(raw.output)) {
     throw failure('FORMAT', 'AI 服务没有返回完整的回复数据。');
@@ -154,7 +160,7 @@ export class ModelResponsesClient {
     const abort = error => { rejectAbort(error); controller.abort(error); };
     const callerAbort = () => abort(failure('CANCELLED', '本次 AI 回复已取消。'));
     signal?.addEventListener('abort', callerAbort, { once: true });
-    const timer = setTimeout(() => abort(failure('TIMEOUT', 'AI 回复超时，请稍后重试。')), this.#timeoutMs);
+    const timer = setTimeout(() => abort(failure('TIMEOUT', 'AI 回复超时，请稍后重试。', true)), this.#timeoutMs);
     try {
       const request = async () => {
         const response = await this.#fetch(this.#url, {
@@ -171,8 +177,8 @@ export class ModelResponsesClient {
         if (!response?.ok) {
           cancelBody(response?.body);
           if ([401, 403].includes(response?.status)) throw failure('AUTH', 'AI 服务密钥无效或无模型权限，请联系管理员。');
-          if (response?.status === 429) throw failure('RATE_LIMIT', 'AI 服务请求过于频繁或额度不足，请稍后重试。');
-          throw failure('UPSTREAM_ERROR', 'AI 服务暂时不可用，请稍后重试。');
+          if (response?.status === 429) throw failure('RATE_LIMIT', 'AI 服务请求过于频繁或额度不足，请稍后重试。', true);
+          throw failure('UPSTREAM_ERROR', 'AI 服务暂时不可用，请稍后重试。', RETRYABLE_HTTP_STATUS.has(response?.status));
         }
         return normalize(await boundedJson(response, controller.signal), this.#model);
       };
@@ -180,7 +186,7 @@ export class ModelResponsesClient {
     } catch (error) {
       if (error instanceof ModelClientError) throw error;
       if (controller.signal.aborted && controller.signal.reason instanceof ModelClientError) throw controller.signal.reason;
-      throw failure('NETWORK', '暂时无法连接 AI 服务，请稍后重试。');
+      throw failure('NETWORK', '暂时无法连接 AI 服务，请稍后重试。', true);
     } finally {
       clearTimeout(timer);
       signal?.removeEventListener('abort', callerAbort);

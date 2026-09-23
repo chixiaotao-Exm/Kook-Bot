@@ -5,6 +5,7 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { DuetSession } from '../src/duet-session.js';
 import { atomicJson } from '../src/storage.js';
+import { ModelClientError, ModelResponsesClient } from '../src/model-client.js';
 
 const CHANNEL = '300000001', USER = '200000001', NOW = Date.parse('2026-09-22T12:00:00Z');
 const receipt = n => `00000000-0000-0000-0000-${String(n).padStart(12, '0')}`;
@@ -187,6 +188,129 @@ test('model failures expose only known codes and ambiguous delivery is not retri
     assert.equal(f.session.snapshot().lastErrorCode, kind === 'model' ? 'UNKNOWN' : 'KOOK_TIMEOUT');
     assert.ok(!JSON.stringify(f.logs).includes('private')); assert.ok(!JSON.stringify(f.session.snapshot()).includes('private'));
   }
+});
+
+const transient = (code = 'UPSTREAM_ERROR') => new ModelClientError(code, 'private upstream details', { retryable: true });
+
+test('temporary model failures retry the same speaker before the peer sees exactly one confirmed reply', async t => {
+  const actors = [], details = []; let requests = 0;
+  const client = new ModelResponsesClient({ baseUrl: 'https://example.invalid', apiKey: 'sk-fixture-not-real',
+    fetchImpl: async () => ++requests < 3 ? new Response('private upstream details', { status: 503 })
+      : Response.json({ model: 'gpt-6-astra', status: 'completed', output: [{ type: 'message', role: 'assistant',
+        content: [{ type: 'output_text', text: '恢复后的完整观点。' }] }] }) });
+  const f = await fixture(t, { rounds: 1, modelRetryDelaysMs: [1, 2] }, [
+    { generate: async (messages, options) => { actors.push('A'); return client.generate(messages, options); },
+      progress: { start: async () => ({ setDetail: async detail => details.push(detail) }) } },
+    { generate: async messages => { actors.push('B'); assert.match(JSON.stringify(messages), /恢复后的完整观点/); return { text: 'B回应。' }; } },
+  ]);
+  await f.session.start(request()); await f.done();
+  assert.deepEqual(actors, ['A', 'A', 'A', 'B']); assert.equal(requests, 3);
+  assert.deepEqual(f.replies.slice(0, 2).map(item => item.speaker), [0, 1]); assert.equal(f.replies.length, 3);
+  assert.equal(f.session.snapshot().completedTurns, 2); assert.equal(f.session.snapshot().retryErrorCode, null);
+  assert.ok(details.some(text => text.includes('1/2'))); assert.ok(details.some(text => text.includes('2/2')));
+  assert.ok(details.includes('')); assert.doesNotMatch(JSON.stringify([f.logs, f.session.snapshot()]), /private upstream/);
+});
+
+test('exhausted temporary failures pause with context and resume the same pending speaker', async t => {
+  let firstCalls = 0, secondCalls = 0, recovered = false, pauses = 0;
+  const f = await fixture(t, { rounds: 1, modelRetryDelaysMs: [1, 2] }, [
+    { generate: async () => { firstCalls++; return { text: 'A已经发表的观点。' }; },
+      progress: { start: async () => ({ pause: async () => { pauses++; }, resume: async () => {}, setDetail: async () => {} }) } },
+    { generate: async messages => {
+      secondCalls++; if (!recovered) throw transient('NETWORK');
+      assert.match(JSON.stringify(messages), /A已经发表的观点/); assert.match(JSON.stringify(messages), /恢复时采用补充要求/);
+      return { text: 'B根据保留记录继续回应。' };
+    } },
+  ]);
+  await f.session.start(request()); await until(() => f.session.snapshot().retryPaused && pauses === 1);
+  const paused = f.session.snapshot();
+  assert.equal(paused.active, true); assert.equal(paused.status, 'paused'); assert.equal(paused.currentSpeaker, 'B');
+  assert.equal(paused.completedTurns, 1); assert.equal(paused.retryAttempt, 2); assert.equal(paused.retryErrorCode, 'NETWORK');
+  assert.equal(firstCalls, 1); assert.equal(secondCalls, 3); assert.equal(f.replies.length, 1);
+  assert.equal(JSON.parse(await readFile(path.join(f.dataDir, 'duet-state.json'), 'utf8')).lastRun.status, 'paused');
+  assert.equal((await f.session.contribute(contribution(1, '恢复时采用补充要求'))).accepted, true);
+  assert.equal(secondCalls, 3); recovered = true;
+  assert.equal((await f.session.resume()).resumed, true); await f.done();
+  assert.equal(firstCalls, 1); assert.equal(secondCalls, 4); assert.equal(f.replies.length, 3);
+  assert.equal(f.session.snapshot().lastErrorCode, null);
+});
+
+test('the progress detail changes from retry waiting to generation while a long retry is in flight', async t => {
+  let calls = 0; const details = [], response = defer();
+  const f = await fixture(t, { rounds: 1, modelRetryDelaysMs: [1] }, [{
+    generate: async () => { if (++calls === 1) throw transient(); return response.promise; },
+    progress: { start: async () => ({ setDetail: async text => details.push(text) }) },
+  }]);
+  await f.session.start(request()); await until(() => calls === 2 && details.at(-1)?.includes('正在第 1 次重试生成'));
+  assert.equal(f.session.snapshot().retryWaiting, false); assert.equal(f.replies.length, 0);
+  assert.ok(details.some(text => text.includes('秒后重试')));
+  response.resolve({ text: '重试完成。' }); await f.done();
+  assert.ok(details.includes(''));
+});
+
+test('retry waits preserve manual pause timing and do not make requests until resumed', async t => {
+  let now = NOW, nextTimer = 0, calls = 0;
+  const timers = new Map();
+  const f = await fixture(t, { rounds: 1, deadlineMs: 0, modelRetryDelaysMs: [100], now: () => now,
+    setTimeoutImpl: (callback, ms) => { const id = ++nextTimer; timers.set(id, { callback, ms }); return id; },
+    clearTimeoutImpl: id => timers.delete(id) }, [{ generate: async messages => {
+    if (++calls === 1) throw transient('TIMEOUT');
+    assert.match(JSON.stringify(messages), /等待期间补充/); return { text: '恢复成功。' };
+  } }]);
+  await f.session.start(request()); await until(() => [...timers.values()].some(item => item.ms === 100));
+  now += 40; assert.equal((await f.session.pause()).paused, true);
+  await until(() => timers.size === 0);
+  assert.equal((await f.session.contribute(contribution(1, '等待期间补充'))).accepted, true);
+  now += 50000; assert.equal(calls, 1); assert.equal(f.session.snapshot().retryWaiting, true);
+  await f.session.resume(); await until(() => [...timers.values()].some(item => item.ms === 60));
+  const [id, timer] = [...timers.entries()].find(([, item]) => item.ms === 60);
+  timers.delete(id); now += 60; timer.callback(); await f.done();
+  assert.equal(calls, 2); assert.equal(f.session.snapshot().completedTurns, 2); assert.equal(timers.size, 0);
+});
+
+test('stop and shutdown abort retry waits without a late model request or a post', async t => {
+  for (const operation of ['stop', 'close']) await t.test(operation, async t => {
+    const f = await fixture(t, { rounds: 1, deadlineMs: 0, modelRetryDelaysMs: [60000] }, [{ generate: async () => { throw transient(); } }]);
+    await f.session.start(request()); await until(() => f.session.snapshot().retryWaiting);
+    await f.session[operation](); await f.done(operation === 'stop' ? 'stopped' : 'interrupted');
+    assert.equal(f.replies.length, 0); assert.equal(f.logs.filter(item => item.event === 'duet_model_retry').length, 1);
+  });
+});
+
+test('session deadline also ends a retry wait and never starts another model call', async t => {
+  let now = NOW, serial = 0, calls = 0;
+  const timers = new Map();
+  const f = await fixture(t, { rounds: 1, deadlineMs: 50, modelRetryDelaysMs: [100], now: () => now,
+    setTimeoutImpl: (callback, ms) => { const id = ++serial; timers.set(id, { callback, ms }); return id; },
+    clearTimeoutImpl: id => timers.delete(id) }, [{ generate: async () => { calls++; throw transient(); } }]);
+  await f.session.start(request()); await until(() => [...timers.values()].some(item => item.ms === 100));
+  const [id, timer] = [...timers.entries()].find(([, item]) => item.ms === 50);
+  timers.delete(id); now += 50; timer.callback(); await f.done('timeout'); await until(() => f.replies.length === 1);
+  assert.equal(calls, 1); assert.equal(f.session.snapshot().lastErrorCode, 'TIMEOUT');
+  await until(() => timers.size === 0);
+});
+
+test('permanent or unclassified failures remain terminal and delivery is never retried', async t => {
+  for (const [code, retryable] of [['AUTH', true], ['UPSTREAM_ERROR', false], ['NETWORK', false], ['REFUSAL', true]]) {
+    let calls = 0;
+    const f = await fixture(t, { modelRetryDelaysMs: [1] }, [{ generate: async () => {
+      calls++; throw new ModelClientError(code, 'private upstream details', { retryable });
+    } }]);
+    await f.session.start(request()); await f.done('failed'); assert.equal(calls, 1);
+    assert.equal(f.session.snapshot().lastErrorCode, code);
+  }
+  let deliveries = 0;
+  const f = await fixture(t, { modelRetryDelaysMs: [1] }, [{ reply: async () => { deliveries++; throw transient(); } }]);
+  await f.session.start(request()); await f.done('failed'); assert.equal(deliveries, 1); assert.equal(f.calls.length, 1);
+});
+
+test('failed persistence of automatic pause disables the session without extra attempts', async t => {
+  let writes = 0, calls = 0;
+  const f = await fixture(t, { rounds: 1, modelRetryDelaysMs: [1], writeState: async (file, value) => {
+    if (++writes === 2) throw Error('private disk failure'); await atomicJson(file, value);
+  } }, [{ generate: async () => { calls++; throw transient(); } }]);
+  await f.session.start(request()); await f.done('failed');
+  assert.equal(calls, 2); assert.equal(f.session.snapshot().enabled, false); assert.equal(f.session.snapshot().lastErrorCode, 'STORAGE');
 });
 
 test('a reply without a valid confirmation ID stops before another model request', async t => {
