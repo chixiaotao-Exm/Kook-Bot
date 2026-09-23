@@ -35,18 +35,25 @@ async function fixture(t, options = {}) {
     send(number, content, overrides = {}) { return bot.handle(event(number, content, { msg_timestamp: now, ...overrides })); } };
 }
 
-test('defaults to continuous discussion and accepts explicit finite rounds and optional own mention', () => {
+test('ordinary questions start continuous discussion while legacy commands remain compatible', () => {
+  assert.deepEqual(parseDuetCommand('人工智能会怎样改变生活？'), { kind: 'start', topic: '人工智能会怎样改变生活？', rounds: 0 });
+  assert.deepEqual(parseDuetCommand('2026 年有什么科技趋势？'), { kind: 'start', topic: '2026 年有什么科技趋势？', rounds: 0 });
+  assert.deepEqual(parseDuetCommand(`(met)${SELF}(met) 两个人如何高效合作？`, SELF), { kind: 'start', topic: '两个人如何高效合作？', rounds: 0 });
   assert.deepEqual(parseDuetCommand('/互聊 太空探索'), { kind: 'start', topic: '太空探索', rounds: 0 });
   assert.deepEqual(parseDuetCommand('/互聊 不限 太空探索'), { kind: 'start', topic: '太空探索', rounds: 0 });
   assert.deepEqual(parseDuetCommand('/互聊 0 太空探索'), { kind: 'start', topic: '太空探索', rounds: 0 });
   assert.deepEqual(parseDuetCommand(`(met)${SELF}(met) /互聊 2 太空探索`, SELF), { kind: 'start', topic: '太空探索', rounds: 2 });
-  for (const value of ['/互聊', '/互聊 2', '/互聊 不限', '/互聊 0', '/互聊帮助', '/帮助']) assert.equal(parseDuetCommand(value).kind, 'help');
-  for (const value of ['/停止', '/停止互聊']) assert.equal(parseDuetCommand(value).kind, 'stop');
+  for (const value of ['帮助', '/互聊', '/互聊 2', '/互聊 不限', '/互聊 0', '/互聊帮助', '/帮助']) assert.equal(parseDuetCommand(value).kind, 'help');
+  for (const value of ['停止', '停止互聊', '/停止', '/停止互聊']) assert.equal(parseDuetCommand(value).kind, 'stop');
+  assert.equal(parseDuetCommand('互聊状态').kind, 'status');
   assert.equal(parseDuetCommand('/互聊状态').kind, 'status');
   for (const value of ['/互聊 7 x', '/互聊 -1 x', '/互聊 1.5 x']) assert.equal(parseDuetCommand(value).kind, 'invalid');
   assert.equal(parseDuetCommand(`/互聊 ${'话'.repeat(2001)}`).kind, 'too_long');
   assert.equal(parseDuetCommand('/互聊 sk-fixtureprivate123456789').kind, 'credential');
-  for (const value of ['普通聊天', '/互聊状态 other', '/停止 please', `(met)${OTHER_BOT}(met) /互聊 话题`]) assert.equal(parseDuetCommand(value, SELF), null);
+  for (const value of ['停止工作后如何休息？', '为什么汽车会突然停止？', '停止讨论会有什么影响？']) {
+    assert.deepEqual(parseDuetCommand(value), { kind: 'start', topic: value, rounds: 0 });
+  }
+  for (const value of ['/互聊状态 other', '/停止 please', '/admin', '   ']) assert.equal(parseDuetCommand(value, SELF), null);
 });
 
 test('persists a private receipt before starting continuous sessions and quotes command', async t => {
@@ -54,16 +61,17 @@ test('persists a private receipt before starting continuous sessions and quotes 
   const f = await fixture(t, { writeState: async (file, value) => {
     assert.equal(config.starts.length, 0); await atomicJson(file, value);
   } }); config = f;
-  await f.send(1, '/互聊 一个私密测试话题'); await flush();
+  await f.send(1, '一个私密测试话题'); await flush();
   assert.deepEqual(f.starts, [{ topic: '一个私密测试话题', rounds: 0, userId: USER, receiptId: id(1), replyMessageId: id(1) }]);
   assert.equal(f.replies[0].targetId, CHANNEL); assert.equal(f.replies[0].replyMessageId, id(1));
-  assert.match(f.replies[0].content, /已开始持续互聊/);
+  assert.match(f.replies[0].content, /已开始持续讨论/);
+  assert.match(f.replies[0].content, /发送“停止”/); assert.doesNotMatch(f.replies[0].content, /\/互聊|\/停止/);
   assert.doesNotMatch(f.replies[0].content, /0 轮|0 次|6 轮|12 次/);
   const raw = await readFile(path.join(f.dataDir, 'duet-seen.json'), 'utf8');
   assert.deepEqual(JSON.parse(raw), { version: 1, seen: [{ id: id(1), at: NOW }] });
   assert.doesNotMatch(raw, /私密测试话题|200000001/);
   assert.doesNotMatch(JSON.stringify(f.logs), /私密测试话题|200000001/);
-  await f.send(1, '/互聊 一个私密测试话题'); assert.equal(f.starts.length, 1);
+  await f.send(1, '一个私密测试话题'); assert.equal(f.starts.length, 1);
 });
 
 test('restart receipt deduplication prevents replay from restarting a paid session', async t => {
@@ -95,15 +103,17 @@ test('continuous help and status report ongoing rounds and speaker without a fix
         completedTurns: 27, totalTurns: null, currentRound: 14, currentSpeaker: '机器人 B' };
     },
   } });
-  await f.send(1, '/互聊帮助'); await flush();
-  assert.match(f.replies.at(-1).content, /持续互聊，直到发送 \/停止互聊/);
+  await f.send(1, '帮助'); await flush();
+  assert.match(f.replies.at(-1).content, /直接发送问题/);
+  assert.match(f.replies.at(-1).content, /发送“停止”即可结束/);
+  assert.doesNotMatch(f.replies.at(-1).content, /\/互聊|\/停止/);
   assert.doesNotMatch(f.replies.at(-1).content, /默认 6|0 轮/);
-  f.advance(3000); await f.send(2, '/互聊状态'); await flush();
+  f.advance(3000); await f.send(2, '互聊状态'); await flush();
   assert.match(f.replies.at(-1).content, /第 14 轮 · 已发 27 条/);
   assert.match(f.replies.at(-1).content, /当前发言方：机器人 B/);
   assert.doesNotMatch(f.replies.at(-1).content, /\/ 0|\/ 12|null/);
-  await f.send(3, '/停止互聊'); assert.equal(stopped, 1);
-  f.advance(3000); await f.send(4, '/互聊状态'); await flush();
+  await f.send(3, '停止'); assert.equal(stopped, 1);
+  f.advance(3000); await f.send(4, '互聊状态'); await flush();
   assert.match(f.replies.at(-1).content, /已停止\n已发 27 条/);
 });
 
@@ -143,7 +153,7 @@ test('rejects robots including both participants, invalid events, stale messages
     { msg_timestamp: NOW - 300001 }, { msg_timestamp: NOW + 60001 }, { extra: null }]) {
     await f.send(n++, '/互聊 x', overrides);
   }
-  await f.send(n, '普通聊天');
+  await f.send(n, '/unknown');
   assert.equal(f.starts.length, 0); assert.equal(f.replies.length, 0); assert.equal(f.bot.snapshot().seenCount, 0);
 });
 
@@ -171,7 +181,7 @@ test('stop is always admitted during sender cooldown and while notices are in fl
   const f = await fixture(t, { reply: (_payload) => { replySignal = _payload.signal; return waiting.promise; } });
   await f.send(1, '/互聊 2 城市设计');
   assert.equal(f.starts.length, 1); assert.equal(f.bot.snapshot().pendingNotices, 1);
-  await f.send(2, '/停止互聊'); assert.equal(f.stops.length, 1);
+  await f.send(2, '停止'); assert.equal(f.stops.length, 1);
   assert.equal(f.bot.snapshot().pendingNotices, 1);
   const closing = f.bot.close(); assert.equal(replySignal.aborted, true);
   waiting.resolve({ messageId: id(900) }); await closing;
@@ -179,16 +189,30 @@ test('stop is always admitted during sender cooldown and while notices are in fl
 
 test('only one active session is accepted and duplicate session receipts receive no notice', async t => {
   const f = await fixture(t); await f.send(1);
-  f.advance(3000); await f.send(2, '/互聊 2 不同话题'); await flush();
-  assert.equal(f.bot.snapshot().starts, 1); assert.match(f.replies.at(-1).content, /已有互聊正在进行/);
+  f.advance(3000); await f.send(2, '不同话题'); await flush();
+  assert.equal(f.bot.snapshot().starts, 1); assert.match(f.replies.at(-1).content, /已有讨论正在进行/);
+  assert.match(f.replies.at(-1).content, /先发送“停止”，再发送新问题/);
+  assert.doesNotMatch(f.replies.at(-1).content, /\/停止|\/互聊/);
   const duplicate = await fixture(t, { session: { async start() { return { accepted: false, reason: 'DUPLICATE' }; },
     async stop() {}, snapshot() { return { active: false }; } } });
   await duplicate.send(1); await flush(); assert.equal(duplicate.replies.length, 0);
 });
 
+test('numeric-leading questions keep their complete topic and only exact stop messages end an active discussion', async t => {
+  const f = await fixture(t);
+  await f.send(1, '2026 年有哪些值得讨论的科技趋势？');
+  assert.equal(f.starts[0].topic, '2026 年有哪些值得讨论的科技趋势？'); assert.equal(f.starts[0].rounds, 0);
+  f.advance(3000); await f.send(2, '为什么有些机器会突然停止运行？'); await flush();
+  assert.equal(f.stops.length, 0); assert.equal(f.bot.snapshot().starts, 1);
+  assert.match(f.replies.at(-1).content, /已有讨论正在进行/);
+  f.advance(3000); await f.send(3, '停止'); await flush();
+  assert.equal(f.stops.length, 1); assert.match(f.replies.at(-1).content, /已停止讨论/);
+  assert.doesNotMatch(f.replies.at(-1).content, /\/互聊|\/停止/);
+});
+
 test('secret and invalid topics produce fixed safe guidance without starting or echoing input', async t => {
   const f = await fixture(t);
-  for (const [i, content] of ['/互聊 sk-supersecretfixture123456789', '/互聊 999 私密话题', `/互聊 ${'私'.repeat(2001)}`, '/互聊'].entries()) {
+  for (const [i, content] of ['sk-supersecretfixture123456789', '/互聊 999 私密话题', '私'.repeat(2001), '帮助'].entries()) {
     f.advance(3000); await f.send(i + 1, content); await flush();
   }
   assert.equal(f.starts.length, 0); assert.equal(f.replies.length, 4);
