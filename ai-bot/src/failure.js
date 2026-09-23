@@ -29,6 +29,8 @@ const MODEL_MESSAGES = Object.freeze({
   PUBLISH_UNKNOWN: '分支发布或 PR 状态尚未确认，未重复执行发布。',
   BUDGET: '本次任务已达到迭代上限，已有代码和检查报告已保留。',
   BROKER_FAILED: '代码执行工具暂不可用，当前任务未确认完成。',
+  CAPACITY: '代码任务名额已满，请管理员整理已有任务后重试。',
+  GIT_FAILED: '仓库操作未成功，请检查代码执行服务后重试。',
   STORAGE: '任务状态保存失败，已暂停后续操作。',
 });
 const CODES = new Set([...Object.keys(MODEL_MESSAGES),

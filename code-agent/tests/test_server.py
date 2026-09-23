@@ -11,7 +11,7 @@ import uuid
 from unittest.mock import patch
 
 from broker.server import Broker, BrokerError, MAX_REQUEST, UnixRpcServer, decode_request, peer_allowed
-from broker.repository import REPOSITORY
+from broker.repository import REPOSITORY, RepositoryError
 from broker.workspace import Workspace
 
 
@@ -110,6 +110,68 @@ class BrokerTests(unittest.TestCase):
         with self.assertRaises(BrokerError) as caught:
             limited.dispatch("create_job", None, {})
         self.assertEqual(caught.exception.code, "CAPACITY")
+
+    def test_failed_creations_release_capacity_without_touching_existing_tasks(self):
+        self.broker.max_jobs = 2
+        existing = self.create()["jobId"]
+        kept = self.broker.jobs / existing
+        before = {str(p.relative_to(kept)): p.read_bytes() for p in kept.rglob("*") if p.is_file()}
+
+        def broken(_job, root):
+            (root / "work").mkdir()
+            (root / "work" / "partial.txt").write_text("incomplete snapshot")
+            raise RepositoryError("GIT_FAILED")
+
+        with patch.object(self.repository, "prepare", side_effect=broken):
+            for _ in range(4):
+                self.error("GIT_FAILED", "create_job")
+                self.assertEqual([p.name for p in self.broker.jobs.iterdir()], [existing])
+        added = self.create()["jobId"]
+        self.assertNotEqual(added, existing)
+        self.assertEqual(len(list(self.broker.jobs.iterdir())), 2)
+        self.error("CAPACITY", "create_job")
+        self.assertEqual({str(p.relative_to(kept)): p.read_bytes() for p in kept.rglob("*") if p.is_file()}, before)
+
+    def test_late_initialization_failures_also_remove_only_the_new_directory(self):
+        with patch.object(self.repository, "prepare", return_value={"repository": "wrong"}):
+            self.error("INVALID_PREPARED_STATE", "create_job")
+        self.assertEqual(list(self.broker.jobs.iterdir()), [])
+        with patch("broker.server._private_json", side_effect=BrokerError("STORAGE")):
+            self.error("STORAGE", "create_job")
+        self.assertEqual(list(self.broker.jobs.iterdir()), [])
+        self.assertTrue(self.create()["jobId"])
+
+    def test_uuid_collision_never_deletes_or_prepares_an_existing_task(self):
+        existing = self.create()["jobId"]
+        state = (self.broker.jobs / existing / "job.json").read_bytes()
+        with patch("broker.server.uuid.uuid4", return_value=uuid.UUID(existing)), patch.object(self.repository, "prepare") as prepare:
+            self.error("BROKER_FAILED", "create_job")
+        prepare.assert_not_called()
+        self.assertEqual((self.broker.jobs / existing / "job.json").read_bytes(), state)
+
+    def test_cleanup_failure_keeps_the_original_failure_code_and_is_reported(self):
+        with patch.object(self.repository, "prepare", side_effect=RepositoryError("GIT_FAILED")), \
+                patch("broker.server.shutil.rmtree", side_effect=OSError("private storage path")):
+            with self.assertRaises(BrokerError) as caught:
+                self.create()
+        self.assertEqual(caught.exception.code, "GIT_FAILED")
+        self.assertTrue(caught.exception.cleanup_failed)
+        self.assertNotIn("private", str(caught.exception))
+        self.assertEqual(len(list(self.broker.jobs.iterdir())), 1)
+
+    def test_cleanup_rejects_unowned_paths_and_committed_state(self):
+        external = Path(self.temp.name) / "unrelated"
+        external.mkdir()
+        marker = external / "keep.txt"
+        marker.write_text("keep")
+        with self.assertRaises(BrokerError):
+            self.broker._discard_failed_creation(str(uuid.uuid4()), external, external.stat())
+        self.assertEqual(marker.read_text(), "keep")
+        existing = self.create()["jobId"]
+        root = self.broker.jobs / existing
+        with self.assertRaises(BrokerError):
+            self.broker._discard_failed_creation(existing, root, root.stat())
+        self.assertTrue((root / "job.json").is_file())
 
     def test_job_and_operation_arguments_are_exact_and_cannot_escape(self):
         job = self.create()["jobId"]
