@@ -1,0 +1,25 @@
+# Credentials and local environment
+.env
+.env.*
+!.env.example
+production.env
+*.pem
+*.key
+
+# Runtime state, exports, and local verification artifacts
+/data/
+/release/
+/output/
+/DEPLOYED.md
+node_modules/
+__pycache__/
+*.py[cod]
+*.log
+*.tmp
+*.bak
+*.tar.gz
+
+# Original deployment-specific operations, not portable examples
+/deploy/install.py
+/scripts/*-live.cjs
+/scripts/inspect-live.mjs

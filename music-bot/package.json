@@ -1,0 +1,26 @@
+{
+  "name": "kook-netease-music-bot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "KOOK voice music bot for Linux",
+  "engines": { "node": ">=22.16.0" },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env src/index.js",
+    "login": "node --env-file-if-exists=.env src/login.js",
+    "doctor": "node --env-file-if-exists=.env src/doctor.js",
+    "admin": "node --env-file-if-exists=.env src/admin.js",
+    "preview": "node src/preview.js",
+    "build:web": "node scripts/build-web.js",
+    "test": "node --test",
+    "check": "node --check src/index.js && node --test"
+  },
+  "dependencies": {
+    "@neteasecloudmusicapienhanced/api": "4.40.1",
+    "qrcode": "1.5.4",
+    "ws": "8.21.3",
+    "lucide": "1.41.0",
+    "esbuild": "0.28.2"
+  },
+  "overrides": { "qs": "6.16.0" }
+}

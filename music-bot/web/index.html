@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#dce8df">
+  <title>桃音 · 音乐控制台</title>
+  <link rel="icon" href="/favicon.svg?v=18b1569f2816" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css?v=18b1569f2816">
+  <link rel="stylesheet" href="/theme.css?v=18b1569f2816">
+  <script type="module" src="/app.js?v=18b1569f2816"></script>
+</head>
+<body>
+  <div class="wallpaper"><img id="wallpaper-image" src="/assets/background.svg" alt="竹青渐变背景"><div class="wallpaper-wash"></div></div>
+  <canvas id="scene" aria-hidden="true"></canvas>
+  <div class="scene-progress" id="scene-progress"><span></span></div>
+  <section id="login" class="login-screen" hidden>
+    <div class="login-brand"><i data-lucide="headphones"></i><span>桃音 <small>PEACH RADIO</small></span></div>
+    <form id="login-form" class="login-panel">
+      <span class="eyebrow">KOOK × 网易云音乐</span>
+      <h1>桃音</h1><p class="login-subtitle">音乐控制台</p>
+      <label for="password">管理密码</label>
+      <div class="password-field"><i data-lucide="lock-keyhole"></i><input id="password" type="password" autocomplete="current-password" required placeholder="输入控制台管理密码"><button type="button" class="icon-button" id="show-password" aria-label="显示密码" title="显示密码"><i data-lucide="eye"></i></button></div>
+      <p id="login-error" class="form-error" role="alert"></p>
+      <button type="submit" class="primary login-submit">进入控制台 <i data-lucide="arrow-right"></i></button>
+    </form>
+    <div class="scene-credit">桃音 · 音乐房间 <a href="/assets/LICENSES.md" target="_blank" rel="noopener">素材来源</a></div>
+  </section>
+  <div id="app" hidden>
+    <aside class="sidebar">
+      <a class="brand" href="/" aria-label="桃音房间大厅"><span class="brand-mark"><i data-lucide="headphones"></i></span><span>桃音<small>房间大厅 ↗</small></span></a>
+      <span class="nav-label">我的电台</span>
+      <nav aria-label="主导航">
+        <a class="nav-item" href="/" title="房间大厅" aria-label="房间大厅"><i data-lucide="headphones"></i><span>房间大厅</span></a>
+        <button class="nav-item active" data-view="player" title="正在播放" aria-label="正在播放"><i data-lucide="audio-lines"></i><span>正在播放</span><b id="queue-badge">0</b></button>
+        <button class="nav-item" data-view="discover" title="发现歌单" aria-label="发现歌单"><i data-lucide="disc-3"></i><span>发现歌单</span></button>
+        <button class="nav-item" data-view="status" title="机器人状态" aria-label="机器人状态"><i data-lucide="activity"></i><span>机器人状态</span></button>
+        <button class="nav-item" data-view="room" title="房间设置" aria-label="房间设置"><i data-lucide="radio-tower"></i><span>房间设置</span></button>
+        <button class="nav-item" data-view="lyrics" title="歌词" aria-label="歌词"><i data-lucide="music-2"></i><span>歌词</span></button>
+        <button class="nav-item" data-view="health" title="故障中心" aria-label="故障中心"><i data-lucide="heart"></i><span>故障中心</span></button>
+        <button class="nav-item" data-view="account" title="账号与设置" aria-label="账号与设置"><i data-lucide="sliders-horizontal"></i><span>账号与设置</span></button>
+      </nav>
+      <div class="sidebar-bottom">
+        <a id="admin-account-link" class="quiet-button" href="/admin"><i data-lucide="user-round"></i><span>管理员登录</span></a>
+        <div class="bot-identity"><span class="bot-avatar"><i data-lucide="bot"></i></span><div><strong id="bot-name">音乐机器人</strong><span><b class="status-dot" id="bot-dot"></b><span id="bot-state">正在连接</span></span></div></div>
+        <button id="logout" class="quiet-button"><i data-lucide="log-out"></i><span>退出控制台</span></button>
+      </div>
+    </aside>
+    <header class="topbar">
+      <span class="breadcrumb">我的电台 <i data-lucide="chevron-right"></i> <strong id="page-title">正在播放</strong></span>
+      <div class="top-actions"><span id="preview-tag" class="tag" hidden>开发预览</span><button class="icon-button" id="motion-toggle" title="背景动效" aria-label="背景动效" aria-pressed="true"><i data-lucide="sparkles"></i></button><button class="icon-button" id="immersive-toggle" title="欣赏背景" aria-label="欣赏背景"><i data-lucide="expand"></i></button></div>
+    </header>
+    <main class="workspace">
+      <div class="workspace-heading"><div class="heading-and-source"><div><span class="eyebrow">MUSIC SPACE</span><h1 id="view-heading">音乐控制台</h1></div><div id="source-picker" class="source-picker" role="group" aria-label="音乐来源"></div></div><button id="channel-button" class="channel-button"><i data-lucide="radio"></i><span id="channel-name">选择语音频道</span><i data-lucide="chevron-down"></i></button></div>
+      <div class="bot-picker-bar" id="bot-picker-bar"><label class="bot-picker-label" for="bot-select"><i data-lucide="bot"></i><span>当前机器人</span></label><select id="bot-select" aria-label="当前机器人" disabled><option value="default">正在读取机器人</option></select><span id="bot-channel-summary" class="bot-channel-summary">正在连接</span><button id="manage-bots" class="quiet-button"><i data-lucide="sliders-horizontal"></i>管理机器人</button></div>
+      <p id="bot-error" class="bot-error" role="status" hidden></p>
+      <div id="access-notice" class="access-notice" hidden><div><strong id="access-title">公开浏览控制台</strong><p id="access-description">进入专属房间设置昵称，即可参与点歌。管理员可从侧栏登录，DJ 和房主通过房间邀请获取权限。</p></div><a id="open-room-link" class="secondary" href="/">进入点歌房<i data-lucide="arrow-right"></i></a></div>
+      <form id="search-form" class="search-bar"><i data-lucide="search"></i><input id="search-input" placeholder="搜索歌名，或粘贴歌曲 / 歌单链接" maxlength="2000" autocomplete="off" aria-label="搜索歌曲或粘贴音乐链接"><button type="submit" class="search-submit" title="搜索或识别链接" aria-label="搜索或识别链接"><i data-lucide="arrow-right"></i></button></form>
+      <section id="smart-link-preview" class="smart-link-preview" aria-label="音乐链接预览" aria-busy="false" hidden></section>
+      <section id="view-player" class="view">
+        <div class="now-playing">
+          <div class="album-art" id="album-art"><img id="current-cover" alt="当前歌曲封面" hidden><div class="album-fallback"><i data-lucide="disc-3"></i><span>PEACH RADIO</span></div><span class="album-sticker"><i data-lucide="heart"></i></span></div>
+          <div class="now-info"><span class="playing-label"><span class="equalizer"><i></i><i></i><i></i><i></i></span><span id="play-status">准备播放</span></span><h2 id="current-title">今天，想听什么？</h2><p id="current-artist">桃音电台</p><p id="current-album" class="muted"></p><div class="mode-row"><span id="current-source"></span><span class="tag mint" id="residency-tag">常驻频道</span><span class="tag" id="loop-tag">顺序播放</span></div><button id="recover-button" class="secondary" hidden><i data-lucide="history"></i>恢复进度 <span id="recover-position">0:00</span></button></div>
+        </div>
+        <p id="recovery-note" role="status" hidden></p>
+        <div class="quick-actions"><button class="primary" id="heart-button"><i data-lucide="heart"></i>心动模式</button><button class="secondary" id="hot-button"><i data-lucide="flame"></i>热歌榜</button><button class="secondary" id="import-button"><i data-lucide="list-plus"></i>导入歌单</button></div>
+        <div class="section-heading"><div><h2>播放队列</h2><span id="queue-count">0 首待播</span></div><div class="tool-group"><button class="icon-button" id="shuffle-queue" aria-label="随机排序" title="随机排序"><i data-lucide="shuffle"></i></button><button class="icon-button" id="clear-queue" aria-label="清空待播队列" title="清空待播队列"><i data-lucide="list-x"></i></button></div></div>
+        <div class="track-list" id="queue-list"></div>
+      </section>
+      <section id="view-search" class="view" hidden><div class="section-heading"><div><h2>搜索结果</h2><span id="search-count"></span></div></div><div id="search-results" class="track-list"></div></section>
+      <section id="view-discover" class="view" hidden><div class="section-heading discover-heading"><h2>发现好音乐</h2><div class="segmented" id="discover-tabs" role="tablist"><button role="tab" aria-selected="true" data-category="hot" class="active">热门</button><button role="tab" aria-selected="false" data-category="charts">榜单</button><button role="tab" aria-selected="false" data-category="acg">ACG</button><button role="tab" aria-selected="false" data-category="mine">我的</button></div></div><div id="playlist-grid" class="playlist-grid"></div></section>
+      <section id="view-playlist" class="view" hidden>
+        <button id="playlist-back" class="quiet-button playlist-back"><i data-lucide="arrow-left"></i>返回歌单</button>
+        <div class="playlist-summary">
+          <div class="playlist-detail-cover"><i data-lucide="disc-3"></i><img id="playlist-detail-cover" alt="歌单封面" hidden></div>
+          <div class="playlist-detail-info"><h2 id="playlist-detail-name">歌单</h2><span id="playlist-detail-source"></span><p id="playlist-detail-meta"></p><button id="playlist-add" class="primary" disabled><i data-lucide="list-plus"></i>加入播放队列</button></div>
+        </div>
+        <details id="playlist-description-wrap" class="playlist-description" hidden><summary>歌单简介</summary><p id="playlist-description"></p></details>
+        <div class="section-heading"><div><h2>歌曲列表</h2><span id="playlist-track-count"></span></div></div>
+        <div id="playlist-tracks" class="track-list" aria-busy="false"></div>
+        <p id="playlist-detail-error" class="playlist-detail-error" role="alert" hidden></p>
+        <p id="playlist-availability-note" class="muted playlist-availability-note" hidden>部分歌曲信息暂不可用。</p>
+        <div class="playlist-more-row"><button id="playlist-more" class="secondary" hidden><i data-lucide="chevron-down"></i>加载更多</button></div>
+      </section>
+      <section id="view-status" class="view" hidden aria-label="全部机器人状态">
+        <div class="status-intro"><div><p>每个频道的音乐，都在这里。</p><span>独立控制每个机器人，随手切歌、调音量、加入热歌榜。</span></div><div class="status-page-actions"><button id="refresh-bot-status" class="secondary"><i data-lucide="refresh-cw"></i>刷新状态</button><button id="status-manage-bots" class="quiet-button"><i data-lucide="sliders-horizontal"></i>管理机器人</button></div></div>
+        <dl class="status-summary" aria-label="机器人概况"><div><dt><i data-lucide="bot"></i>机器人总数</dt><dd id="status-total">—</dd></div><div><dt><i data-lucide="activity"></i>机器人在线</dt><dd id="status-online">—</dd></div><div><dt><i data-lucide="radio-tower"></i>语音已连接</dt><dd id="status-connected">—</dd></div><div><dt><i data-lucide="audio-lines"></i>正在播放</dt><dd id="status-playing">—</dd></div></dl>
+        <div class="status-section-heading"><h2>我的机器人</h2><span id="status-updated" role="status">正在读取机器人状态…</span></div>
+        <p id="status-page-error" class="bot-error" role="status" hidden></p>
+        <div id="bot-status-grid" class="bot-status-grid" aria-busy="false"></div>
+      </section>
+      <section id="view-room" class="view" hidden aria-label="房间设置"></section>
+      <section id="view-lyrics" class="view" hidden aria-label="同步歌词"></section>
+      <section id="view-health" class="view" hidden aria-label="故障中心"></section>
+      <section id="view-account" class="view" hidden>
+        <div class="section-heading bot-management-heading"><div><h2>机器人管理</h2><span>每个机器人，独立一间音乐房</span></div><button id="add-bot-button" class="secondary"><i data-lucide="plus"></i>添加机器人</button></div>
+        <p class="bot-help">每个机器人需要独立的 KOOK Token，并加入对应服务器、获得语音权限。队列、音量、进度和常驻频道独立保存；下方音乐账号由所有机器人共用。</p>
+        <div id="bot-list" class="bot-list" aria-label="机器人列表"></div>
+        <div id="site-account-controls"><div class="section-heading"><h2>音乐账号</h2><button class="icon-button" id="refresh-account" aria-label="刷新登录状态" title="刷新登录状态"><i data-lucide="refresh-cw"></i></button></div>
+        <div class="music-account" data-account-source="netease"><div class="account-provider"><span class="source-dot netease"></span>网易云音乐</div><div class="account-row"><div class="account-avatar"><img id="account-avatar" alt="网易云头像" hidden><i data-lucide="user-round"></i></div><div class="account-text"><strong id="account-name">正在读取账号</strong><span id="account-status">检查登录状态</span></div><button id="qr-button" class="secondary"><i data-lucide="qr-code"></i><span>扫码登录</span></button><button id="netease-logout" class="icon-button danger" title="退出网易云" aria-label="退出网易云" hidden><i data-lucide="log-out"></i></button></div><p id="netease-account-error" class="account-error" role="status" hidden></p></div>
+        <div class="music-account" data-account-source="qq"><div class="account-provider"><span class="source-dot qq"></span>QQ音乐</div><div class="account-row"><div class="account-avatar qq-avatar"><img id="qq-account-avatar" alt="QQ音乐头像" hidden><i data-lucide="user-round"></i></div><div class="account-text"><strong id="qq-account-name">正在读取账号</strong><span id="qq-account-status">检查登录状态</span></div><button id="qq-qr-button" class="secondary"><i data-lucide="qr-code"></i><span>扫码登录</span></button><button id="qq-logout" class="icon-button danger" title="退出QQ音乐" aria-label="退出QQ音乐" hidden><i data-lucide="log-out"></i></button></div><p id="qq-account-error" class="account-error" role="status" hidden></p></div>
+        </div><div class="section-heading"><div><h2>播放设置</h2><span id="settings-bot-name">当前机器人</span></div></div>
+        <label class="setting-row"><span><i data-lucide="radio-tower"></i>常驻语音频道</span><input id="stay-toggle" class="switch" type="checkbox" role="switch"></label>
+        <label class="setting-row"><span><i data-lucide="sparkles"></i>背景动效</span><input id="settings-motion" class="switch" type="checkbox" role="switch" checked></label>
+        <div class="setting-row"><span><i data-lucide="repeat-2"></i>循环模式</span><select id="loop-select"><option value="off">顺序播放</option><option value="one">单曲循环</option><option value="all">队列循环</option></select></div>
+        <div class="setting-row"><span><i data-lucide="activity"></i>运行时间</span><strong id="uptime">--</strong></div>
+        <div class="section-heading"><h2>最近操作</h2></div><div id="activity-list" class="activity-list"></div>
+        <a class="credits-link" href="/assets/LICENSES.md" target="_blank" rel="noopener">开源与素材许可 <i data-lucide="external-link"></i></a>
+      </section>
+    </main>
+    <footer class="player-dock">
+      <div class="dock-song"><span class="dock-art"><img id="dock-cover" alt="" hidden><i data-lucide="music-2"></i></span><div><span id="status-dock-bot">当前控制：音乐机器人</span><strong id="dock-title">桃音电台</strong><div class="dock-song-meta"><span id="dock-artist">等待点歌</span><span id="dock-source"></span></div></div></div>
+      <div class="dock-center"><div class="transport"><button class="icon-button" id="loop-button" title="切换循环模式" aria-label="切换循环模式"><i data-lucide="repeat-2"></i></button><button class="play-button" id="play-pause" title="播放" aria-label="播放"><i data-lucide="play"></i></button><button class="icon-button" id="skip-button" title="下一首" aria-label="下一首"><i data-lucide="skip-forward"></i></button></div><div class="progress-row"><span id="elapsed">0:00</span><input id="seek" type="range" min="0" max="100" value="0" step="1" aria-label="播放进度"><span id="duration">0:00</span></div></div>
+      <div class="dock-right"><i data-lucide="volume-2"></i><input id="volume" type="range" min="0" max="100" step="1" value="60" aria-label="音量"><span id="volume-number">60</span><button class="icon-button danger" id="leave-button" title="停止并离开频道" aria-label="停止并离开频道"><i data-lucide="log-out"></i></button></div>
+    </footer>
+  </div>
+  <dialog id="channel-dialog"><form id="channel-form"><div class="dialog-heading"><h2>连接频道</h2><button type="button" data-close class="icon-button" aria-label="关闭"><i data-lucide="x"></i></button></div><label>KOOK 服务器<select id="guild-select" required></select></label><label>语音频道<select id="voice-select" required></select></label><label>通知频道<select id="text-select" required></select></label><button class="primary" type="submit"><i data-lucide="radio"></i>加入频道</button></form></dialog>
+  <dialog id="add-bot-dialog"><form id="add-bot-form" autocomplete="off"><div class="dialog-heading"><h2>添加 KOOK 机器人</h2><button type="button" data-close class="icon-button" aria-label="关闭"><i data-lucide="x"></i></button></div><p class="bot-help">在 KOOK 开发者平台创建另一个机器人，开启语音功能并邀请到服务器，再填写它的 Token。</p><label for="new-bot-name">显示名称（选填）</label><input id="new-bot-name" maxlength="60" placeholder="例如：晚安音乐房"><label for="new-bot-token">机器人 Token</label><input id="new-bot-token" type="password" autocomplete="new-password" required placeholder="填写新机器人的独立 Token"><label for="new-bot-guilds">KOOK 服务器 ID（选填）</label><input id="new-bot-guilds" aria-describedby="new-bot-guilds-help" placeholder="多个 ID 用逗号分隔；留空沿用默认服务器"><p id="new-bot-guilds-help" class="bot-help">填写开发者模式下复制的服务器 ID，或 KOOK 公开 ID。机器人须先加入该服务器；这里不填写语音频道 ID 或邀请链接短号。语音频道在添加后选择。</p><p id="add-bot-error" class="form-error" role="alert"></p><button id="add-bot-submit" class="primary" type="submit"><i data-lucide="plus"></i>添加并连接</button></form></dialog>
+  <dialog id="import-dialog"><form id="import-form"><div class="dialog-heading"><h2 id="import-title">导入音乐歌单</h2><button type="button" data-close class="icon-button" aria-label="关闭"><i data-lucide="x"></i></button></div><label for="playlist-input">歌单 ID 或完整链接</label><input id="playlist-input" placeholder="粘贴 QQ / 网易云歌单链接" maxlength="2000" aria-describedby="import-source-note" required><p id="import-source-note" class="bot-help">完整链接自动识别平台；纯数字 ID 使用当前选择的平台。</p><button type="submit" class="primary"><i data-lucide="list-music"></i>查看歌单预览</button></form></dialog>
+  <dialog id="qr-dialog"><div class="dialog-heading"><h2 id="qr-title">登录网易云音乐</h2><button type="button" data-close class="icon-button" aria-label="关闭"><i data-lucide="x"></i></button></div><div id="qr-type-tabs" class="segmented" role="tablist" aria-label="QQ音乐登录方式" hidden><button type="button" role="tab" data-qr-type="qq" class="active" aria-selected="true">QQ扫码</button><button type="button" role="tab" data-qr-type="wx" aria-selected="false">微信扫码</button></div><div id="qr-content" class="qr-content"></div><p id="qr-status" class="qr-status">正在生成二维码</p><button id="renew-qr" class="secondary"><i data-lucide="refresh-cw"></i>刷新二维码</button></dialog>
+  <dialog id="confirm-dialog"><div class="dialog-heading"><h2 id="confirm-title">确认操作</h2><button type="button" data-close class="icon-button" aria-label="关闭"><i data-lucide="x"></i></button></div><p id="confirm-message"></p><div class="confirm-buttons"><button data-close class="secondary">取消</button><button id="confirm-yes" class="primary">确认</button></div></dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>
