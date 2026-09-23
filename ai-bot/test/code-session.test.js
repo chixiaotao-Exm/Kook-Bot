@@ -24,7 +24,7 @@ async function fixture(t, options = {}) {
   const coder = options.coder || (async () => final('已完成修改。'));
   const reviewer = options.reviewer || (async () => review());
   const broker = { request: async (operation, jobId, args, request) => {
-    calls.push({ operation, jobId, args, signal: request?.signal });
+    calls.push({ operation, jobId, args, signal: request?.signal, timeoutMs: request?.timeoutMs });
     if (options.broker) {
       const value = await options.broker(operation, jobId, args, request);
       if (value !== undefined) return value;
@@ -393,6 +393,94 @@ test('PR lookup requires the exact published commit before reporting a PR URL', 
   await f.session.start(initial()); const state = await f.done();
   assert.equal(state.status, 'completed'); assert.equal(state.prUrl, `https://github.com/${REPO}/pull/43`);
   assert.equal(f.posts.some(post => post.content.includes('/pull/999')), false);
+});
+
+function pollingClock() {
+  let now = 0, id = 0;
+  const timers = new Map();
+  const flush = async () => { for (let n = 0; n < 60; n++) await Promise.resolve(); };
+  const config = { monotonicNow: () => now,
+    setTimeoutImpl: (callback, ms) => { const key = ++id; timers.set(key, { callback, at: now + ms }); return key; },
+    clearTimeoutImpl: key => timers.delete(key) };
+  return { config, timers, get now() { return now; }, async advance(ms) {
+    const end = now + ms;
+    for (;;) {
+      await flush();
+      const next = [...timers].filter(([, timer]) => timer.at <= end).sort((a, b) => a[1].at - b[1].at)[0];
+      if (!next) break;
+      const [key, timer] = next; now = timer.at; timers.delete(key); timer.callback();
+    }
+    now = end; await flush();
+  } };
+}
+
+test('PR confirmation ends at its total deadline even if a query ignores cancellation', async t => {
+  const clock = pollingClock(), late = defer();
+  const publication = { published: true, branch: 'kook-agent/task-fixture-job-123', commit: 'd'.repeat(40) };
+  const f = await fixture(t, { config: { ...clock.config, publishWaitMs: 100, pollIntervalMs: 10 }, broker: async operation => {
+    if (operation === 'publish') return publication;
+    if (operation === 'job_status') return late.promise;
+  } });
+  await f.session.start(initial()); await until(() => f.calls.some(call => call.operation === 'job_status'));
+  const query = f.calls.find(call => call.operation === 'job_status');
+  assert.equal(query.timeoutMs, 100);
+  await clock.advance(99); assert.equal(f.session.snapshot().active, true);
+  await clock.advance(1); const state = await f.done();
+  assert.equal(state.status, 'needs_input'); assert.equal(state.lastError, 'PUBLISH_UNKNOWN');
+  assert.equal(query.signal.aborted, true); assert.equal(f.calls.filter(call => call.operation === 'publish').length, 1);
+  assert.ok(state.compareUrl); assert.equal(state.prUrl, null);
+  late.resolve({ ...publication, prUrl: `https://github.com/${REPO}/pull/999` }); await clock.advance(50);
+  assert.equal(f.session.snapshot().prUrl, null); assert.equal(f.posts.some(post => post.content.includes('/pull/999')), false);
+  assert.equal(clock.timers.size, 0);
+});
+
+test('pausing PR confirmation cannot reset the deadline or leave final notification waiting forever', async t => {
+  const clock = pollingClock();
+  const f = await fixture(t, { config: { ...clock.config, publishWaitMs: 100, pollIntervalMs: 10 }, broker: async operation => {
+    if (operation === 'publish') return { published: true, branch: 'kook-agent/task-fixture-job-123', commit: 'd'.repeat(40) };
+    if (operation === 'job_status') return new Promise(() => {});
+  } });
+  await f.session.start(initial()); await until(() => f.calls.some(call => call.operation === 'job_status'));
+  await f.session.pause({ userId: USER }); assert.equal(f.session.snapshot().paused, true);
+  const posts = f.posts.length;
+  await clock.advance(100); const state = await f.done();
+  assert.equal(state.status, 'needs_input'); assert.equal(state.paused, false);
+  assert.equal(state.lastError, 'PUBLISH_UNKNOWN'); assert.equal(f.posts.length, posts);
+  assert.equal((await f.session.resume({ userId: USER })).reason, 'NO_ACTIVE');
+  assert.equal(f.calls.filter(call => call.operation === 'job_status').length, 1);
+  assert.equal(f.calls.filter(call => call.operation === 'publish').length, 1);
+  assert.equal(clock.timers.size, 0);
+});
+
+test('slow lookups and intervals share one budget unaffected by wall-clock changes', async t => {
+  const clock = pollingClock(); let wall = Date.now();
+  const publication = { published: true, branch: 'kook-agent/task-fixture-job-123', commit: 'd'.repeat(40) };
+  const f = await fixture(t, { config: { ...clock.config, now: () => wall, publishWaitMs: 100, pollIntervalMs: 10 },
+    broker: async operation => {
+      if (operation === 'publish') return publication;
+      if (operation === 'job_status') return new Promise(resolve => clock.config.setTimeoutImpl(() => resolve(publication), 30));
+    } });
+  await f.session.start(initial()); await until(() => f.calls.some(call => call.operation === 'job_status'));
+  wall -= 3600000;
+  await clock.advance(100); const state = await f.done();
+  assert.equal(state.status, 'needs_input'); assert.equal(clock.now, 100);
+  assert.deepEqual(f.calls.filter(call => call.operation === 'job_status').map(call => call.timeoutMs), [100, 60, 20]);
+  assert.equal(f.calls.filter(call => call.operation === 'publish').length, 1);
+  await clock.advance(100); assert.equal(f.session.snapshot().prUrl, null);
+  assert.equal(clock.timers.size, 0);
+});
+
+test('capacity and failed cleanup are reported without claiming a new workspace exists', async t => {
+  for (const cleanupFailed of [false, true]) {
+    const code = cleanupFailed ? 'GIT_FAILED' : 'CAPACITY';
+    const f = await fixture(t, { broker: async operation => {
+      if (operation === 'create_job') throw Object.assign(new Error('private details'), { code, cleanupFailed });
+    } });
+    await f.session.start(initial()); const state = await f.done();
+    assert.equal(state.lastError, code); assert.equal(state.jobId, null); assert.equal(f.modelCalls[0].length, 0);
+    assert.ok(f.posts.some(post => post.content.includes(cleanupFailed ? '清理未完成' : '名额已满')));
+    assert.doesNotMatch(JSON.stringify(f.posts), /private details|当前工作区已保留/);
+  }
 });
 
 test('context compaction preserves paired calls and rebuilds from actual broker evidence', async t => {

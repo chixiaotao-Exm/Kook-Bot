@@ -20,7 +20,8 @@ const CODES = new Set(['PAUSED', 'CANCELLED', 'TIMEOUT', 'AUTH', 'RATE_LIMIT', '
   'CALL_UNKNOWN', 'RESPONSE_INCOMPLETE', 'STORAGE', 'TOOL_INVALID', 'BROKER_FAILED', 'BUDGET', 'STALE_HASH',
   'CHECKS_FAILED', 'REVIEW_FAILED', 'CREATE_UNKNOWN', 'PUBLISH_UNKNOWN', 'NOT_AUTHORIZED', 'UPDATED', 'UNKNOWN',
   'NOT_FOUND', 'NOT_DIRECTORY', 'INVALID_PATH', 'PATH_FORBIDDEN', 'PROTECTED_PATH', 'HASH_MISMATCH', 'STALE_FILE',
-  'NOT_TEXT', 'FILE_TOO_LARGE', 'INVALID_LIMIT', 'INVALID_QUERY', 'NO_MATCH', 'MULTIPLE_MATCHES', 'SANDBOX_UNAVAILABLE']);
+  'NOT_TEXT', 'FILE_TOO_LARGE', 'INVALID_LIMIT', 'INVALID_QUERY', 'NO_MATCH', 'MULTIPLE_MATCHES', 'SANDBOX_UNAVAILABLE',
+  'CAPACITY', 'GIT_FAILED']);
 const fault = code => Object.assign(new Error('Code task operation stopped'), { code });
 const safeCode = caught => CODES.has(caught?.code) ? caught.code : 'UNKNOWN';
 const object = value => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -194,24 +195,25 @@ function publishedResult(value, baseSha) {
 /** Trusted coordinator. Models can edit/test through scoped tools but cannot publish. */
 export class CodeSession {
   #participants; #broker; #progress; #operators; #channelId; #dataDir; #file; #logger; #repository;
-  #maxSteps; #maxCycles; #now; #setTimeout; #clearTimeout; #publishWait; #pollInterval; #writeState;
+  #maxSteps; #maxCycles; #now; #clock; #setTimeout; #clearTimeout; #publishWait; #pollInterval; #writeState;
   #ready = false; #closed = false; #seen = new Map(); #active = null; #last = null; #task = null;
   #operations = Promise.resolve(); #writes = Promise.resolve();
 
   constructor({ participants, broker, progress, operatorIds, channelId, dataDir, logger = () => {}, repository = REPOSITORY,
     maxSteps = 60, maxCycles = 3, now = Date.now, setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout,
-    publishWaitMs = 180000, pollIntervalMs = 5000, writeState = atomicJson } = {}) {
+    publishWaitMs = 180000, pollIntervalMs = 5000, writeState = atomicJson, monotonicNow = () => performance.now() } = {}) {
     if (!Array.isArray(participants) || participants.length !== 2 || participants.some(participant => typeof participant?.client?.respond !== 'function' || typeof participant?.reply !== 'function')
       || typeof broker?.request !== 'function' || !(operatorIds instanceof Set) || operatorIds.size < 1
       || [...operatorIds].some(id => typeof id !== 'string' || !ID.test(id)) || repository !== REPOSITORY
       || (channelId !== undefined && (typeof channelId !== 'string' || !ID.test(channelId)))
       || !Number.isInteger(maxSteps) || maxSteps < 1 || maxSteps > 100 || !Number.isInteger(maxCycles) || maxCycles < 1 || maxCycles > 5
       || !Number.isInteger(publishWaitMs) || publishWaitMs < 0 || publishWaitMs > 180000
-      || !Number.isInteger(pollIntervalMs) || pollIntervalMs < 1 || pollIntervalMs > 30000) throw fault('CONFIG');
+      || !Number.isInteger(pollIntervalMs) || pollIntervalMs < 1 || pollIntervalMs > 30000
+      || typeof monotonicNow !== 'function') throw fault('CONFIG');
     this.#participants = participants; this.#broker = broker; this.#progress = progress; this.#operators = new Set(operatorIds);
     this.#channelId = channelId; this.#dataDir = dataDir; this.#file = dataDir ? path.join(dataDir, 'code-seen.json') : null;
     this.#logger = logger; this.#repository = repository; this.#maxSteps = maxSteps; this.#maxCycles = maxCycles;
-    this.#now = now; this.#setTimeout = setTimeoutImpl; this.#clearTimeout = clearTimeoutImpl;
+    this.#now = now; this.#clock = monotonicNow; this.#setTimeout = setTimeoutImpl; this.#clearTimeout = clearTimeoutImpl;
     this.#publishWait = publishWaitMs; this.#pollInterval = pollIntervalMs; this.#writeState = writeState;
   }
 
@@ -321,8 +323,10 @@ export class CodeSession {
     if (run.paused || run.resuming) return this.#waitReady(run);
   }
 
-  async #operation(run, kind, name, work) {
-    await this.#waitReady(run); this.#assert(run);
+  async #operation(run, kind, name, work, deadline = null) {
+    this.#assert(run);
+    const remaining = deadline === null ? null : Math.floor(deadline - this.#clock());
+    if (remaining !== null && remaining < 1) throw fault('TIMEOUT');
     const controller = new AbortController();
     const operation = { controller, kind, name }; run.operation = operation;
     const abort = () => controller.abort(fault('CANCELLED'));
@@ -331,13 +335,16 @@ export class CodeSession {
     const aborted = new Promise((_, reject) => { rejectAbort = reject; });
     const interrupt = () => rejectAbort(controller.signal.reason || fault('CANCELLED'));
     controller.signal.addEventListener('abort', interrupt, { once: true });
+    const timer = remaining === null ? null : this.#setTimeout(() => controller.abort(fault('TIMEOUT')), remaining);
     try {
-      return await Promise.race([Promise.resolve().then(() => {
+      return await Promise.race([Promise.resolve().then(async () => {
+        await this.#waitReady(run);
         this.#assert(run);
         if (run.paused || run.resuming || controller.signal.aborted) throw fault(run.paused || run.resuming ? 'PAUSED' : 'CANCELLED');
         return work(controller.signal);
       }), aborted]);
     } finally {
+      if (timer !== null) this.#clearTimeout(timer);
       run.controller.signal.removeEventListener('abort', abort); controller.signal.removeEventListener('abort', interrupt);
       if (run.operation === operation) run.operation = null;
     }
@@ -346,13 +353,23 @@ export class CodeSession {
   #detail(run, value) {
     try { Promise.resolve(run.progress?.setDetail?.(clean(value, 120))).catch(() => {}); } catch {}
   }
-  async #brokerCall(run, operation, args, trusted = false) {
+  async #brokerCall(run, operation, args, trusted = false, deadline = null) {
     this.#detail(run, `${DETAIL[operation] || '处理仓库任务'}${args?.path ? ` · ${clean(args.path, 65)}` : ''}`);
     for (;;) try {
-      return await this.#operation(run, 'broker', operation, signal => this.#broker.request(operation, run.jobId, args, { signal }));
+      return await this.#operation(run, 'broker', operation, signal => {
+        const options = { signal };
+        if (deadline !== null) {
+          const remaining = Math.floor(deadline - this.#clock());
+          if (remaining < 1) throw fault('TIMEOUT');
+          options.timeoutMs = Math.min(30000, remaining);
+        }
+        return this.#broker.request(operation, run.jobId, args, options);
+      }, deadline);
     } catch (caught) {
       if (caught?.code !== 'PAUSED' || !trusted || ['create_job', 'publish'].includes(operation)) throw caught;
-      await this.#waitReady(run);
+      // With a deadline, re-enter the timed operation even while paused. An
+      // unbounded wait here would defeat the total PR confirmation budget.
+      if (deadline === null) await this.#waitReady(run);
     }
   }
 
@@ -471,10 +488,10 @@ export class CodeSession {
     }
   }
 
-  async #delay(run, ms) {
+  async #delay(run, ms, deadline = null) {
     for (;;) {
       let timer;
-      try { await this.#operation(run, 'wait', 'wait', () => new Promise(resolve => { timer = this.#setTimeout(resolve, ms); })); return; }
+      try { await this.#operation(run, 'wait', 'wait', () => new Promise(resolve => { timer = this.#setTimeout(resolve, ms); }), deadline); return; }
       catch (caught) { if (caught?.code !== 'PAUSED') throw caught; }
       finally { this.#clearTimeout(timer); }
     }
@@ -498,12 +515,15 @@ export class CodeSession {
       return this.#broker.request('publish', run.jobId, { report: trusted }, { signal });
     }); } catch (caught) { if (caught?.code === 'UPDATED') throw caught; throw fault('PUBLISH_UNKNOWN'); }
     this.#assert(run); run.publication = publishedResult(published, run.baseSha);
-    const attempts = Math.ceil(this.#publishWait / this.#pollInterval);
-    for (let attempt = 0; !run.publication.prUrl && attempt < attempts; attempt++) {
-      if (attempt) await this.#delay(run, this.#pollInterval);
+    const deadline = this.#clock() + this.#publishWait;
+    let first = true;
+    while (!run.publication.prUrl && deadline - this.#clock() >= 1) {
       try {
-        const status = await this.#brokerCall(run, 'job_status', {}, true);
+        if (!first) await this.#delay(run, Math.min(this.#pollInterval, Math.floor(deadline - this.#clock())), deadline);
+        first = false;
+        const status = await this.#brokerCall(run, 'job_status', {}, true, deadline);
         this.#assert(run);
+        if (this.#clock() >= deadline) break;
         if (status?.published === true && status.commit === run.publication.commit) {
           const checked = publishedResult(status, run.baseSha);
           if (checked.branch === run.publication.branch) run.publication = checked;
@@ -565,7 +585,7 @@ export class CodeSession {
         await this.#publish(run, { approved: true, checksPassed: true, reviewPassed: true, workHash: current.workHash,
           checks: completeChecks, review, version: coded.version });
         finalStatus = run.publication.prUrl ? 'completed' : 'needs_input'; run.error = run.publication.prUrl ? null : 'PUBLISH_UNKNOWN';
-        await this.#post(run, 0, run.publication.prUrl
+        if (!run.paused) await this.#post(run, 0, run.publication.prUrl
           ? `代码变更已通过实际检查和独立审阅。\nPR：${run.publication.prUrl}`
           : `代码分支已推送，PR 创建仍待确认。\n查看比较：${run.publication.compareUrl}`);
         break;
@@ -580,10 +600,14 @@ export class CodeSession {
         finalStatus = 'needs_input'; run.error = safeCode(caught); this.#log('code_task_failed', run.error);
         await this.#post(run, 0, run.error === 'PUBLISH_UNKNOWN'
           ? '发布请求已中断，结果尚未确认；不会重复推送。工作区已保留。'
-          : '代码任务尚未完成，当前工作区已保留，未确认创建 PR。请检查任务状态后继续处理。');
+          : caught?.cleanupFailed === true ? `新工作区创建失败（${run.error}），半成品清理未完成，请管理员检查任务存储。已有任务未被删除。`
+            : run.error === 'CAPACITY' ? '代码任务名额已满，尚未创建新工作区。请管理员整理已有任务后重试。'
+              : !run.jobId ? `新工作区尚未创建成功（${run.error}），请检查任务状态后重试。`
+              : '代码任务尚未完成，当前工作区已保留，未确认创建 PR。请检查任务状态后继续处理。');
       }
     } finally {
       run.status = finalStatus;
+      run.paused = false; run.resuming = false;
       if (this.#active === run) { this.#active = null; this.#last = run; }
       for (const wake of run.waiters.splice(0)) wake();
       try { await this.#persist(); } catch { run.error = 'STORAGE'; run.status = 'needs_input'; }

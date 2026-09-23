@@ -387,6 +387,22 @@ class RepositoryBackend:
             _write_file(self.root, f"prepared/{job_id}.json", _json_bytes(record), new=True)
             return {key: record[key] for key in ("repository", "baseSha", "branch")}
 
+    def discard_prepared(self, job_id, job_root):
+        """Undo only a matching, unpublished preparation after creation fails."""
+        job_id = _job_id(job_id)
+        job_root = _no_links(job_root)
+        with self._lock:
+            if self._record("published", job_id) is not None or (job_root / "job.json").exists():
+                raise RepositoryError("INVALID_STATE")
+            prepared = self._record("prepared", job_id)
+            if prepared is None:
+                return
+            if (prepared.get("jobRoot") != str(job_root) or prepared.get("repository") != REPOSITORY
+                    or prepared.get("branch") != "kook-agent/task-" + job_id
+                    or not isinstance(prepared.get("baseSha"), str) or not SHA.fullmatch(prepared["baseSha"])):
+                raise RepositoryError("JOB_CONFLICT")
+            _no_links(self.root / "prepared" / (job_id + ".json")).unlink()
+
     @staticmethod
     def _allowed(workspace, relative, write=True):
         relative = _relative(relative)
