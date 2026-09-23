@@ -15,6 +15,7 @@ import { createKookImageSender } from './kook-image-sender.js';
 import { ActiveQuotaClient } from './active-quota.js';
 import { ActiveQuotaSchedule } from './active-quota-schedule.js';
 import { InvitationClient } from './invitations.js';
+import { AccountLoad } from './account-load.js';
 
 const config = {
   dataDir: path.resolve(process.env.DATA_DIR || './data'), sub2apiUrl: process.env.SUB2API_URL || 'http://127.0.0.1:8080',
@@ -57,6 +58,8 @@ const invitations = process.env.INVITATIONS_ENABLED !== 'false' ? await new Invi
   },
 }).init() : undefined;
 const keyUsage = new KeyUsageClient({ baseUrl: config.sub2apiUrl });
+const accountLoad = new AccountLoad({ baseUrl: config.sub2apiUrl, adminApiKey: config.adminApiKey,
+  getAccountIds: () => dashboard.snapshot().accounts.map(account => account.id) });
 let queryGateway, queryBot;
 if (process.env.KOOK_TOKEN && process.env.KOOK_QUERY_ENABLED !== 'false') {
   queryBot = await new KookKeyQueryBot({ keyUsage, reply: createKookQueryReply({ token: process.env.KOOK_TOKEN }),
@@ -72,7 +75,7 @@ if (process.env.KOOK_TOKEN && process.env.KOOK_QUERY_ENABLED !== 'false') {
 const web = new QuotaServer({ host: process.env.HOST || '127.0.0.1', port: Number(process.env.PORT || 18998), publicUrl: config.publicUrl, sub2apiUrl: config.sub2apiUrl,
   publicAccess: process.env.PUBLIC_ACCESS !== 'false',
   invitations, publicInvites: process.env.PUBLIC_INVITES === 'true',
-  keyUsage,
+  keyUsage, accountLoad,
   queryBotStatus: () => queryBot ? { ...queryBot.snapshot(), ...queryGateway.snapshot(), queryLastError: queryBot.snapshot().lastError } : { enabled: false },
   activeQuotaStatus: () => activeQuota.snapshot(),
   keyPresets: [
@@ -84,5 +87,5 @@ await web.start(); console.log(JSON.stringify({ event: 'started', port: Number(p
 void queryGateway?.start();
 activeQuota.start(); scheduler.start();
 let closing = false;
-async function shutdown() { if (closing) return; closing = true; const deadline = setTimeout(() => process.exit(1), 20000); queryGateway?.close(); dashboard.close(); await Promise.all([web.close(), scheduler.close(), queryBot?.close(), activeQuota.close(), invitations?.close()]); clearTimeout(deadline); process.exit(0); }
+async function shutdown() { if (closing) return; closing = true; const deadline = setTimeout(() => process.exit(1), 20000); queryGateway?.close(); dashboard.close(); await Promise.all([web.close(), scheduler.close(), queryBot?.close(), activeQuota.close(), invitations?.close(), accountLoad.close()]); clearTimeout(deadline); process.exit(0); }
 process.once('SIGTERM', () => void shutdown()); process.once('SIGINT', () => void shutdown());
