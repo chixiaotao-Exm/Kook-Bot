@@ -65,3 +65,35 @@ test('same bot account behind different tokens is rejected before gateways start
   await assert.rejects(runtime.start(), /identity/);
   assert.ok(runtime.gateways.every(gateway => !gateway.connected));
 });
+
+test('a direct human question starts continuous discussion and plain stop cancels the next turn', async t => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), 'duet-natural-'));
+  const config = { tokens: ['fixture-a', 'fixture-b'], models: ['gpt-6-astra', 'gpt-6-astra'], labels: ['A', 'B'],
+    channelId: '88888888', dataDir, host: '127.0.0.1', port: 0, rounds: 0, deadlineMs: 0, betweenTurnsMs: 0 };
+  let calls = 0; const sent = [], signals = [];
+  const runtime = createDuetRuntime({ config, Gateway, progress: null, logger: () => {},
+    verify: async () => ({ channelAccessible: true, bots: [{ botId: '11111111' }, { botId: '22222222' }] }),
+    clients: [0, 1].map(index => ({ async generate(messages, { signal }) {
+      calls++; signals.push(signal);
+      if (calls > 2) return new Promise(() => {});
+      return { text: `${index} 对这个问题的观点` };
+    } })),
+    replies: [0, 1].map(index => async payload => {
+      sent.push({ index, payload });
+      return { messageId: `00000000-0000-4000-8000-${String(100 + sent.length).padStart(12, '0')}` };
+    }),
+    commandReply: async () => ({ messageId: '00000000-0000-4000-8000-000000000099' }),
+  });
+  t.after(async () => { await runtime.close(); await rm(dataDir, { recursive: true, force: true }); });
+  await runtime.start();
+  await runtime.gateways[0].onEvent(event('2026 年的音乐社区应该如何建设？', 10));
+  await waitFor(() => calls === 3 && sent.length === 2);
+  assert.equal(runtime.session.snapshot().unlimited, true);
+  assert.equal(runtime.session.snapshot().deadlineAt, null);
+  await runtime.gateways[0].onEvent(event('停止', 11));
+  await waitFor(() => runtime.session.snapshot().status === 'stopped');
+  assert.equal(runtime.session.snapshot().active, false);
+  assert.equal(signals[2].aborted, true);
+  assert.deepEqual(sent.map(item => item.index), [0, 1]);
+  assert.equal(calls, 3);
+});

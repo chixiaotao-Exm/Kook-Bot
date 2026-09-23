@@ -10,19 +10,24 @@ const MAX_AGE = 5 * 60_000, SEEN_TTL = 10 * 60_000, MAX_RECEIPTS = 2048;
 const MAX_TOPIC = 2000;
 const CREDENTIAL = /(?:\bsk-[a-z0-9_-]{12,}|\badmin-[a-f0-9]{16,}|\b\d{1,4}\/[a-z0-9+/=]{4,}\/[a-z0-9+/=]{10,}|\bauthorization\s*:\s*bearer\s+\S{12,})/i;
 const help = rounds => (rounds === 0
-  ? '发送 /互聊 话题，让两个机器人持续互聊，直到发送 /停止互聊。\n'
-  : `发送 /互聊 话题，让两个机器人轮流讨论，默认 ${rounds} 轮，共 ${rounds * 2} 次发言。\n`)
-  + '也可发送 /互聊 不限 话题，或 /互聊 2 话题指定 1～6 轮。\n/停止互聊：停止当前讨论，任何用户都可以停止。\n'
-  + '/互聊状态：查看进度\n/互聊帮助：查看说明\n话题最多 2000 字，请勿包含密码或密钥。';
+  ? '直接发送问题，让两个机器人持续讨论，发送“停止”即可结束。\n'
+  : `直接发送问题，让两个机器人轮流讨论，默认 ${rounds} 轮，共 ${rounds * 2} 次发言。\n`)
+  + '“停止”：结束当前讨论，任何用户都可以停止。\n“互聊状态”：查看进度\n“帮助”：查看说明\n问题最多 2000 字，请勿包含密码或密钥。';
 
 export function parseDuetCommand(content, selfId = '', defaultRounds = 0) {
   if (typeof content !== 'string') return null;
   let text = content.trim();
   if (validId(selfId)) text = text.replace(new RegExp(`^\\(met\\)${selfId}\\(met\\)\\s*`), '').trim();
-  if (text === '/停止互聊' || text === '/停止') return { kind: 'stop' };
-  if (text === '/互聊状态') return { kind: 'status' };
-  if (text === '/互聊帮助' || text === '/帮助' || text === '/互聊') return { kind: 'help' };
-  if (!/^\/互聊\s/.test(text)) return null;
+  if (!text) return null;
+  if (['停止', '停止互聊', '/停止互聊', '/停止'].includes(text)) return { kind: 'stop' };
+  if (text === '互聊状态' || text === '/互聊状态') return { kind: 'status' };
+  if (['帮助', '/互聊帮助', '/帮助', '/互聊'].includes(text)) return { kind: 'help' };
+  if (!/^\/互聊\s/.test(text)) {
+    if (text.startsWith('/')) return null;
+    if (CREDENTIAL.test(text)) return { kind: 'credential' };
+    if (text.length > MAX_TOPIC || !text.isWellFormed()) return { kind: 'too_long' };
+    return { kind: 'start', topic: text, rounds: defaultRounds };
+  }
   text = text.replace(/^\/互聊\s+/, '').trim();
   if (!text) return { kind: 'help' };
   if (CREDENTIAL.test(text)) return { kind: 'credential' };
@@ -134,7 +139,7 @@ export class DuetCommands {
       try {
         const active = this.#session.snapshot().active;
         await this.#session.stop(); this.#counts.stops++;
-        this.#notice(event, active ? '已停止互聊。' : '当前没有正在进行的互聊。');
+        this.#notice(event, active ? '已停止讨论。直接发送新问题即可重新开始。' : '当前没有正在进行的讨论。直接发送问题即可开始。');
       } catch { this.#failed(event); }
       return;
     }
@@ -143,9 +148,9 @@ export class DuetCommands {
     if (this.#users.has(event.author_id) || this.#recent.length >= 30) return;
     this.#users.set(event.author_id, time); this.#recent.push(time);
     if (parsed.kind === 'help') { this.#notice(event, help(this.#defaultRounds)); return; }
-    if (parsed.kind === 'credential') { this.#notice(event, '话题似乎包含密钥，未启动互聊。请删除敏感内容后重试。'); return; }
-    if (parsed.kind === 'too_long') { this.#notice(event, '话题过长，请控制在 2000 字以内。'); return; }
-    if (parsed.kind === 'invalid') { this.#notice(event, '持续互聊请发送 /互聊 话题；指定轮数可用 1～6。例如：/互聊 2 人工智能如何改变生活'); return; }
+    if (parsed.kind === 'credential') { this.#notice(event, '问题似乎包含密钥，未开始讨论。请删除敏感内容后重试。'); return; }
+    if (parsed.kind === 'too_long') { this.#notice(event, '问题过长，请控制在 2000 字以内。'); return; }
+    if (parsed.kind === 'invalid') { this.#notice(event, '轮数不符合要求。直接发送问题即可开始讨论，发送“停止”结束。'); return; }
     if (parsed.kind === 'status') {
       const status = this.#session.snapshot();
       const labels = { idle: '未开始', running: '进行中', completed: '已完成', stopped: '已停止',
@@ -169,11 +174,11 @@ export class DuetCommands {
         const rounds = Number.isInteger(result.rounds) && result.rounds >= 0 && result.rounds <= 6 ? result.rounds : parsed.rounds;
         const totalTurns = Number.isInteger(result.totalTurns) && result.totalTurns >= 2 && result.totalTurns <= 12 ? result.totalTurns : rounds * 2;
         this.#notice(event, result.unlimited === true || rounds === 0
-          ? '已开始持续互聊。发送 /停止互聊 可随时停止。'
-          : `已开始互聊：${rounds} 轮，共 ${totalTurns} 次发言。发送 /停止互聊 可随时停止。`);
+          ? '已开始持续讨论。发送“停止”可随时结束。'
+          : `已开始讨论：${rounds} 轮，共 ${totalTurns} 次发言。发送“停止”可随时结束。`);
       } else if (result?.reason !== 'DUPLICATE') {
-        this.#notice(event, result?.reason === 'BUSY' ? '已有互聊正在进行。可发送 /停止互聊 后重新开始。'
-          : result?.reason === 'INVALID_INPUT' ? '话题或轮数不符合要求，请发送 /互聊帮助 查看用法。'
+        this.#notice(event, result?.reason === 'BUSY' ? '已有讨论正在进行。如需更换话题，请先发送“停止”，再发送新问题。'
+          : result?.reason === 'INVALID_INPUT' ? '问题或轮数不符合要求，请发送“帮助”查看说明。'
             : '互聊暂时不可用，请稍后重试。');
       }
     } catch { this.#failed(event); }
