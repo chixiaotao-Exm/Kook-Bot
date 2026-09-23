@@ -22,7 +22,11 @@ export function accountPlan(raw) {
     return { planLabel: 'API 计费', planSource: 'type' };
   }
   const extra = object(account.extra), credentials = object(account.credentials);
-  const candidates = platform === 'openai' ? [credentials.plan_type, extra.codex_plan_type, extra.plan_type, extra.subscription_plan]
+  const activeSample = typeof extra.codex_active_quota_observed_at === 'string'
+    && Number.isFinite(Date.parse(extra.codex_active_quota_observed_at))
+    && extra.codex_active_quota_observed_at === extra.codex_usage_updated_at;
+  const candidates = platform === 'openai' ? [activeSample ? extra.codex_active_quota_plan_type : null,
+    credentials.plan_type, extra.codex_plan_type, extra.plan_type, extra.subscription_plan]
     : platform === 'grok' ? [object(extra.grok_billing_snapshot).plan, object(extra.grok_usage_snapshot).subscription_tier, extra.subscription_tier, credentials.subscription_tier, credentials.plan_type]
       : platform === 'anthropic' ? [credentials.plan_type] : [];
   const value = candidates.find(candidate => typeof candidate === 'string' && candidate.trim());

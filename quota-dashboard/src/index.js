@@ -7,6 +7,7 @@ import { QuotaServer } from './server.js';
 import { NewApiAccountSource } from './newapi.js';
 import { KeyUsageClient } from './key-usage.js';
 import { KookGateway } from './kook-gateway.js';
+import { createAuthorResolver } from './kook-identity.js';
 import { KookKeyQueryBot } from './kook-key-query.js';
 import { createKookQueryReply } from './kook-query-reply.js';
 import { BroadcastImageRenderer } from './broadcast-image.js';
@@ -51,6 +52,7 @@ let queryGateway, queryBot;
 if (process.env.KOOK_TOKEN && process.env.KOOK_QUERY_ENABLED !== 'false') {
   queryBot = await new KookKeyQueryBot({ keyUsage, reply: createKookQueryReply({ token: process.env.KOOK_TOKEN }),
     dataDir: config.dataDir, getSelfId: () => queryGateway?.snapshot().botId,
+    resolveAuthor: createAuthorResolver({ token: process.env.KOOK_TOKEN }),
     channelIds: (process.env.KOOK_QUERY_CHANNEL_IDS || process.env.KOOK_CHANNEL_ID || '').split(',').map(value => value.trim()),
     logger: entry => console.log(JSON.stringify(entry)),
   }).init();
