@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { EventEmitter } from 'node:events';
+import { EventEmitter, getEventListeners, once } from 'node:events';
+import http from 'node:http';
 import { PassThrough } from 'node:stream';
 import { CodeBrokerClient } from '../src/broker-client.js';
 
@@ -11,16 +12,66 @@ function fixture(value, status = 200) {
     const request = new EventEmitter(); request.destroy = () => {};
     request.end = body => { calls.push({ options, body: JSON.parse(body) });
       const response = new PassThrough(); response.statusCode = status; response.headers = {};
-      callback(response); response.end(typeof value === 'string' || Buffer.isBuffer(value) ? value : JSON.stringify(value)); };
+      callback(response);
+      const chunks = Array.isArray(value) ? value : [typeof value === 'string' || Buffer.isBuffer(value) ? value : JSON.stringify(value)];
+      for (const chunk of chunks) response.write(chunk);
+      response.end(); };
     return request;
   } });
   return { client, calls };
 }
-test('rejects malformed UTF-8 rather than silently changing tool content', async () => {
-  const raw = Buffer.concat([Buffer.from('{"ok":true,"data":"'), Buffer.from([0xff]), Buffer.from('"}')]);
-  await assert.rejects(fixture(raw).client.request('read_file', job), error => error.code === 'BROKER_FAILED');
-  const text = '中文源码 😀 �';
-  assert.equal(await fixture(Buffer.from(JSON.stringify({ ok: true, data: text }))).client.request('read_file', job), text);
+test('rejects malformed UTF-8 and retains the existing BOM rejection', async () => {
+  for (const bytes of [[0xff], [0xe4, 0xb8]]) {
+    const raw = Buffer.concat([Buffer.from('{"ok":true,"data":"'), Buffer.from(bytes), Buffer.from('"}')]);
+    await assert.rejects(fixture(raw).client.request('read_file', job), error => error.code === 'BROKER_FAILED');
+  }
+  const bom = Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('{"ok":true,"data":{}}')]);
+  await assert.rejects(fixture(bom).client.request('read_file', job), error => error.code === 'BROKER_FAILED');
+});
+
+test('preserves multibyte source characters split across response chunks', async () => {
+  const text = '中文源码 😀 � \ufeff', raw = Buffer.from(JSON.stringify({ ok: true, data: text }));
+  const first = raw.indexOf(Buffer.from('中')) + 1, second = raw.indexOf(Buffer.from('😀')) + 2;
+  const chunks = [raw.subarray(0, first), raw.subarray(first, second), raw.subarray(second)];
+  assert.equal(await fixture(chunks).client.request('read_file', job), text);
+});
+
+test('real HTTP responses distinguish normal end/close from truncated transport', { timeout: 15000 }, async t => {
+  for (const mode of ['complete', 'content-length', 'chunked']) await t.test(mode, async t => {
+    const raw = Buffer.from(JSON.stringify({ ok: true, data: '中文源码 😀' }));
+    const server = http.createServer((request, response) => {
+      request.resume();
+      if (mode === 'complete') { response.end(raw); return; }
+      response.writeHead(200, mode === 'content-length'
+        ? { 'Content-Length': raw.length + 1 } : { 'Transfer-Encoding': 'chunked' });
+      // The JSON itself is complete; the missing HTTP body/terminator must still fail.
+      response.write(raw, () => setImmediate(() => response.destroy()));
+    });
+    t.after(async () => {
+      const closed = new Promise(resolve => server.close(resolve));
+      server.closeAllConnections(); await closed;
+    });
+    server.listen(0, '127.0.0.1'); await once(server, 'listening');
+    const events = [];
+    let closed;
+    const responseClosed = new Promise(resolve => { closed = resolve; });
+    const client = new CodeBrokerClient({ requestImpl(options, callback) {
+      const { socketPath, ...requestOptions } = options;
+      return http.request({ ...requestOptions, host: '127.0.0.1', port: server.address().port, agent: false }, response => {
+        response.on('end', () => events.push('end'));
+        response.on('close', () => { events.push('close'); closed(); });
+        callback(response);
+      });
+    } });
+    const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 5000);
+    t.after(() => clearTimeout(timer));
+    const result = client.request('read_file', job, {}, { signal: controller.signal });
+    if (mode === 'complete') assert.equal(await result, '中文源码 😀');
+    else await assert.rejects(result, error => error.code === 'BROKER_FAILED');
+    await responseClosed;
+    assert.deepEqual(events, mode === 'complete' ? ['end', 'close'] : ['close']);
+    assert.equal(getEventListeners(controller.signal, 'abort').length, 0);
+  });
 });
 
 test('premature response close fails promptly and destroys the request', async () => {
