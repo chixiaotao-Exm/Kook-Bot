@@ -300,7 +300,12 @@ class Broker:
             state["status"] = "checked" if check["passed"] else "check_failed"
             _private_json(root / "job.json", state)
             visible = dict(check)
-            visible["output"] = output[:16000]
+            visible["output"] = output
+            if len(output) > 16000:
+                marker = "\n... [output truncated] ...\n"
+                head = (16000 - len(marker)) // 2
+                tail = 16000 - len(marker) - head
+                visible["output"] = output[:head] + marker + output[-tail:]
             visible["truncated"] = check["truncated"] or len(output) > 16000
             visible["checks"] = [{"name": check["project"] + " fixed checks", **{key: check[key]
                 for key in ("passed", "complete", "workHash", "exitCode", "summary")}}]

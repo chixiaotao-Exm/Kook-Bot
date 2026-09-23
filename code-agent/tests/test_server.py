@@ -193,6 +193,37 @@ class BrokerTests(unittest.TestCase):
         state = json.loads((self.broker.jobs / job / "job.json").read_text(encoding="utf-8"))
         self.assertEqual(len(state["checks"]), 20)
 
+    def test_checks_output_preserves_ends_boundaries_and_private_evidence(self):
+        job = self.create()["jobId"]
+        work_hash = self.report(job)["workHash"]
+        for length in (0, 100, 15999, 16000, 16001, 20000):
+            for upstream_truncated in (False, True):
+                with self.subTest(length=length, upstream_truncated=upstream_truncated):
+                    output = "开始\n" + "中" * (length - 10) + "\nFAILED" if length else ""
+                    result = {"passed": False, "complete": False, "workHash": work_hash,
+                              "exitCode": 1, "summary": "failed", "output": output,
+                              "truncated": upstream_truncated, "project": "all"}
+                    with patch.object(self.sandbox, "run", return_value=result):
+                        checked = self.broker.dispatch("run_checks", job, {})
+                    self.assertLessEqual(len(checked["output"]), 16000)
+                    if length <= 16000:
+                        self.assertEqual(checked["output"], output)
+                    else:
+                        head, tail = checked["output"].split("\n... [output truncated] ...\n")
+                        self.assertTrue(head.startswith("开始\n"))
+                        self.assertTrue(tail.endswith("\nFAILED"))
+                        self.assertTrue(output.startswith(head))
+                        self.assertTrue(output.endswith(tail))
+                        self.assertEqual(len(checked["output"]), 16000)
+                    self.assertEqual(checked["truncated"], upstream_truncated or length > 16000)
+                    state = json.loads((self.broker.jobs / job / "job.json").read_text(encoding="utf-8"))
+                    private = state["checks"][-1]
+                    for key, value in result.items():
+                        self.assertEqual(private[key], value)
+                    for key in ("workHash", "checkId", "checkedAt", "passed", "complete", "exitCode"):
+                        self.assertEqual(checked[key], private[key])
+                    self.assertEqual(checked["checks"][0]["workHash"], work_hash)
+
     def test_cancel_does_not_wait_for_the_job_lock_and_always_clears_registration(self):
         job = self.create()["jobId"]
         self.sandbox.block = True
