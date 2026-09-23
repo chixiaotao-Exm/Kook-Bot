@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="dark">
   <meta name="theme-color" content="#0e1e32">
   <title>额度看板 · Sub2API</title>
-  <link rel="stylesheet" href="./style.css?v=19">
-  <script src="./app.js?v=20" defer></script>
+  <link rel="stylesheet" href="./style.css?v=20">
+  <script src="./app.js?v=21" defer></script>
 </head>
 <body>
   <section id="login-view" class="login-shell" hidden>
@@ -34,6 +34,8 @@
 
       <nav aria-label="主导航">
         <button class="nav-item active" data-view="overview"><span class="nav-icon">▦</span>额度总览<span class="nav-dot"></span></button>
+        <button class="nav-item" data-view="trends"><span class="nav-icon">↗</span>每日趋势</button>
+        <button class="nav-item" data-view="health"><span class="nav-icon">♡</span>账号健康</button>
         <button class="nav-item" data-view="key-usage"><span class="nav-icon">⌕</span>Key 用量</button>
         <button class="nav-item" data-view="reports"><span class="nav-icon">◷</span>定时播报</button>
       </nav>
@@ -52,6 +54,20 @@
         <div id="accounts" class="account-grid" aria-live="polite"></div>
         <div id="empty-state" class="empty-state" hidden><div class="empty-symbol">⌕</div><h3>没有找到匹配的账号</h3><p class="muted">试试其他名称，或调整筛选条件。</p><button id="reset-filters" class="button secondary">清除筛选</button></div>
 
+      </section>
+      <section id="trends-view" class="view" hidden>
+        <div class="page-heading"><div><h1>每日趋势<span class="heading-dot"></span></h1></div><button id="trend-refresh" class="button secondary" type="button">刷新趋势</button></div>
+        <div class="trend-controls"><div class="trend-range" role="group" aria-label="日期范围"><button type="button" data-trend-days="7" aria-pressed="true">近 7 天</button><button type="button" data-trend-days="30" aria-pressed="false">近 30 天</button></div><label class="trend-account-label"><span class="sr-only">选择账号</span><select id="trend-account"><option value="all">全站（含历史账号）</option></select></label><span id="trend-period" class="subtle">北京时间 · 含今日</span></div>
+        <div id="trend-feedback" class="notice danger" role="status" hidden></div>
+        <div id="trend-summary" class="trend-summary" aria-live="polite"></div>
+        <div class="panel trend-chart-panel"><div class="trend-chart-heading"><h2 id="trend-chart-title">每日请求</h2><div id="trend-metrics" class="trend-metrics" role="group" aria-label="图表指标"><button type="button" data-trend-metric="requests" aria-pressed="true">请求</button><button type="button" data-trend-metric="tokens" aria-pressed="false">Token</button><button type="button" data-trend-metric="accountCost" aria-pressed="false" title="账号计费，USD；不是余额">A 费用</button><button type="button" data-trend-metric="userCost" aria-pressed="false" title="用户扣费，USD；不是余额">U 费用</button></div></div><div id="trend-chart" class="trend-chart"></div><div class="trend-selection"><button id="trend-previous" class="button text" type="button" aria-label="上一个日期">‹</button><div id="trend-selection" aria-live="polite">选择日期查看用量</div><button id="trend-next" class="button text" type="button" aria-label="下一个日期">›</button></div><p id="trend-updated" class="trend-updated subtle"></p></div>
+        <div class="panel trend-table-panel"><div class="panel-heading"><h2>每日明细</h2><span id="trend-row-count" class="subtle"></span></div><div class="trend-table-wrap"><table class="trend-table"><thead><tr><th scope="col">日期</th><th scope="col">请求</th><th scope="col">Token</th><th scope="col" title="账号计费，USD">A 费用</th><th scope="col" title="用户扣费，USD">U 费用</th></tr></thead><tbody id="trend-table-body"></tbody></table></div></div>
+      </section>
+      <section id="health-view" class="view" hidden>
+        <div class="page-heading"><div><h1>账号健康<span class="heading-dot"></span></h1></div><button id="health-refresh" class="button secondary" type="button">刷新数据</button></div>
+        <div id="health-summary" class="health-summary" aria-live="polite"></div>
+        <div class="health-controls"><label class="search-field"><span>⌕</span><input id="health-search" type="search" placeholder="搜索账号名称 / ID" aria-label="搜索健康状态中的账号"></label><label class="sr-only" for="health-filter">健康状态</label><select id="health-filter"><option value="all">全部状态</option><option value="attention">需关注</option><option value="paused">关闭 / 暂停</option><option value="unknown">待确认</option><option value="healthy">正常</option></select><span id="health-count" class="subtle"></span></div>
+        <p id="health-updated" class="health-updated subtle"></p><div id="health-list" class="health-list" aria-live="polite"></div>
       </section>
       <section id="key-usage-view" class="view" hidden>
         <div class="page-heading"><div><h1>Key 用量<span class="heading-dot"></span></h1></div></div>
