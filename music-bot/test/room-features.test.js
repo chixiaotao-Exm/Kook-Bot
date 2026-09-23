@@ -145,6 +145,22 @@ test('timezone schedules run once and persist dispatch before side effects', asy
   await restored.init(); t.after(() => restored.close()); await restored.tick(); assert.equal(f.player.volume, 70);
 });
 
+test('a failed dispatch save does not mark an unexecuted schedule as already run', async (t) => {
+  const f = await fixture(t); await f.player.join(context);
+  await f.features.configure('schedules', [schedule()]);
+  const save = f.features.save.bind(f.features); let failures = 1;
+  f.features.save = async () => { if (failures-- > 0) throw new Error('temporary write failure'); return save(); };
+  const volumeBefore = f.player.volume;
+  f.setTime('2026-09-18T12:00:00Z'); await f.features.tick();
+  assert.equal(f.player.volume, volumeBefore);
+  assert.equal(f.features.snapshot().schedules[0].lastRunAt, null);
+  assert.equal(JSON.parse(await readFile(f.features.file, 'utf8')).ledger.evening, undefined);
+  await f.features.tick();
+  assert.equal(f.player.volume, 30);
+  assert.equal(JSON.parse(await readFile(f.features.file, 'utf8')).ledger.evening.date, '2026-09-18');
+  f.player.volume = 40; await f.features.tick(); assert.equal(f.player.volume, 40);
+});
+
 test('slow radio requests never mask scheduled volume or pause and cannot append after the pause', async (t) => {
   const f = await fixture(t), pending = deferred(), entered = deferred(); let radioRequests = 0;
   await f.player.add(context, [track(90)]); f.setTime('2026-09-18T11:59:50Z');

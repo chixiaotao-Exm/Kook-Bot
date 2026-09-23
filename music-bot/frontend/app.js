@@ -7,6 +7,7 @@ import { createRoomSettings } from './room-settings.js';
 import { createLyrics } from './lyrics.js';
 import { createHealth } from './health.js';
 import { takeAccessToken } from './access.js';
+import { musicRoomLink } from './room-links.js';
 const accessToken = takeAccessToken();
 const initialLocation = new URLSearchParams(location.search);
 
@@ -96,7 +97,9 @@ function permission(name, id = selectedBotId) {
   const role = roles[id] || 'guest';
   return name === 'control' ? ['dj','owner'].includes(role) : ['manageRoom','manageRoles'].includes(name) ? role === 'owner' : false;
 }
-function goRoom(input, source = currentSource) { const url = new URL(`/room/${encodeURIComponent(selectedBotId)}`, location.origin); if (input) { url.searchParams.set('q', input); url.searchParams.set('source',source); } location.assign(url.href); }
+function goRoom(input, source = currentSource, kind = 'song') {
+  location.assign(musicRoomLink({ origin: location.origin, botId: selectedBotId, input, source, kind }));
+}
 function applyPermissions() {
   if (!accessControlled) return;
   const control = permission('control'), owner = permission('manageRoom'), admin = permission('manageSite');
@@ -387,7 +390,7 @@ async function loadPlaylistPage() {
   }
 }
 function importPlaylist(id, showPlayer = true, source = currentSource, botId = selectedBotId) {
-  if (!permission('manageSite')) return goRoom(id,source);
+  if (!permission('manageSite')) return goRoom(id,source,'playlist');
   requireAccount(source, () => withContext((ctx) => run(async () => {
     const result = await botApi('/playlist', { ...ctx, id, source }, botId);
     toast(Number.isInteger(result.added) ? `已加入 ${result.added} 首歌曲` : '歌单已加入队列');

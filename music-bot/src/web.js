@@ -336,7 +336,11 @@ export class WebConsole {
       this.mutations.add(lock);
       if (!this.manager) this.mutating = true;
       try {
-        const run = (runtime) => this.post(url.pathname, data, runtime, actor);
+        const run = (runtime) => {
+          // A shared-account queue or bot lease may wait past logout/revocation.
+          this.authorizeLegacy(url.pathname, data, actor);
+          return this.post(url.pathname, data, runtime, actor);
+        };
         const result = scoped && this.manager?.withBot ? await this.manager.withBot(id, run)
           : lock === 'accounts' ? await this.accountExclusive(() => run()) : await run(scoped ? this.runtime(id) : undefined);
         return this.json(res, 200, result);
@@ -431,6 +435,7 @@ export class WebConsole {
       }, 30000);
       case '/api/account/qr': {
         return this.accountExclusive(async () => {
+          this.authorizeLegacy(url.pathname, { source }, actor, 'GET');
           if (source === 'netease') return this.qrStatus();
           const status = await this.provider(source).qrStatus();
           if (status.status === 'success') { this.clearAccountCache(source); this.diagnostics?.invalidateAccount(source, true); }
@@ -444,6 +449,9 @@ export class WebConsole {
     const source = musicSource(data.source);
     const runtime = botRoutes.has(route) ? selectedRuntime || this.runtime(data.botId) : null;
     const player = runtime ? this.requirePlayer(runtime) : null;
+    // Music lookups run outside the player lock. A later room/KOOK control must
+    // win even when the earlier lookup or link expansion finishes afterwards.
+    const playbackEpoch = player?.operationEpoch;
     const record = (message) => this.record(message, runtime?.id);
     const authorize = () => { this.authorizeLegacy(route, data, actor); return true; };
     switch (route) {
@@ -480,7 +488,7 @@ export class WebConsole {
         const ctx = await this.context(data, runtime); const binding = this.channelBinding(data, player, ctx);
         const track = await this.music.resolve(parsed.input, parsed.source);
         await player.add(ctx, [{ ...track, requestedBy: this.accessControlled ? `room:${actor.id}` : 'web-admin',
-          ...(this.accessControlled ? { requestedByName: actor.name || '站点管理者' } : {}) }], { ...binding, checkState: authorize }); record(`点歌：${track.name}`);
+          ...(this.accessControlled ? { requestedByName: actor.name || '站点管理者' } : {}) }], { ...binding, expectedEpoch: playbackEpoch, checkState: authorize }); record(`点歌：${track.name}`);
         return { ok: true, added: 1 };
       }
       case '/api/playlist': {
@@ -495,7 +503,7 @@ export class WebConsole {
         const available = await this.music.playlist(parsed.input, limit, parsed.source);
         const tracks = available.slice(0, Math.min(limit, player.capacity()));
         await player.add(ctx, this.accessControlled ? tracks.map((track) => ({ ...track, requestedBy: `room:${actor.id}`, requestedByName: actor.name || '站点管理者' })) : tracks,
-          { ...binding, checkState: authorize }); record(`歌单已导入 ${tracks.length} 首歌曲`);
+          { ...binding, expectedEpoch: playbackEpoch, checkState: authorize }); record(`歌单已导入 ${tracks.length} 首歌曲`);
         return { ok: true, added: tracks.length };
       }
       case '/api/heart':
@@ -507,7 +515,7 @@ export class WebConsole {
         const seed = (player.current?.source ?? 'netease') === source ? player.current?.id : undefined;
         const result = route === '/api/heart' ? await this.music.heart({ playlistId: data.playlistId, songId: seed, limit }, source) : await this.music.hot(limit, source);
         await player.add(ctx, this.accessControlled ? result.tracks.map((track) => ({ ...track, requestedBy: `room:${actor.id}`, requestedByName: actor.name || '站点管理者' })) : result.tracks,
-          { checkState: authorize }); record(result.notice || `${result.name}：已添加 ${result.tracks.length} 首`);
+          { expectedEpoch: playbackEpoch, checkState: authorize }); record(result.notice || `${result.name}：已添加 ${result.tracks.length} 首`);
         return { ok: true, notice: result.notice || `${result.name}：已加入 ${result.tracks.length} 首。`, mode: result.mode, added: result.tracks.length };
       }
       case '/api/control': {
