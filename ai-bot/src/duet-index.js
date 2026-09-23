@@ -33,6 +33,7 @@ export function createDuetRuntime({ config, clients, replies, commandReply, prog
   const control = {
     start: options => gateways.every(gateway => gateway.snapshot().connected)
       ? session.start(options) : { accepted: false, reason: 'NOT_READY' },
+    contribute: options => session.contribute(options),
     stop: options => session.stop(options), snapshot: () => session.snapshot(),
   };
   commands = new DuetCommands({ session: control, channelId: config.channelId, dataDir: config.dataDir, defaultRounds: config.rounds,
@@ -43,7 +44,7 @@ export function createDuetRuntime({ config, clients, replies, commandReply, prog
     const connections = gateways.map((gateway, index) => ({ label: config.labels[index], model: config.models[index], ...gateway.snapshot() }));
     const commandState = commands.snapshot(), conversation = session.snapshot();
     return { ok: connections.every(connection => connection.connected) && commandState.enabled && conversation.enabled,
-      channelId: config.channelId, bots: connections, commands: commandState, duet: conversation,
+      channelId: config.channelId, bots: connections, commands: commandState, duet: conversation, humanParticipation: true,
       defaults: { unlimited: config.rounds === 0, rounds: config.rounds || null, deadlineMs: config.deadlineMs || null } };
   };
   const server = http.createServer((request, response) => {

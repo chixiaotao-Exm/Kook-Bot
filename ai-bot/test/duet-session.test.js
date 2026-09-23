@@ -9,6 +9,7 @@ import { atomicJson } from '../src/storage.js';
 const CHANNEL = '300000001', USER = '200000001', NOW = Date.parse('2026-09-22T12:00:00Z');
 const receipt = n => `00000000-0000-0000-0000-${String(n).padStart(12, '0')}`;
 const request = (overrides = {}) => ({ topic: '未来的城市应该是什么样子？', userId: USER, receiptId: receipt(1), replyMessageId: receipt(1), ...overrides });
+const contribution = (n, text = `用户补充 ${n}`) => ({ text, userId: USER, receiptId: receipt(1000 + n), replyMessageId: receipt(1000 + n) });
 const defer = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
 async function until(check) {
   for (let n = 0; n < 500; n++) { if (await check()) return; await new Promise(resolve => setTimeout(resolve, 2)); }
@@ -283,4 +284,180 @@ test('explicit positive rounds remain finite under the new unlimited defaults', 
   assert.equal(result.unlimited, false); assert.equal(result.totalTurns, 4);
   await f.done(); assert.equal(f.calls.length, 4); assert.equal(f.replies.length, 5);
   assert.match(f.replies[3].content, /第 2\/2 轮/);
+});
+
+test('human input interrupts generation and regenerates the same speaker with both actors retaining it', async t => {
+  const old = defer(), nextB = defer(), laterA = defer(), aCalls = [], bCalls = [];
+  const f = await fixture(t, { rounds: 0, deadlineMs: 0 }, [
+    { generate: async (messages, options) => { aCalls.push({ messages, signal: options.signal });
+      return aCalls.length === 1 ? old.promise : aCalls.length === 2 ? { text: 'A 回应用户的新观点' } : laterA.promise; } },
+    { generate: async (messages, options) => { bCalls.push({ messages, signal: options.signal }); return nextB.promise; } },
+  ]);
+  await f.session.start(request()); await until(() => aCalls.length === 1);
+  const added = await f.session.contribute(contribution(1, '请考虑无障碍出行。'));
+  assert.equal(added.accepted, true); assert.equal(aCalls[0].signal.aborted, true);
+  await until(() => bCalls.length === 1);
+  assert.equal(aCalls.length, 2); assert.equal(f.replies.length, 1); assert.equal(f.replies[0].speaker, 0);
+  assert.equal(f.replies[0].replyMessageId, receipt(1001)); assert.equal(f.session.snapshot().completedTurns, 1);
+  assert.equal(f.session.snapshot().pendingInputs, 1);
+  for (const call of [aCalls[1], bCalls[0]]) {
+    assert.ok(call.messages.some(message => message.role === 'user' && message.content === '【用户补充】\n请考虑无障碍出行。'));
+    assert.match(call.messages[0].content, /未来的城市/); assert.match(call.messages.at(-1).content, /优先回应.*用户/);
+    assert.match(call.messages.at(-1).content, /按用户最新的长度和格式要求.*未指定时/);
+  }
+  assert.ok(bCalls[0].messages.some(message => message.content === f.replies[0].content));
+  assert.equal((await f.session.contribute(contribution(1))).reason, 'DUPLICATE');
+  nextB.resolve({ text: 'B 结合用户观点继续讨论' }); await until(() => aCalls.length === 3);
+  assert.equal(f.session.snapshot().pendingInputs, 0); assert.equal(f.session.snapshot().contributions, 1);
+  assert.ok(aCalls[2].messages.some(message => message.content.includes('请考虑无障碍出行')));
+  old.resolve({ text: '丢弃的过期答案' }); await f.session.stop();
+  assert.equal(f.replies.length, 2); assert.ok(!f.replies.some(item => item.content.includes('过期答案')));
+  laterA.resolve({ text: '迟到输出' });
+});
+
+test('input during delivery preserves that confirmed post and changes the next actor and quote', async t => {
+  const delivery = defer(), secondResponse = defer(), aLater = defer(), delivered = [], bCalls = []; let aCalls = 0;
+  const f = await fixture(t, { rounds: 0, deadlineMs: 0 }, [
+    { generate: async () => ++aCalls === 1 ? { text: '已经开始发送的A回复' } : aLater.promise,
+      reply: async item => { delivered.push(item); return delivery.promise; } },
+    { generate: async messages => { bCalls.push(messages); return secondResponse.promise; } },
+  ]);
+  await f.session.start(request()); await until(() => delivered.length === 1);
+  assert.equal((await f.session.contribute(contribution(1, '补充一个新角度'))).accepted, true);
+  assert.equal(delivered[0].signal.aborted, false); assert.equal(delivered[0].replyMessageId, receipt(1));
+  assert.equal(aCalls, 1); delivery.resolve({ messageId: receipt(500) });
+  await until(() => bCalls.length === 1);
+  assert.ok(bCalls[0].some(message => message.content.includes('补充一个新角度')));
+  assert.ok(bCalls[0].some(message => message.content === delivered[0].content));
+  secondResponse.resolve({ text: 'B 回应新角度' }); await until(() => f.replies.length === 1);
+  assert.equal(f.replies[0].replyMessageId, receipt(1001)); assert.equal(f.replies[0].speaker, 1);
+  await f.session.stop(); aLater.resolve({ text: 'late' });
+});
+
+test('human input between turns is included in the next generation without restarting the topic', async t => {
+  const timers = new Map(), pending = defer(), calls = []; let serial = 0;
+  const f = await fixture(t, { rounds: 0, deadlineMs: 0, betweenTurnsMs: 2000,
+    setTimeoutImpl: (callback, ms) => { const id = ++serial; timers.set(id, { callback, ms }); return id; },
+    clearTimeoutImpl: id => timers.delete(id) }, [undefined,
+    { generate: async messages => { calls.push(messages); return pending.promise; } }]);
+  await f.session.start(request()); await until(() => [...timers.values()].some(timer => timer.ms === 2000));
+  await f.session.contribute(contribution(1, '用户要求继续原话题并关注成本'));
+  const [id, timer] = [...timers].find(([, entry]) => entry.ms === 2000); timers.delete(id); timer.callback();
+  await until(() => calls.length === 1);
+  assert.match(calls[0][0].content, /未来的城市/);
+  assert.ok(calls[0].some(message => message.content === f.replies[0].content));
+  assert.ok(calls[0].some(message => message.content.includes('关注成本')));
+  await f.session.stop(); pending.resolve({ text: 'late' });
+});
+
+test('contribution must reach disk before interrupting, and an old answer cannot pass its delivery barrier', async t => {
+  const old = defer(), blockedWrite = defer(), writing = defer(), bPending = defer(), aCalls = []; let writes = 0, durable = false;
+  const f = await fixture(t, { rounds: 0, deadlineMs: 0, writeState: async (file, value) => {
+    const current = ++writes;
+    if (current === 2) { writing.resolve(); await blockedWrite.promise; }
+    await atomicJson(file, value); if (current === 2) durable = true;
+  } }, [
+    { generate: async (messages, options) => { aCalls.push({ messages, signal: options.signal });
+      if (aCalls.length === 1) return old.promise; assert.equal(durable, true); return { text: '包含补充的新答案' }; } },
+    { generate: async () => bPending.promise },
+  ]);
+  await f.session.start(request()); await until(() => aCalls.length === 1);
+  const adding = f.session.contribute(contribution(1, '落盘前不能开始按此内容生成'));
+  await writing.promise; assert.equal(aCalls[0].signal.aborted, false);
+  old.resolve({ text: '不得发送的旧答案' }); await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(f.replies.length, 0); blockedWrite.resolve(); assert.equal((await adding).accepted, true);
+  await until(() => f.replies.length === 1);
+  assert.match(f.replies[0].content, /包含补充/); assert.equal(f.replies[0].replyMessageId, receipt(1001));
+  await f.session.stop(); bPending.resolve({ text: 'late' });
+});
+
+test('contribution persistence failure stops safely without generating from uncommitted text', async t => {
+  const pending = defer(); let calls = 0, signal, writes = 0;
+  const f = await fixture(t, { rounds: 0, deadlineMs: 0, writeState: async (file, value) => {
+    if (++writes === 2) throw new Error('private contribution storage error'); await atomicJson(file, value);
+  } }, [{ generate: async (_, options) => { calls++; signal = options.signal; return pending.promise; } }]);
+  await f.session.start(request()); await until(() => calls === 1);
+  assert.equal((await f.session.contribute(contribution(1))).reason, 'NOT_READY');
+  await f.done('failed'); assert.equal(signal.aborted, true); assert.equal(calls, 1); assert.equal(f.replies.length, 0);
+  assert.equal(f.session.snapshot().lastErrorCode, 'STORAGE'); assert.ok(!JSON.stringify(f.logs).includes('private'));
+  pending.resolve({ text: 'late' });
+});
+
+test('stop during contribution persistence rolls back the receipt and permits a fresh start with it', async t => {
+  const pending = defer(), writing = defer(), release = defer(); let writes = 0, calls = 0;
+  const f = await fixture(t, { rounds: 0, deadlineMs: 0, writeState: async (file, value) => {
+    if (++writes === 2) { writing.resolve(); await release.promise; } await atomicJson(file, value);
+  } }, [{ generate: async () => { calls++; return pending.promise; } }]);
+  await f.session.start(request()); await until(() => calls === 1);
+  const adding = f.session.contribute(contribution(1)); await writing.promise;
+  const stopping = f.session.stop(); release.resolve();
+  assert.equal((await adding).reason, 'NO_ACTIVE'); await stopping;
+  const restarted = await f.session.start(request({ receiptId: receipt(1001), replyMessageId: receipt(1001) }));
+  assert.equal(restarted.accepted, true); await f.session.stop(); pending.resolve({ text: 'late' });
+});
+
+test('ten unconsumed inputs stay pinned with bounded history and excess input is explicitly rejected', async t => {
+  const pending = defer(), calls = [];
+  const f = await fixture(t, { rounds: 0, deadlineMs: 0 }, [0, 1].map(speaker => ({
+    generate: async messages => { calls.push({ speaker, messages }); return calls.length <= 10 ? { text: 'x'.repeat(2500) } : pending.promise; },
+  })));
+  await f.session.start(request()); await until(() => calls.length === 11);
+  const texts = Array.from({ length: 10 }, (_, n) => `human ${n} ${String(n).repeat(1990)}`);
+  for (let n = 0; n < 10; n++) assert.equal((await f.session.contribute(contribution(n + 1, texts[n]))).accepted, true);
+  await until(() => calls.at(-1).messages.filter(message => message.content.startsWith('【用户补充】')).length === 10);
+  assert.equal(f.session.snapshot().pendingInputs, 10); assert.equal(f.session.snapshot().contributions, 10);
+  assert.ok(f.session.snapshot().historyMessages <= 20);
+  assert.equal((await f.session.contribute(contribution(11))).reason, 'CAPACITY');
+  const input = calls.at(-1).messages;
+  assert.ok(texts.every(text => input.some(message => message.role === 'user' && message.content === `【用户补充】\n${text}`)));
+  assert.ok(input.length <= 40); assert.ok(input.every(message => message.content.length <= 6000));
+  assert.ok(input.reduce((size, message) => size + message.content.length, 0) <= 48_000);
+  await f.session.stop(); pending.resolve({ text: 'late' });
+  const saved = await f.saved('stopped');
+  assert.equal(saved.lastRun.contributions, 10); assert.ok(!saved.seen.some(item => item.id === receipt(1011)));
+  assert.ok(!JSON.stringify(saved).includes('human 0')); assert.ok(!JSON.stringify(f.session.snapshot()).includes('human 0'));
+});
+
+test('no active session and finite final delivery do not consume contribution receipts', async t => {
+  const finalDelivery = defer(); let delivering = false;
+  const f = await fixture(t, { rounds: 1 }, [undefined, { reply: async () => { delivering = true; return finalDelivery.promise; } }]);
+  assert.equal((await f.session.contribute(contribution(1))).reason, 'NO_ACTIVE');
+  assert.equal((await f.session.start(request({ receiptId: receipt(1001), replyMessageId: receipt(1001) }))).accepted, true);
+  await until(() => delivering);
+  assert.equal((await f.session.contribute(contribution(2))).reason, 'FINISHING');
+  assert.equal(f.calls.length, 2); finalDelivery.resolve({ messageId: receipt(500) }); await f.done();
+  assert.equal((await f.session.start(request({ receiptId: receipt(1002), replyMessageId: receipt(1002) }))).accepted, true);
+  await f.session.stop();
+});
+
+test('accepted contribution receipts survive restart without retaining their text or resuming work', async t => {
+  const pending = defer(); let calls = 0;
+  const f = await fixture(t, { rounds: 0, deadlineMs: 0 }, [{ generate: async () => { calls++; return pending.promise; } }]);
+  await f.session.start(request()); await until(() => calls === 1);
+  assert.equal((await f.session.contribute(contribution(1, '不应写入磁盘的用户观点'))).accepted, true);
+  await until(() => calls === 2); await f.session.close();
+  const restarted = await new DuetSession(f.config).init();
+  assert.equal(restarted.snapshot().status, 'interrupted'); assert.equal(restarted.snapshot().contributions, 1);
+  assert.equal(restarted.snapshot().pendingInputs, 0); assert.equal(calls, 2);
+  assert.equal((await restarted.start(request({ receiptId: receipt(1001) }))).reason, 'DUPLICATE');
+  const saved = await readFile(path.join(f.dataDir, 'duet-state.json'), 'utf8');
+  assert.ok(!saved.includes('用户观点')); await restarted.close(); pending.resolve({ text: 'late' });
+});
+
+test('finite final delivery winning the admission-write race rejects and durably releases the input', async t => {
+  const writing = defer(), release = defer(); let writes = 0, adding, triggered = false, finalSent = false;
+  const f = await fixture(t, { rounds: 1, writeState: async (file, value) => {
+    if (++writes === 3) { writing.resolve(); await release.promise; } await atomicJson(file, value);
+  } }, [undefined, {
+    generate: async () => ({ get text() {
+      if (!triggered) { triggered = true; adding = f.session.contribute(contribution(1, '最后一条开始发送时加入')); }
+      return '有限场次的最后一条回复';
+    } }),
+    reply: async () => { finalSent = true; return { messageId: receipt(500) }; },
+  }]);
+  await f.session.start(request()); await writing.promise; await until(() => finalSent);
+  release.resolve(); assert.equal((await adding).reason, 'FINISHING'); await f.done();
+  assert.equal(f.session.snapshot().contributions, 0); assert.equal(f.session.snapshot().pendingInputs, 0);
+  assert.equal((await f.session.start(request({ receiptId: receipt(1001), replyMessageId: receipt(1001) }))).accepted, true);
+  await f.session.stop();
 });
