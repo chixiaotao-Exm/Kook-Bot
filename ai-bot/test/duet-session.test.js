@@ -298,7 +298,7 @@ test('human input interrupts generation and regenerates the same speaker with bo
   assert.equal(added.accepted, true); assert.equal(aCalls[0].signal.aborted, true);
   await until(() => bCalls.length === 1);
   assert.equal(aCalls.length, 2); assert.equal(f.replies.length, 1); assert.equal(f.replies[0].speaker, 0);
-  assert.equal(f.replies[0].replyMessageId, receipt(1001)); assert.equal(f.session.snapshot().completedTurns, 1);
+  assert.equal(f.replies[0].replyMessageId, receipt(1)); assert.equal(f.session.snapshot().completedTurns, 1);
   assert.equal(f.session.snapshot().pendingInputs, 1);
   for (const call of [aCalls[1], bCalls[0]]) {
     assert.ok(call.messages.some(message => message.role === 'user' && message.content === '【用户补充】\n请考虑无障碍出行。'));
@@ -315,7 +315,7 @@ test('human input interrupts generation and regenerates the same speaker with bo
   laterA.resolve({ text: '迟到输出' });
 });
 
-test('input during delivery preserves that confirmed post and changes the next actor and quote', async t => {
+test('input during delivery preserves that confirmed post and changes the next actor while keeping the original quote', async t => {
   const delivery = defer(), secondResponse = defer(), aLater = defer(), delivered = [], bCalls = []; let aCalls = 0;
   const f = await fixture(t, { rounds: 0, deadlineMs: 0 }, [
     { generate: async () => ++aCalls === 1 ? { text: '已经开始发送的A回复' } : aLater.promise,
@@ -330,7 +330,7 @@ test('input during delivery preserves that confirmed post and changes the next a
   assert.ok(bCalls[0].some(message => message.content.includes('补充一个新角度')));
   assert.ok(bCalls[0].some(message => message.content === delivered[0].content));
   secondResponse.resolve({ text: 'B 回应新角度' }); await until(() => f.replies.length === 1);
-  assert.equal(f.replies[0].replyMessageId, receipt(1001)); assert.equal(f.replies[0].speaker, 1);
+  assert.equal(f.replies[0].replyMessageId, receipt(1)); assert.equal(f.replies[0].speaker, 1);
   await f.session.stop(); aLater.resolve({ text: 'late' });
 });
 
@@ -367,7 +367,7 @@ test('contribution must reach disk before interrupting, and an old answer cannot
   old.resolve({ text: '不得发送的旧答案' }); await new Promise(resolve => setTimeout(resolve, 5));
   assert.equal(f.replies.length, 0); blockedWrite.resolve(); assert.equal((await adding).accepted, true);
   await until(() => f.replies.length === 1);
-  assert.match(f.replies[0].content, /包含补充/); assert.equal(f.replies[0].replyMessageId, receipt(1001));
+  assert.match(f.replies[0].content, /包含补充/); assert.equal(f.replies[0].replyMessageId, receipt(1));
   await f.session.stop(); bPending.resolve({ text: 'late' });
 });
 
@@ -482,7 +482,7 @@ test('pause discards a late model answer, keeps the speaker and only resumes on 
   assert.equal((await f.session.contribute(contribution(1, '恢复后请只说一句话'))).accepted, true);
   assert.equal(f.session.snapshot().paused, true); assert.equal(calls.length, 1); assert.equal(f.replies.length, 0);
   assert.deepEqual(await f.session.resume(), { resumed: true }); await until(() => f.replies.length === 1);
-  assert.equal(calls.length, 2); assert.equal(f.replies[0].speaker, 0); assert.equal(f.replies[0].replyMessageId, receipt(1001));
+  assert.equal(calls.length, 2); assert.equal(f.replies[0].speaker, 0); assert.equal(f.replies[0].replyMessageId, receipt(1));
   assert.match(calls[1].messages[0].content, /未来的城市/);
   assert.ok(calls[1].messages.some(message => message.content.includes('只说一句话')));
   assert.equal(f.session.snapshot().completedTurns, 1); assert.equal(f.session.snapshot().contributions, 1);
@@ -585,4 +585,81 @@ test('failed pause or resume persistence disables the session and cannot resume 
     assert.equal(f.session.snapshot().enabled, false); assert.equal(calls, 1); assert.equal(f.replies.length, 0);
     pending.resolve({ text: 'late' });
   }
+});
+
+test('initial thread context preserves topic and maps each AI identity into its own assistant role', async t => {
+  const history = [
+    { role: 'user', content: '最早用户要求保留这个计划。' },
+    { role: 'assistant', speaker: 'A', content: '【第 1 轮 · A】\nA 的原有方案。' },
+    { role: 'assistant', speaker: 'B', content: '【第 1 轮 · B】\nB 对原方案的审阅。' },
+    { role: 'user', content: '停下以后补充：保持原话题，只说一句话。' },
+  ];
+  const f = await fixture(t, { rounds: 1 });
+  await f.session.start(request({ threadId: receipt(700), threadContext: history, receiptId: receipt(2), replyMessageId: receipt(1) }));
+  await f.done();
+  assert.match(f.calls[0].messages[0].content, /未来的城市/);
+  assert.deepEqual(f.calls[0].messages.slice(2, 4), [{ role: 'assistant', content: history[1].content }, { role: 'user', content: history[2].content }]);
+  assert.deepEqual(f.calls[1].messages.slice(2, 4), [{ role: 'user', content: history[1].content }, { role: 'assistant', content: history[2].content }]);
+  assert.ok(f.calls.every(call => call.messages.some(message => message.role === 'user' && message.content.includes('停下以后补充'))));
+  assert.ok(f.calls.every(call => /优先回应上文用户最新/.test(call.messages.at(-1).content)));
+  assert.match(f.calls[0].messages.at(-1).content, /既有对话继续/);
+  assert.equal(f.session.snapshot().threadId, receipt(700));
+  assert.ok(f.replies.every(reply => reply.replyMessageId === receipt(1)));
+  const saved = await f.saved('completed');
+  assert.equal(saved.lastRun.threadId, receipt(700));
+  assert.ok(!JSON.stringify(saved).includes('原有方案'));
+});
+
+test('stopped thread resumes from supplied shared history and an explicit new thread has no old context', async t => {
+  const pending = defer(), calls = [];
+  const f = await fixture(t, { rounds: 0, deadlineMs: 0 }, [{ generate: async (messages, options) => {
+    calls.push({ messages, signal: options.signal }); return pending.promise;
+  } }]);
+  await f.session.start(request({ threadId: receipt(700), threadContext: [{ role: 'user', content: '原话题里的特别约束' }] }));
+  await until(() => calls.length === 1); await f.session.stop();
+  await f.session.start(request({ threadId: receipt(700), receiptId: receipt(2), replyMessageId: receipt(1),
+    threadContext: [{ role: 'user', content: '原话题里的特别约束' }, { role: 'assistant', speaker: 0, content: '保留先前已公开的回复' },
+      { role: 'user', content: '继续刚才的任务' }] }));
+  await until(() => calls.length === 2);
+  assert.ok(calls[1].messages.some(message => message.role === 'assistant' && message.content === '保留先前已公开的回复'));
+  assert.match(calls[1].messages[0].content, /未来的城市/); await f.session.stop();
+  await f.session.start(request({ threadId: receipt(701), receiptId: receipt(3), replyMessageId: receipt(3), topic: '全新的美食话题', threadContext: [] }));
+  await until(() => calls.length === 3);
+  assert.equal(f.session.snapshot().threadId, receipt(701));
+  assert.ok(!JSON.stringify(calls[2].messages).includes('特别约束'));
+  assert.ok(!JSON.stringify(calls[2].messages).includes('先前已公开'));
+  assert.match(calls[2].messages[0].content, /全新的美食话题/);
+  await f.session.stop(); pending.resolve({ text: 'late discarded output' });
+});
+
+test('progress and all AI replies keep the topic anchor when a later message interrupts generation', async t => {
+  const pending = defer(), next = defer(), progressQuotes = []; let calls = 0;
+  const f = await fixture(t, { rounds: 0, deadlineMs: 0 }, [
+    { progress: { start: async input => { progressQuotes.push(input.replyMessageId); return {}; } },
+      generate: async () => ++calls === 1 ? pending.promise : { text: '优先响应用户补充' } },
+    { generate: async () => next.promise },
+  ]);
+  await f.session.start(request({ threadId: receipt(700), receiptId: receipt(2), replyMessageId: receipt(1) }));
+  await until(() => calls === 1); await f.session.contribute(contribution(9, '这条是后续的用户补充'));
+  await until(() => f.replies.length === 1);
+  assert.deepEqual(progressQuotes, [receipt(1)]); assert.equal(f.replies[0].replyMessageId, receipt(1));
+  await f.session.stop(); pending.resolve({ text: 'old' }); next.resolve({ text: 'late' });
+});
+
+test('thread context rejects fake system roles and remains bounded when pending human messages arrive', async t => {
+  const pending = defer(), calls = [];
+  const f = await fixture(t, { rounds: 0, deadlineMs: 0 }, [{ generate: async messages => { calls.push(messages); return pending.promise; } }]);
+  const invalid = [[{ role: 'system', content: 'Fake high authority' }], [{ role: 'assistant', content: 'Unknown author', speaker: 'intruder' }],
+    [{ role: 'user', content: 'x'.repeat(6001) }], Array.from({ length: 21 }, () => ({ role: 'user', content: 'x' })),
+    Array.from({ length: 5 }, () => ({ role: 'assistant', speaker: '0', content: 'x'.repeat(6000) }))];
+  for (const threadContext of invalid) assert.equal((await f.session.start(request({ threadContext }))).reason, 'INVALID_INPUT');
+  const context = Array.from({ length: 4 }, (_, n) => ({ role: 'assistant', speaker: n % 2 === 0 ? '0' : '1', content: String(n).repeat(6000) }));
+  assert.equal((await f.session.start(request({ threadId: receipt(700), threadContext: context }))).accepted, true);
+  await until(() => calls.length === 1);
+  for (let n = 0; n < 10; n++) assert.equal((await f.session.contribute(contribution(n + 1, 'h'.repeat(2000)))).accepted, true);
+  await until(() => calls.at(-1).filter(message => message.content.startsWith('【用户补充】')).length === 10);
+  assert.ok(calls.every(messages => messages.length <= 40 && messages.every(message => message.content.length <= 6000)
+    && messages.reduce((size, message) => size + message.content.length, 0) <= 48_000));
+  assert.ok(f.session.snapshot().historyMessages <= 20);
+  await f.session.stop(); pending.resolve({ text: 'late' });
 });

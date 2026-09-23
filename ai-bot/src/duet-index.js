@@ -14,6 +14,7 @@ import { AgentResponsesClient } from './agent-model-client.js';
 import { CodeBrokerClient } from './broker-client.js';
 import { CodeSession } from './code-session.js';
 import { TaskRouter } from './task-router.js';
+import { ConversationThread } from './conversation-thread.js';
 
 export function createDuetRuntime({ config, clients, replies, commandReply, progress, resolveAuthor,
   verify = doctorDuet, Gateway = KookGateway, logger = safeLog } = {}) {
@@ -21,12 +22,23 @@ export function createDuetRuntime({ config, clients, replies, commandReply, prog
     baseUrl: config.baseUrl, apiKey: config.apiKey, model, systemPrompt: config.systemPrompts[index],
     timeoutMs: config.modelTimeoutMs, maxOutputTokens: config.maxOutputTokens, reasoningEffort: config.reasoningEffort,
   }));
+  const thread = new ConversationThread({ dataDir: config.dataDir });
   const transports = replies || config.tokens.map(token => createKookReply({ token }));
   const notice = commandReply || createKookReply({ token: config.tokens[0], timeoutMs: 10000 });
+  const inThread = payload => ({ ...payload, replyMessageId: thread.context()?.anchorMessageId || payload.replyMessageId });
+  const actualProgress = progress === undefined ? createKookProgress({ token: config.tokens[0] }) : progress;
+  const threadProgress = actualProgress ? { start: payload => actualProgress.start(inThread(payload)) } : null;
+  const sendReply = index => async payload => {
+    const context = thread.context();
+    const result = await transports[index]({ ...inThread(payload), textOnly: true });
+    if (context) await thread.recordAssistant({ threadId: context.id, speaker: config.labels[index], content: payload.content })
+      .catch(() => logger({ event: 'thread_storage_failed', code: 'STORAGE' }));
+    return result;
+  };
   const participants = config.labels.map((label, index) => ({ label,
     generate: (messages, options) => modelClients[index].generate(messages, options),
-    reply: payload => transports[index]({ ...payload, textOnly: true }),
-    progress: index === 0 ? (progress === undefined ? createKookProgress({ token: config.tokens[0] }) : progress) : null,
+    reply: sendReply(index),
+    progress: index === 0 ? threadProgress : null,
   }));
   const session = new DuetSession({ participants, channelId: config.channelId, dataDir: config.dataDir,
     rounds: config.rounds, maxRounds: 6, deadlineMs: config.deadlineMs, betweenTurnsMs: config.betweenTurnsMs, logger });
@@ -38,27 +50,28 @@ export function createDuetRuntime({ config, clients, replies, commandReply, prog
     participants: config.labels.map((label, index) => ({ label,
       client: new AgentResponsesClient({ baseUrl: config.baseUrl, apiKey: config.apiKey, model: config.models[index],
         systemPrompt: codePrompts[index], timeoutMs: config.modelTimeoutMs, maxOutputTokens: 8192, reasoningEffort: config.reasoningEffort }),
-      reply: payload => transports[index]({ ...payload, textOnly: true }),
+      reply: sendReply(index),
     })), broker: new CodeBrokerClient({ socketPath: config.codeSocket }),
-    progress: progress === undefined ? createKookProgress({ token: config.tokens[0] }) : progress,
+    progress: threadProgress,
     operatorIds: new Set(config.codeOperators), channelId: config.channelId, dataDir: config.dataDir, logger,
   }) : null;
   let commands, closing;
   const gateways = config.tokens.map((token, index) => new Gateway({ token, logger,
     onEvent: index === 0 ? event => commands.handle(event) : async () => {},
   }));
-  const control = new TaskRouter({ discussion: session, code, operatorIds: new Set(config.codeOperators || []),
+  const control = new TaskRouter({ discussion: session, code, thread, operatorIds: new Set(config.codeOperators || []),
     isReady: () => gateways.every(gateway => gateway.snapshot().connected) });
   commands = new DuetCommands({ session: control, channelId: config.channelId, dataDir: config.dataDir, defaultRounds: config.rounds,
     getSelfId: () => gateways[0].botId, getParticipantIds: () => gateways.map(gateway => gateway.botId),
     resolveAuthor: resolveAuthor || createAuthorResolver({ token: config.tokens[0] }),
-    reply: payload => notice({ ...payload, textOnly: true }), logger });
+    reply: payload => notice({ ...inThread(payload), textOnly: true }), logger });
   const snapshot = () => {
-    const connections = gateways.map((gateway, index) => ({ label: config.labels[index], model: config.models[index], ...gateway.snapshot() }));
+    const connections = gateways.map((gateway, index) => ({ label: config.labels[index], model: config.models[index], reasoningEffort: config.reasoningEffort, ...gateway.snapshot() }));
     const commandState = commands.snapshot(), conversation = session.snapshot();
     return { ok: connections.every(connection => connection.connected) && commandState.enabled && conversation.enabled && (!code || code.snapshot().enabled),
       channelId: config.channelId, bots: connections, commands: commandState, duet: conversation, humanParticipation: true,
       code: code?.snapshot() || { enabled: false },
+      thread: thread.snapshot(),
       defaults: { unlimited: config.rounds === 0, rounds: config.rounds || null, deadlineMs: config.deadlineMs || null } };
   };
   const server = http.createServer((request, response) => {
@@ -69,13 +82,13 @@ export function createDuetRuntime({ config, clients, replies, commandReply, prog
   });
   server.headersTimeout = 5000; server.requestTimeout = 10000; server.keepAliveTimeout = 1000;
   const runtime = {
-    gateways, commands, session, code, server, snapshot,
+    gateways, commands, session, code, thread, server, snapshot,
     async start() {
       const inspected = await verify(config);
       if (!Array.isArray(inspected?.bots) || inspected.bots.length !== 2 || !inspected.bots.every(bot => /^\d{5,30}$/.test(bot.botId))
         || inspected.bots[0].botId === inspected.bots[1].botId || inspected.channelAccessible !== true) throw new Error('Duet identity verification failed');
       inspected.bots.forEach((bot, index) => { gateways[index].botId = bot.botId; participants[index].id = bot.botId; });
-      await session.init(); await code?.init(); await commands.init();
+      await thread.init(); await session.init(); await code?.init(); await commands.init();
       if (!commands.snapshot().enabled || !session.snapshot().enabled || code && !code.snapshot().enabled) throw new Error('Task state or command receipts are unavailable');
       await new Promise((resolve, reject) => {
         const failed = error => { server.off('listening', ready); reject(error); };
