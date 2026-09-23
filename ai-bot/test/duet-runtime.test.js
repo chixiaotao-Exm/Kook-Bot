@@ -24,7 +24,7 @@ test('only primary gateway routes human commands; both identities alternate conf
   const dataDir = await mkdtemp(path.join(os.tmpdir(), 'duet-runtime-'));
   const config = { tokens: ['fixture-bot-a', 'fixture-bot-b'], models: ['gpt-6-astra', 'gpt-6-astra'],
     labels: ['A', 'B'], channelId: '88888888', dataDir, host: '127.0.0.1', port: 0,
-    rounds: 6, betweenTurnsMs: 0, deadlineMs: 600000 };
+    rounds: 0, betweenTurnsMs: 0, deadlineMs: 0 };
   const generated = [], deliveries = [], notices = [];
   const runtime = createDuetRuntime({ config, Gateway, progress: null, logger: () => {},
     verify: async () => ({ channelAccessible: true, bots: [{ botId: '11111111' }, { botId: '22222222' }] }),
@@ -37,6 +37,7 @@ test('only primary gateway routes human commands; both identities alternate conf
   const base = `http://127.0.0.1:${runtime.server.address().port}`;
   const health = await (await fetch(`${base}/health`)).json();
   assert.equal(health.ok, true); assert.equal(health.bots.length, 2);
+  assert.deepEqual(health.defaults, { unlimited: true, rounds: null, deadlineMs: null });
   assert.ok(!JSON.stringify(health).includes(config.tokens[0]));
   const input = event('/互聊 1 如何规划周末散步');
   await runtime.gateways[1].onEvent(input); assert.equal(generated.length, 0);

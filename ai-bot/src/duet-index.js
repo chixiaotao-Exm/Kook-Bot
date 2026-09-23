@@ -43,7 +43,8 @@ export function createDuetRuntime({ config, clients, replies, commandReply, prog
     const connections = gateways.map((gateway, index) => ({ label: config.labels[index], model: config.models[index], ...gateway.snapshot() }));
     const commandState = commands.snapshot(), conversation = session.snapshot();
     return { ok: connections.every(connection => connection.connected) && commandState.enabled && conversation.enabled,
-      channelId: config.channelId, bots: connections, commands: commandState, duet: conversation };
+      channelId: config.channelId, bots: connections, commands: commandState, duet: conversation,
+      defaults: { unlimited: config.rounds === 0, rounds: config.rounds || null, deadlineMs: config.deadlineMs || null } };
   };
   const server = http.createServer((request, response) => {
     if (request.method !== 'GET' || request.url !== '/health') { response.writeHead(404); response.end(); return; }

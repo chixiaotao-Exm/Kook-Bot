@@ -1,4 +1,4 @@
-import { modelFailureMessage, sanitizeDurationMs, sanitizeFailureCode } from './failure.js';
+import { modelFailureMessage, sanitizeFailureCode } from './failure.js';
 
 const CREATE_URL = 'https://www.kookapp.cn/api/v3/message/create';
 const UPDATE_URL = 'https://www.kookapp.cn/api/v3/message/update';
@@ -23,7 +23,8 @@ const plain = content => ({ type: 'plain-text', content, emoji: false });
 function cancelBody(body) { try { Promise.resolve(body?.cancel()).catch(() => {}); } catch {} }
 
 function elapsedLabel(duration) {
-  const seconds = Math.floor(sanitizeDurationMs(duration) / 1000);
+  const seconds = Number.isFinite(duration) && duration >= 0
+    ? Math.floor(Math.min(duration, Number.MAX_SAFE_INTEGER) / 1000) : 0;
   const digits = number => String(number).padStart(2, '0');
   return seconds >= 3600 ? `${digits(Math.floor(seconds / 3600))}:${digits(Math.floor(seconds / 60) % 60)}:${digits(seconds % 60)}`
     : `${digits(Math.floor(seconds / 60))}:${digits(seconds % 60)}`;

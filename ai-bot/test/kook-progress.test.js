@@ -121,6 +121,16 @@ test('failure details use the fixed whitelist and freeze elapsed time', async ()
   }
 });
 
+test('continuous conversations keep accurate elapsed time after 24 hours', async () => {
+  const h = harness(); const handle = await h.progress.start(input);
+  h.advance((25 * 3600 + 61) * 1000);
+  h.tick(); await settled();
+  assert.match(text(h.calls.at(-1)), /25:01:01/);
+  await handle.finish();
+  assert.match(text(h.calls.at(-1)), /25:01:01/);
+  assert.equal(h.timers.size, 0);
+});
+
 test('caller abort cancels the status with a fresh bounded request and prevents later updates', async () => {
   const caller = new AbortController(), h = harness();
   const handle = await h.progress.start({ ...input, signal: caller.signal });

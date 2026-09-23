@@ -8,20 +8,29 @@ const env = { KOOK_BOT_A_TOKEN: 'fixture-bot-a-private-token', KOOK_BOT_B_TOKEN:
   KOOK_CHANNEL_ID: '1234567890123456', OPENAI_API_KEY: 'sk-fixture-private-key' };
 const safeError = error => !Object.values(env).some(value => error.message.includes(value));
 
-test('duet defaults use two separate bots, bounded discussion and an independent local health port', () => {
+test('duet defaults use two separate bots, continuous discussion and an independent local health port', () => {
   const config = loadDuetConfig(env);
   assert.deepEqual(config.tokens, [env.KOOK_BOT_A_TOKEN, env.KOOK_BOT_B_TOKEN]);
   assert.deepEqual(config.models, ['gpt-6-astra', 'gpt-6-astra']);
   assert.deepEqual(config.labels, ['机器人A', '机器人B']);
-  assert.equal(config.rounds, 6); assert.equal(config.deadlineMs, 600000); assert.equal(config.betweenTurnsMs, 2000);
+  assert.equal(config.rounds, 0); assert.equal(config.deadlineMs, 0); assert.equal(config.betweenTurnsMs, 2000);
   assert.equal(config.modelTimeoutMs, 180000); assert.equal(config.maxOutputTokens, 1200); assert.equal(config.reasoningEffort, 'low');
   assert.equal(config.host, '127.0.0.1'); assert.equal(config.port, 19000); assert.equal(config.dataDir, path.resolve('./data'));
   assert.equal(config.baseUrl, 'http://127.0.0.1:8080/v1');
   assert.match(config.systemPrompts[0], /提出观点/); assert.match(config.systemPrompts[1], /审阅与改进/);
   for (const prompt of config.systemPrompts) {
     assert.match(prompt, /100—200/); assert.match(prompt, /讨论素材/); assert.match(prompt, /没有联网、工具/);
+    assert.doesNotMatch(prompt, /有轮数限制/);
     assert.ok(Object.values(env).every(value => !prompt.includes(value)));
   }
+});
+
+test('zero explicitly disables both total discussion limits while request timeout remains active', () => {
+  const config = loadDuetConfig({ ...env, DUET_ROUNDS: '0', DUET_DEADLINE_SECONDS: '0' });
+  assert.equal(config.rounds, 0); assert.equal(config.deadlineMs, 0);
+  assert.equal(config.modelTimeoutMs, 180000); assert.equal(config.betweenTurnsMs, 2000);
+  const finite = loadDuetConfig({ ...env, DUET_ROUNDS: '6', DUET_DEADLINE_SECONDS: '600' });
+  assert.equal(finite.rounds, 6); assert.equal(finite.deadlineMs, 600000);
 });
 
 test('model overrides, limits, role labels and data directory resolve independently', () => {
@@ -45,9 +54,10 @@ test('missing or duplicate credentials and non-loopback health hosts fail withou
   }
 });
 
-test('per-session cost bounds and labels reject malformed or excessive values', () => {
-  for (const changes of [{ DUET_ROUNDS: '7' }, { DUET_ROUNDS: '0' }, { DUET_ROUNDS: '1.5' }, { DUET_ROUNDS: 2 },
-    { DUET_DEADLINE_SECONDS: '601' }, { DUET_BETWEEN_TURNS_MS: '-1' }, { DUET_BETWEEN_TURNS_MS: '30001' },
+test('optional discussion limits and labels reject malformed or excessive values', () => {
+  for (const changes of [{ DUET_ROUNDS: '7' }, { DUET_ROUNDS: '-1' }, { DUET_ROUNDS: '1.5' }, { DUET_ROUNDS: 2 },
+    { DUET_DEADLINE_SECONDS: '601' }, { DUET_DEADLINE_SECONDS: '-1' }, { DUET_DEADLINE_SECONDS: '1' }, { DUET_DEADLINE_SECONDS: '29' },
+    { DUET_BETWEEN_TURNS_MS: '-1' }, { DUET_BETWEEN_TURNS_MS: '30001' },
     { DUET_MAX_OUTPUT_TOKENS: '2401' }, { DUET_MAX_OUTPUT_TOKENS: '0' }, { MODEL_TIMEOUT_SECONDS: '181' },
     { BOT_A_LABEL: '(met)all(met)' }, { BOT_A_LABEL: 'a'.repeat(33) }, { BOT_A_LABEL: 'same', BOT_B_LABEL: 'same' },
     { DUET_MODEL_A: 'bad model' }, { REASONING_EFFORT: 'unlimited' }]) assert.throws(() => loadDuetConfig({ ...env, ...changes }), safeError);

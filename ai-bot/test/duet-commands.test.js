@@ -16,13 +16,15 @@ const event = (number, content = '/互聊 旅行', overrides = {}) => ({ type: 9
 const flush = async () => { for (let n = 0; n < 20; n++) await Promise.resolve(); };
 async function fixture(t, options = {}) {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), 'duet-commands-'));
-  let now = NOW, active = false;
+  let now = NOW, active = false, rounds = 0;
   const starts = [], stops = [], replies = [], logs = [];
   const session = { async start(input) {
     starts.push(input); if (active) return { accepted: false, reason: 'BUSY' };
-    active = true; return { accepted: true, rounds: input.rounds, totalTurns: input.rounds * 2 };
+    active = true; rounds = input.rounds;
+    return { accepted: true, rounds, unlimited: rounds === 0, totalTurns: rounds === 0 ? null : rounds * 2 };
   }, async stop() { stops.push(true); active = false; }, snapshot() {
-    return { active, status: active ? 'running' : 'idle', completedTurns: 0, totalTurns: active ? 12 : 0 };
+    return { active, status: active ? 'running' : 'idle', rounds, unlimited: rounds === 0,
+      completedTurns: 0, totalTurns: rounds === 0 ? null : rounds * 2, currentRound: active ? 1 : null, currentSpeaker: active ? '机器人 A' : null };
   } };
   const config = { session, reply: async payload => { replies.push(payload); return { messageId: id(999) }; },
     getSelfId: () => SELF, getParticipantIds: () => [SELF, OTHER_BOT], channelId: CHANNEL, dataDir,
@@ -33,27 +35,30 @@ async function fixture(t, options = {}) {
     send(number, content, overrides = {}) { return bot.handle(event(number, content, { msg_timestamp: now, ...overrides })); } };
 }
 
-test('parses only explicit duet commands with bounded rounds and optional own mention', () => {
-  assert.deepEqual(parseDuetCommand('/互聊 太空探索'), { kind: 'start', topic: '太空探索', rounds: 6 });
+test('defaults to continuous discussion and accepts explicit finite rounds and optional own mention', () => {
+  assert.deepEqual(parseDuetCommand('/互聊 太空探索'), { kind: 'start', topic: '太空探索', rounds: 0 });
+  assert.deepEqual(parseDuetCommand('/互聊 不限 太空探索'), { kind: 'start', topic: '太空探索', rounds: 0 });
+  assert.deepEqual(parseDuetCommand('/互聊 0 太空探索'), { kind: 'start', topic: '太空探索', rounds: 0 });
   assert.deepEqual(parseDuetCommand(`(met)${SELF}(met) /互聊 2 太空探索`, SELF), { kind: 'start', topic: '太空探索', rounds: 2 });
-  for (const value of ['/互聊', '/互聊 2', '/互聊帮助', '/帮助']) assert.equal(parseDuetCommand(value).kind, 'help');
+  for (const value of ['/互聊', '/互聊 2', '/互聊 不限', '/互聊 0', '/互聊帮助', '/帮助']) assert.equal(parseDuetCommand(value).kind, 'help');
   for (const value of ['/停止', '/停止互聊']) assert.equal(parseDuetCommand(value).kind, 'stop');
   assert.equal(parseDuetCommand('/互聊状态').kind, 'status');
-  for (const value of ['/互聊 0 x', '/互聊 7 x', '/互聊 -1 x', '/互聊 1.5 x']) assert.equal(parseDuetCommand(value).kind, 'invalid');
+  for (const value of ['/互聊 7 x', '/互聊 -1 x', '/互聊 1.5 x']) assert.equal(parseDuetCommand(value).kind, 'invalid');
   assert.equal(parseDuetCommand(`/互聊 ${'话'.repeat(2001)}`).kind, 'too_long');
   assert.equal(parseDuetCommand('/互聊 sk-fixtureprivate123456789').kind, 'credential');
   for (const value of ['普通聊天', '/互聊状态 other', '/停止 please', `(met)${OTHER_BOT}(met) /互聊 话题`]) assert.equal(parseDuetCommand(value, SELF), null);
 });
 
-test('persists a private receipt before starting default twelve-message sessions and quotes command', async t => {
+test('persists a private receipt before starting continuous sessions and quotes command', async t => {
   let config;
   const f = await fixture(t, { writeState: async (file, value) => {
     assert.equal(config.starts.length, 0); await atomicJson(file, value);
   } }); config = f;
   await f.send(1, '/互聊 一个私密测试话题'); await flush();
-  assert.deepEqual(f.starts, [{ topic: '一个私密测试话题', rounds: 6, userId: USER, receiptId: id(1), replyMessageId: id(1) }]);
+  assert.deepEqual(f.starts, [{ topic: '一个私密测试话题', rounds: 0, userId: USER, receiptId: id(1), replyMessageId: id(1) }]);
   assert.equal(f.replies[0].targetId, CHANNEL); assert.equal(f.replies[0].replyMessageId, id(1));
-  assert.match(f.replies[0].content, /6 轮，共 12 次/);
+  assert.match(f.replies[0].content, /已开始持续互聊/);
+  assert.doesNotMatch(f.replies[0].content, /0 轮|0 次|6 轮|12 次/);
   const raw = await readFile(path.join(f.dataDir, 'duet-seen.json'), 'utf8');
   assert.deepEqual(JSON.parse(raw), { version: 1, seen: [{ id: id(1), at: NOW }] });
   assert.doesNotMatch(raw, /私密测试话题|200000001/);
@@ -76,9 +81,30 @@ test('configured default rounds drive parsing, session admission and help while 
   assert.equal(f.starts[0].rounds, 2); assert.match(f.replies[0].content, /2 轮，共 4 次发言/);
   f.advance(3000); await f.send(2, '/互聊帮助'); await flush();
   assert.match(f.replies.at(-1).content, /默认 2 轮，共 4 次发言/);
-  for (const defaultRounds of [0, 7, 1.5, '2']) {
+  for (const defaultRounds of [-1, 7, 1.5, '2']) {
     assert.throws(() => new DuetCommands({ ...f.config, defaultRounds }), /Invalid duet command configuration/);
   }
+});
+
+test('continuous help and status report ongoing rounds and speaker without a fixed total, then allow manual stop', async t => {
+  let active = true, stopped = 0;
+  const f = await fixture(t, { session: {
+    async start() { return { accepted: true, rounds: 0, unlimited: true, totalTurns: null }; },
+    async stop() { active = false; stopped++; }, snapshot() {
+      return { active, status: active ? 'running' : 'stopped', rounds: 0, unlimited: true,
+        completedTurns: 27, totalTurns: null, currentRound: 14, currentSpeaker: '机器人 B' };
+    },
+  } });
+  await f.send(1, '/互聊帮助'); await flush();
+  assert.match(f.replies.at(-1).content, /持续互聊，直到发送 \/停止互聊/);
+  assert.doesNotMatch(f.replies.at(-1).content, /默认 6|0 轮/);
+  f.advance(3000); await f.send(2, '/互聊状态'); await flush();
+  assert.match(f.replies.at(-1).content, /第 14 轮 · 已发 27 条/);
+  assert.match(f.replies.at(-1).content, /当前发言方：机器人 B/);
+  assert.doesNotMatch(f.replies.at(-1).content, /\/ 0|\/ 12|null/);
+  await f.send(3, '/停止互聊'); assert.equal(stopped, 1);
+  f.advance(3000); await f.send(4, '/互聊状态'); await flush();
+  assert.match(f.replies.at(-1).content, /已停止\n已发 27 条/);
 });
 
 test('start notice reports the rounds accepted by the session', async t => {

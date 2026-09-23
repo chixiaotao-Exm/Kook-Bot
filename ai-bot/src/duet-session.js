@@ -17,22 +17,22 @@ const failure = code => Object.assign(new Error('Duet operation failed'), { code
 const safeCode = error => error?.code === 'STORAGE' ? 'STORAGE' : sanitizeFailureCode(error?.code);
 const prefix = (text, limit) => text.slice(0, Math.max(0, limit)).replace(/[\uD800-\uDBFF]$/, '');
 
-/** One bounded, explicitly requested conversation; gateway bot messages are never inputs. */
+/** One explicitly requested conversation; gateway bot messages are never inputs. */
 export class DuetSession {
   #participants; #channelId; #file; #rounds; #maxRounds; #deadlineMs; #betweenTurnsMs;
   #now; #writeState; #logger; #setTimeout; #clearTimeout; #closeTimeoutMs;
   #ready = false; #closed = false; #runs = 0; #lastRun = null; #lastErrorCode = null;
   #seen = new Map(); #active = null; #operations = Promise.resolve(); #tasks = new Set(); #notices = new Set();
 
-  constructor({ participants, channelId, dataDir, rounds = 6, maxRounds = 6, deadlineMs = 600_000,
+  constructor({ participants, channelId, dataDir, rounds = 0, maxRounds = 6, deadlineMs = 0,
     betweenTurnsMs = 2000, now = Date.now, writeState = atomicJson, logger = () => {},
     setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout, closeTimeoutMs = 1500 } = {}) {
     if (!Array.isArray(participants) || participants.length !== 2
       || participants.some(item => typeof item?.generate !== 'function' || typeof item?.reply !== 'function')
       || !validId(channelId) || typeof dataDir !== 'string' || !dataDir
       || !Number.isInteger(maxRounds) || maxRounds < 1 || maxRounds > 6
-      || !Number.isInteger(rounds) || rounds < 1 || rounds > maxRounds
-      || !Number.isInteger(deadlineMs) || deadlineMs < 1 || deadlineMs > 600_000
+      || !Number.isInteger(rounds) || rounds < 0 || rounds > maxRounds
+      || !Number.isInteger(deadlineMs) || deadlineMs < 0 || deadlineMs > 600_000
       || !Number.isInteger(betweenTurnsMs) || betweenTurnsMs < 0 || betweenTurnsMs > 30_000)
       throw new Error('Invalid duet session configuration');
     this.#participants = participants.map((item, index) => ({ ...item,
@@ -58,8 +58,8 @@ export class DuetSession {
       }
       const run = saved.lastRun;
       if (run !== null && (!run || !validMessageId(run.runId) || !validMessageId(run.receiptId)
-        || !STATUSES.has(run.status) || !Number.isInteger(run.rounds) || run.rounds < 1 || run.rounds > 6
-        || !Number.isInteger(run.completedTurns) || run.completedTurns < 0 || run.completedTurns > run.rounds * 2
+        || !STATUSES.has(run.status) || !Number.isInteger(run.rounds) || run.rounds < 0 || run.rounds > 6
+        || !Number.isSafeInteger(run.completedTurns) || run.completedTurns < 0 || (run.rounds > 0 && run.completedTurns > run.rounds * 2)
         || !Number.isSafeInteger(run.startedAt) || run.startedAt < 0
         || !Number.isSafeInteger(run.updatedAt) || run.updatedAt < 0)) throw failure('STORAGE');
       this.#runs = saved.runs;
@@ -82,8 +82,10 @@ export class DuetSession {
     const turn = run ? run.nextTurn : null;
     const currentRound = run ? Math.floor(turn / 2) + 1 : null;
     const speaker = run ? this.#participants[turn % 2].label : null;
+    const rounds = run?.rounds ?? last?.rounds ?? this.#rounds;
     return { enabled: this.#ready && !this.#closed, active: Boolean(run), status: run ? 'running' : last?.status || 'idle',
-      rounds: run?.rounds ?? last?.rounds ?? this.#rounds, totalTurns: (run?.rounds ?? last?.rounds ?? this.#rounds) * 2,
+      rounds, unlimited: rounds === 0, totalTurns: rounds === 0 ? null : rounds * 2,
+      defaultRounds: this.#rounds, deadlineMs: this.#deadlineMs, historyMessages: run?.transcript.length ?? 0,
       completedTurns: run?.completedTurns ?? last?.completedTurns ?? 0,
       currentRound, round: currentRound, currentSpeaker: speaker, currentParticipant: speaker,
       startedAt: run?.startedAt ?? last?.startedAt ?? null,
@@ -96,14 +98,14 @@ export class DuetSession {
     if (!this.#ready || this.#closed) return { accepted: false, reason: 'NOT_READY' };
     if (typeof topic !== 'string' || !topic.trim() || topic.length > 2000 || !validId(userId)
       || !validMessageId(receiptId) || !validMessageId(replyMessageId)
-      || !Number.isInteger(rounds) || rounds < 1 || rounds > this.#maxRounds) return { accepted: false, reason: 'INVALID_INPUT' };
+      || !Number.isInteger(rounds) || rounds < 0 || rounds > this.#maxRounds) return { accepted: false, reason: 'INVALID_INPUT' };
     const now = this.#now();
     for (const [id, at] of this.#seen) if (at < now - RECEIPT_TTL) this.#seen.delete(id);
     if (this.#seen.has(receiptId)) return { accepted: false, reason: 'DUPLICATE' };
     if (this.#active) return { accepted: false, reason: 'BUSY' };
     if (this.#seen.size >= MAX_RECEIPTS) return { accepted: false, reason: 'NOT_READY' };
     const run = { runId: randomUUID(), receiptId, replyMessageId, topic: topic.trim(), rounds,
-      startedAt: now, deadlineAt: now + this.#deadlineMs, completedTurns: 0, nextTurn: 0,
+      startedAt: now, deadlineAt: this.#deadlineMs > 0 ? now + this.#deadlineMs : null, completedTurns: 0, nextTurn: 0,
       transcript: [], controller: new AbortController(), progress: null, progressEnded: false,
       status: 'running', endReason: null, finalizing: null, timer: null };
     this.#seen.set(receiptId, now); this.#runs++; this.#lastRun = this.#metadata(run);
@@ -115,7 +117,7 @@ export class DuetSession {
       return { accepted: false, reason: 'NOT_READY' };
     }
     this.#lastErrorCode = null; this.#active = run;
-    run.timer = this.#setTimeout(() => {
+    if (this.#deadlineMs > 0) run.timer = this.#setTimeout(() => {
       if (this.#active !== run) return;
       run.endReason = 'timeout'; run.controller.abort(failure('TIMEOUT'));
       void this.#finalize(run, 'timeout', 'TIMEOUT');
@@ -124,7 +126,7 @@ export class DuetSession {
       this.#lastErrorCode = 'UNKNOWN'; this.#log('duet_failed', 'UNKNOWN');
     });
     this.#tasks.add(task); task.finally(() => this.#tasks.delete(task));
-    return { accepted: true, runId: run.runId, rounds, totalTurns: rounds * 2 };
+    return { accepted: true, runId: run.runId, rounds, unlimited: rounds === 0, totalTurns: rounds === 0 ? null : rounds * 2 };
   }
 
   #metadata(run, errorCode = null) {
@@ -166,7 +168,7 @@ export class DuetSession {
 
   #messages(run, speaker) {
     const participant = this.#participants[speaker], other = this.#participants[1 - speaker];
-    const history = run.transcript.slice(-10).map(item => ({ role: item.speaker === speaker ? 'assistant' : 'user', content: item.text }));
+    const history = run.transcript.map(item => ({ role: item.speaker === speaker ? 'assistant' : 'user', content: item.text }));
     return [{ role: 'user', content: `本场互聊话题：${run.topic}` }, ...history,
       { role: 'user', content: run.nextTurn === 0
         ? `请作为${participant.label}围绕上述话题开始第 1 轮交流。用约 100–200 字自然表达观点，直接输出对话内容。`
@@ -175,7 +177,8 @@ export class DuetSession {
 
   #turnText(run, speaker, response) {
     if (typeof response?.text !== 'string' || !response.text.trim()) throw failure('EMPTY_RESPONSE');
-    const heading = `【第 ${Math.floor(run.nextTurn / 2) + 1}/${run.rounds} 轮 · ${this.#participants[speaker].label}】\n`;
+    const round = Math.floor(run.nextTurn / 2) + 1;
+    const heading = `【第 ${round}${run.rounds ? `/${run.rounds}` : ''} 轮 · ${this.#participants[speaker].label}】\n`;
     const body = response.text.toWellFormed().trim();
     const suffix = body.length + heading.length > MAX_TURN_CHARS ? TRUNCATED : response.incomplete === true ? INCOMPLETE : '';
     return heading + prefix(body, MAX_TURN_CHARS - heading.length - suffix.length).trimEnd() + suffix;
@@ -205,7 +208,7 @@ export class DuetSession {
           this.#log('duet_progress_failed', safeCode(error));
         }
       }
-      for (let turn = 0; turn < run.rounds * 2; turn++) {
+      for (let turn = 0; run.rounds === 0 || turn < run.rounds * 2; turn++) {
         run.nextTurn = turn;
         if (turn) await this.#delay(run);
         const speaker = turn % 2, participant = this.#participants[speaker];
@@ -217,6 +220,7 @@ export class DuetSession {
         this.#assertCurrent(run);
         if (!validMessageId(delivered?.messageId)) throw failure('KOOK_INVALID_RESPONSE');
         run.transcript.push({ speaker, text }); run.completedTurns++;
+        if (run.transcript.length > 10) run.transcript.splice(0, run.transcript.length - 10);
         await this.#serialize(async () => {
           this.#assertCurrent(run); this.#lastRun = this.#metadata(run);
           try { await this.#write(); } catch { this.#ready = false; throw failure('STORAGE'); }
