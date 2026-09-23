@@ -15,10 +15,34 @@
   const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
   const finite = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
   const number = (value, maximumFractionDigits = 2) => finite(value) ? Number(value).toLocaleString('zh-CN', { maximumFractionDigits }) : '未知';
-  const platformKey = account => String(account.platform || account.provider || 'other').toLowerCase();
+  const platformKey = account => {
+    const key = String(account.platform || account.provider || 'other').trim().toLowerCase();
+    return key === 'anthropic' ? 'claude' : key;
+  };
   const platformInfo = account => providers[platformKey(account)] || { name: account.platformLabel || account.platform || account.provider || '其他平台', icon: String(account.platform || '?').slice(0, 1).toUpperCase() };
   const accountStale = account => Boolean(account.stale || account.freshness === 'stale');
   const accountPlan = account => ({ label: typeof account.planLabel === 'string' && account.planLabel.trim() ? account.planLabel.trim() : '版本未知', source: { upstream: '上游返回', type: '按账号类型识别' }[account.planSource] || '上游未提供版本' });
+  const accountCollator = new Intl.Collator('zh-CN', { numeric: true, sensitivity: 'base' });
+  const comparePlatforms = (left, right) => {
+    if (left === right) return 0;
+    if (left === 'openai') return -1;
+    if (right === 'openai') return 1;
+    return accountCollator.compare(providers[left]?.name || left, providers[right]?.name || right)
+      || accountCollator.compare(left, right);
+  };
+  const planRank = account => {
+    const label = accountPlan(account).label.toLowerCase().replace(/[\s_-]+/g, '');
+    if (label === 'pro5x') return 0;
+    if (label === 'teampro') return 1;
+    if (label === 'team') return 2;
+    if (label === 'api计费' || /^(apikey|api_key|bedrock)$/i.test(account.type || '')) return 3;
+    return 4;
+  };
+  const compareAccounts = (left, right) => comparePlatforms(platformKey(left), platformKey(right))
+    || planRank(left) - planRank(right)
+    || accountCollator.compare(accountPlan(left).label, accountPlan(right).label)
+    || accountCollator.compare(String(left.name || ''), String(right.name || ''))
+    || accountCollator.compare(String(left.id || ''), String(right.id || ''));
   const accountIssue = account => Boolean(account.error || ['error', 'disabled', 'inactive', 'rate_limited'].includes(account.status));
   const knownMetric = metric => finite(metric.usedPercent) || finite(metric.remainingPercent) || finite(metric.remaining) || finite(metric.value) || finite(metric.balance) || finite(metric.used) || finite(metric.limit) || finite(metric.total) || Boolean(metric.display && metric.display !== '未知');
   const accountKnown = account => (account.metrics || []).some(metric => metric.scope !== 'local' && knownMetric(metric));
@@ -141,7 +165,7 @@
       { label: '旧数据', value: accounts.filter(accountStale).length, className: 'warning' }
     ];
     $('#summary').innerHTML = cards.map(card => `<div class="summary-card ${card.className || ''}"><span>${card.label}</span><strong class="summary-value">${card.value.toLocaleString('zh-CN')}</strong></div>`).join('');
-    const platforms = [...new Set(accounts.map(platformKey))];
+    const platforms = [...new Set(accounts.map(platformKey))].sort(comparePlatforms);
     if (state.platform !== 'all' && !platforms.includes(state.platform)) state.platform = 'all';
     $('#platform-filters').innerHTML = [{ key: 'all', name: '全部', count: accounts.length }, ...platforms.map(key => ({ key, name: providers[key]?.name || accounts.find(account => platformKey(account) === key)?.platform || key, count: accounts.filter(account => platformKey(account) === key).length }))].map(item => `<button class="chip ${item.key === state.platform ? 'active' : ''}" data-platform="${escapeHtml(item.key)}" aria-pressed="${item.key === state.platform}">${escapeHtml(item.name)}<span>${item.count}</span></button>`).join('');
   }
@@ -353,7 +377,7 @@
     const currentIds = new Set(state.accounts.map(account => String(account.id)));
     for (const id of expandedAccounts) if (!currentIds.has(id)) expandedAccounts.delete(id);
     const query = state.query.trim().toLowerCase();
-    const accounts = state.accounts.filter(account => (state.platform === 'all' || platformKey(account) === state.platform) && (!query || [account.id, account.name, account.type, platformInfo(account).name].join(' ').toLowerCase().includes(query)) && (state.filter === 'all' || state.filter === 'issue' && accountIssue(account) || state.filter === 'stale' && accountStale(account) || state.filter === 'unknown' && !accountKnown(account)));
+    const accounts = state.accounts.filter(account => (state.platform === 'all' || platformKey(account) === state.platform) && (!query || [account.id, account.name, account.type, platformInfo(account).name].join(' ').toLowerCase().includes(query)) && (state.filter === 'all' || state.filter === 'issue' && accountIssue(account) || state.filter === 'stale' && accountStale(account) || state.filter === 'unknown' && !accountKnown(account))).sort(compareAccounts);
     $('#account-count').textContent = `${accounts.length} / ${state.accounts.length}`;
     $('#accounts').innerHTML = accounts.map(accountHtml).join('');
     $('#empty-state').hidden = accounts.length > 0;
