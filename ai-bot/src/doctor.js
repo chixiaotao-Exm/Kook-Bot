@@ -12,7 +12,7 @@ export async function doctor(config, { testModel = false, fetchImpl = fetch } = 
     if (data.code !== 0) throw new Error('KOOK Token 或频道权限检查失败。');
     return data.data;
   }
-  const client = new ModelResponsesClient({ baseUrl: config.baseUrl, apiKey: config.apiKey, model: config.model, timeoutMs: config.timeoutMs, maxOutputTokens: config.maxOutputTokens, systemPrompt: config.systemPrompt });
+  const client = new ModelResponsesClient({ baseUrl: config.baseUrl, apiKey: config.apiKey, model: config.model, timeoutMs: config.timeoutMs, maxOutputTokens: config.maxOutputTokens, reasoningEffort: config.reasoningEffort, systemPrompt: config.systemPrompt });
   const [identity, channel] = await Promise.all([kook('user/me'), kook(`channel/view?target_id=${config.channelId}`)]);
   if (channel.type !== 1 || String(channel.id) !== config.channelId) throw new Error('配置的频道不是可访问的文字频道。');
   const result = { botId: identity.id, botName: identity.username, channelId: channel.id, channelName: channel.name, model: config.model, channelAccessible: true };

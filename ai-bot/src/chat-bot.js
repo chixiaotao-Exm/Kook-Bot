@@ -1,17 +1,28 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { atomicJson } from './storage.js';
+import { modelFailureMessage, sanitizeDurationMs, sanitizeFailureCode } from './failure.js';
 
 const ID = /^\d{5,30}$/;
-const MESSAGE_ID = /^(?:[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}|[a-f0-9]{16,100})$/i;
+const MESSAGE_ID = /^(?=.{16,100}$)[a-f0-9]+(?:-[a-f0-9]+)*$/i;
 const validId = value => typeof value === 'string' && ID.test(value);
 const validMessageId = value => typeof value === 'string' && MESSAGE_ID.test(value);
 const MAX_EVENT_AGE = 5 * 60_000;
 const SEEN_TTL = 10 * 60_000;
 const MAX_RECEIPTS = 2048;
+const MAX_ASSISTANT_HISTORY_CHARS = 6000;
+const HISTORY_TRUNCATED = '\n\n（本条回复较长，历史上下文仅保留前部内容。）';
 const HELP = '直接在本频道发送文字即可与 AI 对话，回复在本频道公开可见。每位用户的对话独立保留 2 小时。\n/重置 或 /清空对话：开始新对话\n/模型：查看模型\n/帮助：查看帮助\n请勿发送密码、API Key 或机器人 Token。';
-const SAFE_ERROR = 'AI 暂时无法回复，请稍后再试。';
 const CREDENTIAL = /(?:\bsk-[a-z0-9_-]{12,}|\badmin-[a-f0-9]{16,}|\b\d{1,4}\/[a-z0-9+/=]{4,}\/[a-z0-9+/=]{10,}|\bauthorization\s*:\s*bearer\s+\S{12,})/i;
+
+function assistantHistory(response) {
+  if (typeof response.historyText === 'string' && response.historyText.trim()
+    && response.historyText.length <= MAX_ASSISTANT_HISTORY_CHARS && response.historyText.isWellFormed()) return response.historyText;
+  const text = response.text.toWellFormed();
+  if (text.length <= MAX_ASSISTANT_HISTORY_CHARS) return text;
+  return text.slice(0, MAX_ASSISTANT_HISTORY_CHARS - HISTORY_TRUNCATED.length)
+    .replace(/[\uD800-\uDBFF]$/, '').trimEnd() + HISTORY_TRUNCATED;
+}
 
 export function parseChatMessage(content, selfId = '') {
   if (typeof content !== 'string') return null;
@@ -32,7 +43,7 @@ export class AiChatBot {
   #controllers = new Set(); #tasks = new Set(); #recent = []; #hints = new Map(); #recentHints = [];
   #receipts = Promise.resolve(); #ready = false; #closed = false;
   #counts = { requests: 0, replies: 0, failures: 0, resets: 0, rejected: 0 };
-  #lastReplyAt = null; #lastError = null;
+  #lastReplyAt = null; #lastError = null; #lastErrorCode = null;
 
   constructor({ generate, reply, getSelfId, resolveAuthor, channelId, dataDir, now = Date.now,
     writeState = atomicJson, logger = () => {}, model = 'gpt-6-astra',
@@ -60,7 +71,7 @@ export class AiChatBot {
         if (row.at >= this.#now() - SEEN_TTL) this.#seen.set(row.id, row.at);
       }
     } catch (error) {
-      if (error.code !== 'ENOENT') { this.#lastError = 'STORAGE'; return this; }
+      if (error.code !== 'ENOENT') { this.#lastError = 'STORAGE'; this.#lastErrorCode = null; return this; }
     }
     this.#ready = true; return this;
   }
@@ -69,7 +80,7 @@ export class AiChatBot {
     this.#prune(this.#now());
     return { enabled: this.#ready && !this.#closed, model: this.#config.model, channelId: this.#channelId,
       ...this.#counts, active: this.#active.size, activeRequests: this.#active.size, conversations: this.#contexts.size,
-      lastReplyAt: this.#lastReplyAt, lastError: this.#lastError };
+      lastReplyAt: this.#lastReplyAt, lastError: this.#lastError, lastErrorCode: this.#lastErrorCode };
   }
 
   handle(event) {
@@ -104,7 +115,7 @@ export class AiChatBot {
     if (!parsed) return;
     this.#prune(now);
     if (this.#seen.has(event.msg_id)) return;
-    if (this.#seen.size >= MAX_RECEIPTS) { this.#lastError = 'CAPACITY'; return; }
+    if (this.#seen.size >= MAX_RECEIPTS) { this.#lastError = 'CAPACITY'; this.#lastErrorCode = null; return; }
     if (author.bot === undefined) {
       if (typeof this.#resolveAuthor !== 'function' || !validId(event.extra.guild_id)) return;
       try {
@@ -115,7 +126,7 @@ export class AiChatBot {
     }
     this.#seen.set(event.msg_id, now);
     try { await this.#writeState(this.#file, { version: 1, seen: [...this.#seen].map(([id, at]) => ({ id, at })) }); }
-    catch { this.#ready = false; this.#lastError = 'STORAGE'; this.#log('receipt_storage_failed'); return; }
+    catch { this.#ready = false; this.#lastError = 'STORAGE'; this.#lastErrorCode = null; this.#log('receipt_storage_failed'); return; }
     if (this.#closed) return;
     const key = `${this.#channelId}:${event.author_id}`;
     let state = this.#contexts.get(key);
@@ -161,21 +172,24 @@ export class AiChatBot {
     state.requestAt = now; this.#recent.push(now); this.#counts.requests++;
     this.#active.add(operation); this.#perUser.set(key, operation); this.#controllers.add(controller);
     this.#track(async () => {
+      const startedAt = this.#now();
       const current = () => !this.#closed && !controller.signal.aborted && state.epoch === operation.epoch;
       try {
         const messages = [...history, { role: 'user', content: parsed.text }];
         const response = await this.#generate(messages, { signal: controller.signal });
         if (!current()) return;
-        if (typeof response?.text !== 'string' || !response.text.trim()) throw new Error('empty');
-        if (!await this.#deliver(event, response.text, controller.signal) || !current()) return;
-        history = [...messages, { role: 'assistant', content: response.text }];
+        if (typeof response?.text !== 'string' || !response.text.trim()) throw Object.assign(new Error('empty'), { code: 'EMPTY_RESPONSE' });
+        if (!await this.#deliver(event, response.text, controller.signal, response.incomplete === true) || !current()) return;
+        history = [...messages, { role: 'assistant', content: assistantHistory(response) }];
         while (history.length && (history.length > this.#config.maxHistoryTurns * 2
           || history.reduce((size, item) => size + item.content.length, 0) > this.#config.maxHistoryChars)) history.splice(0, 2);
-        state.messages = history; state.at = this.#now(); this.#lastError = null;
-      } catch {
-        if (current()) {
-          this.#counts.failures++; this.#lastError = 'MODEL'; this.#log('model_failed');
-          await this.#deliver(event, SAFE_ERROR, controller.signal);
+        state.messages = history; state.at = this.#now(); this.#lastError = null; this.#lastErrorCode = null;
+      } catch (error) {
+        const code = sanitizeFailureCode(error?.code);
+        if (current() && code !== 'CANCELLED') {
+          this.#counts.failures++; this.#lastError = 'MODEL'; this.#lastErrorCode = code;
+          this.#log('model_failed', { code, durationMs: this.#now() - startedAt });
+          await this.#deliver(event, modelFailureMessage(code), controller.signal);
         }
       } finally {
         this.#active.delete(operation); this.#controllers.delete(controller);
@@ -197,26 +211,34 @@ export class AiChatBot {
   }
 
   #track(work) {
-    const task = Promise.resolve().then(work).catch(() => { this.#lastError = 'INTERNAL'; this.#log('operation_failed'); });
+    const task = Promise.resolve().then(work).catch(() => { this.#lastError = 'INTERNAL'; this.#lastErrorCode = 'UNKNOWN'; this.#log('operation_failed'); });
     this.#tasks.add(task); task.finally(() => this.#tasks.delete(task));
   }
 
-  async #deliver(event, content, signal) {
+  async #deliver(event, content, signal, incomplete = false) {
     if (this.#closed || signal.aborted) return false;
+    const startedAt = this.#now();
     try {
-      await this.#reply({ targetId: this.#channelId, replyMessageId: event.msg_id, content, signal });
+      await this.#reply({ targetId: this.#channelId, replyMessageId: event.msg_id, content, signal, incomplete });
       if (this.#closed || signal.aborted) return false;
       this.#counts.replies++; this.#lastReplyAt = new Date(this.#now()).toISOString(); this.#log('reply_sent'); return true;
-    } catch {
+    } catch (error) {
       if (!this.#closed && !signal.aborted) {
-        this.#counts.failures++; this.#lastError = 'DELIVERY'; this.#log('delivery_failed');
+        const code = sanitizeFailureCode(error?.code);
+        this.#counts.failures++; this.#lastError = 'DELIVERY'; this.#lastErrorCode = code;
+        this.#log('delivery_failed', { code, durationMs: this.#now() - startedAt });
       }
       // Ambiguous delivery is never retried; the receipt was already committed.
       return false;
     }
   }
 
-  #log(event) { try { this.#logger({ event }); } catch {} }
+  #log(event, details = {}) {
+    const record = { event };
+    if (details.code !== undefined) record.code = sanitizeFailureCode(details.code);
+    if (details.durationMs !== undefined) record.durationMs = sanitizeDurationMs(details.durationMs);
+    try { this.#logger(record); } catch {}
+  }
 
   async close() {
     this.#closed = true;
