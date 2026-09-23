@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createDuetRuntime } from '../src/duet-index.js';
@@ -212,6 +212,57 @@ test('both identities retain the original anchor and public context after stop, 
   assert.ok(!JSON.stringify(restarted.snapshot()).includes('社区花园'));
   await restarted.gateways[0].onEvent(event('停止', 105));
   await waitFor(() => !restarted.session.snapshot().active);
+});
+
+test('first resume after a channel migration preserves the topic and quotes the new human message for both bots', async t => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), 'duet-migrated-thread-'));
+  const retained = { id: event('', 900).msg_id, anchorMessageId: null, topic: '原话题：如何设计社区花园？', mode: 'discussion',
+    messages: [{ role: 'user', content: '需要保留无障碍通道。' },
+      { role: 'assistant', speaker: 'A', content: '已讨论使用缓坡连接花园入口。' },
+      { role: 'assistant', speaker: 'B', content: '已补充轮椅回转空间的要求。' }], seen: [event('', 901).msg_id] };
+  await writeFile(path.join(dataDir, 'conversation-thread.json'), JSON.stringify({ version: 1, thread: retained }));
+  const config = { tokens: ['fixture-a', 'fixture-b'], models: ['gpt-6-astra', 'gpt-6-astra'], labels: ['A', 'B'],
+    channelId: '88888888', dataDir, host: '127.0.0.1', port: 0, rounds: 0, deadlineMs: 0, betweenTurnsMs: 0 };
+  const generated = [], deliveries = [], notices = [], progressStarts = [];
+  const runtime = createDuetRuntime({ config, Gateway, logger: () => {},
+    progress: { start: async payload => { progressStarts.push(payload); return { cancel: async () => {} }; } },
+    verify: async () => ({ channelAccessible: true, bots: [{ botId: '11111111' }, { botId: '22222222' }] }),
+    clients: [0, 1].map(index => ({ async generate(messages) {
+      generated.push({ index, messages: structuredClone(messages) });
+      if (generated.length > 2) return new Promise(() => {});
+      return { text: `${index}号机器人继续讨论花园。` };
+    } })),
+    replies: [0, 1].map(index => async payload => {
+      deliveries.push({ index, payload }); return { messageId: event('', 910 + deliveries.length).msg_id };
+    }),
+    commandReply: async payload => { notices.push(payload); return { messageId: event('', 920).msg_id }; },
+  });
+  t.after(async () => { await runtime.close(); await rm(dataDir, { recursive: true, force: true }); });
+  await runtime.start();
+  assert.equal(runtime.session.snapshot().active, false); assert.equal(generated.length, 0);
+  assert.deepEqual(runtime.thread.context(), retained);
+  const resumed = event('继续', 902);
+  await runtime.gateways[0].onEvent({ ...resumed, target_id: '77777777' });
+  assert.equal(generated.length, 0); assert.equal(runtime.thread.context().anchorMessageId, null);
+  await runtime.gateways[0].onEvent(resumed);
+  await waitFor(() => generated.length === 3 && deliveries.length === 2 && notices.length >= 1);
+  const current = runtime.thread.context();
+  assert.equal(current.id, retained.id); assert.equal(current.topic, retained.topic); assert.equal(current.mode, retained.mode);
+  assert.equal(current.anchorMessageId, resumed.msg_id);
+  assert.deepEqual(current.messages.slice(0, retained.messages.length), retained.messages);
+  assert.equal(runtime.session.snapshot().threadId, retained.id);
+  assert.deepEqual(deliveries.map(item => item.index), [0, 1]);
+  for (const call of generated.slice(0, 2)) {
+    const context = JSON.stringify(call.messages);
+    assert.ok(context.includes(retained.topic));
+    for (const message of retained.messages) assert.ok(context.includes(message.content));
+  }
+  assert.equal(progressStarts.length, 1);
+  assert.ok([...progressStarts, ...notices, ...deliveries.map(item => item.payload)]
+    .every(payload => payload.targetId === config.channelId && payload.replyMessageId === resumed.msg_id));
+  assert.equal(JSON.parse(await readFile(path.join(dataDir, 'conversation-thread.json'), 'utf8')).thread.anchorMessageId, resumed.msg_id);
+  await runtime.gateways[0].onEvent(event('停止', 903));
+  await waitFor(() => !runtime.session.snapshot().active);
 });
 
 test('explicit new topic clears shared history, changes the anchor and blocks late old-topic replies', async t => {

@@ -21,7 +21,8 @@ export class ConversationThread {
       const saved = JSON.parse(raw), value = saved.thread;
       if (saved.version !== 1) throw Error('THREAD_STORAGE');
       if (value !== null) {
-        if (!value || !UUID.test(value.id || '') || !MESSAGE_ID.test(value.anchorMessageId || '')
+        if (!value || !UUID.test(value.id || '')
+          || value.anchorMessageId !== null && (typeof value.anchorMessageId !== 'string' || !MESSAGE_ID.test(value.anchorMessageId))
           || !validText(value.topic, 2000) || !['discussion', 'code'].includes(value.mode)
           || !Array.isArray(value.messages) || value.messages.length > 16
           || value.messages.some(item => !['user', 'assistant'].includes(item?.role) || !validText(item.content, 6000)
@@ -53,6 +54,8 @@ export class ConversationThread {
         || !['discussion', 'code'].includes(mode)) throw Error('INVALID_THREAD_INPUT');
       if (this.#state?.seen.includes(receiptId)) return this.context();
       const next = this.context() || { id: randomUUID(), anchorMessageId: replyMessageId, topic: scrub(text.trim()), mode, messages: [], seen: [] };
+      // A channel migration keeps the topic but waits for a new human message to quote.
+      if (next.anchorMessageId === null) next.anchorMessageId = replyMessageId;
       next.messages.push({ role: 'user', content: scrub(text.trim()) }); next.seen.push(receiptId); next.seen = next.seen.slice(-256);
       this.#trim(next.messages); return this.#save(next);
     });
