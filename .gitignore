@@ -1,25 +1,27 @@
-# Credentials and local environment
+# Private configuration and runtime state
 .env
 .env.*
 !.env.example
 production.env
+.deploy-known-hosts
 *.pem
 *.key
+**/data/
+**/release/
+**/output/
+**/DEPLOYED.md
+**/VERIFICATION.md
 
-# Runtime state, exports, and local verification artifacts
-/data/
-/release/
-/output/
-/DEPLOYED.md
+# Installed dependencies, Python caches, and temporary files
 node_modules/
 __pycache__/
+.venv/
 *.py[cod]
 *.log
 *.tmp
 *.bak
+*.tgz
 *.tar.gz
-
-# Original deployment-specific operations, not portable examples
-/deploy/install.py
-/scripts/*-live.cjs
-/scripts/inspect-live.mjs
+*.zip
+.DS_Store
+Thumbs.db

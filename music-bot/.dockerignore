@@ -1,0 +1,9 @@
+node_modules
+release
+.git
+.env
+.deploy-known-hosts
+data
+test
+*.log
+*.zip

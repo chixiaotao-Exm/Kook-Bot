@@ -1,0 +1,25 @@
+[Unit]
+Description=Sub2API account quota dashboard and KOOK summaries
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=quota-dashboard
+Group=quota-dashboard
+WorkingDirectory=/opt/sub2api-quota-dashboard
+EnvironmentFile=/opt/sub2api-quota-dashboard/.env
+ExecStart=/usr/bin/node /opt/sub2api-quota-dashboard/src/index.js
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=25
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/sub2api-quota-dashboard/data
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

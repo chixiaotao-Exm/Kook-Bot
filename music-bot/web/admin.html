@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#dce8df"><meta name="referrer" content="same-origin">
+  <title>管理员登录 · 桃音</title><link rel="icon" href="/favicon.svg?v=18b1569f2816" type="image/svg+xml"><link rel="stylesheet" href="/rooms.css?v=18b1569f2816"><link rel="stylesheet" href="/admin.css?v=18b1569f2816"><script type="module" src="/admin-login.js?v=18b1569f2816"></script>
+</head>
+<body class="admin-page">
+  <div class="portal-background" aria-hidden="true"></div>
+  <header class="portal-header"><a class="portal-brand" href="/"><i data-lucide="headphones"></i><span>桃音<small>一起听歌</small></span></a><a class="admin-back" href="/"><i data-lucide="arrow-left"></i>返回房间大厅</a></header>
+  <main class="admin-main">
+    <section class="panel admin-panel" aria-labelledby="admin-heading">
+      <span class="eyebrow">TAOYIN · ADMIN</span><h1 id="admin-heading">管理员登录</h1><p id="admin-intro" class="admin-intro">登录后管理机器人、音乐账号和全部房间。</p>
+      <p id="admin-loading" role="status">正在读取登录状态…</p>
+      <p id="admin-message" class="admin-message" role="status" hidden></p>
+      <form id="admin-login-form" hidden>
+        <label for="admin-username">用户名</label><input id="admin-username" name="username" required maxlength="40" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="输入管理员用户名">
+        <label for="admin-password">密码</label><input id="admin-password" name="password" type="password" required maxlength="200" autocomplete="current-password" placeholder="输入管理员密码">
+        <button type="submit" class="primary admin-submit">登录管理控制台<i data-lucide="arrow-right"></i></button>
+      </form>
+      <div id="admin-account" hidden>
+        <div class="admin-account-name"><i data-lucide="user-round"></i><span>当前账号<strong id="admin-account-username"></strong></span><span class="pill">管理员</span></div>
+        <a id="admin-console" class="primary admin-submit" href="/admin/console">返回管理控制台<i data-lucide="arrow-right"></i></a>
+        <details class="admin-password-details"><summary>修改登录密码</summary>
+          <form id="admin-password-form">
+            <input id="password-username" name="username" autocomplete="username" readonly hidden>
+            <label for="current-password">当前密码</label><input id="current-password" name="currentPassword" type="password" required maxlength="200" autocomplete="current-password">
+            <label for="new-password">新密码</label><input id="new-password" name="newPassword" type="password" required minlength="10" maxlength="200" autocomplete="new-password" placeholder="至少 10 个字符">
+            <label for="confirm-password">确认新密码</label><input id="confirm-password" name="confirmPassword" type="password" required minlength="10" maxlength="200" autocomplete="new-password">
+            <p class="muted">修改后保留当前登录，其他设备需要使用新密码重新登录。</p>
+            <button type="submit" class="secondary admin-submit">保存新密码</button>
+          </form>
+        </details>
+        <button id="admin-logout" class="quiet admin-logout"><i data-lucide="log-out"></i>退出管理员登录</button><p class="muted">退出管理后，仍保留本浏览器的昵称、房间角色和点歌记录。</p>
+      </div>
+      <p class="admin-footnote">朋友可以直接进入<a href="/">房间大厅</a>听歌点歌。</p>
+    </section>
+  </main>
+</body>
+</html>
