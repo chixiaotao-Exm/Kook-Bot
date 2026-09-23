@@ -1,20 +1,34 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { atomicJson } from './storage.js';
+import { sanitizeInvitation } from './invitation-snapshot.js';
+
+const invitationFor = (account, now) => account.platform === 'openai' && account.type === 'oauth'
+  && (account.parent_account_id === undefined || account.parent_account_id === null) && account.is_shadow !== true
+  ? sanitizeInvitation(account.invitation, { now }) : null;
+const observedInvitationTime = (invitation, now) => {
+  const time = Date.parse(invitation?.checkedAt);
+  return Number.isFinite(time) && time <= now + 60000 ? time : null;
+};
+function latestInvitation(previous, incoming, now, preferPreviousOnTie = true) {
+  const before = observedInvitationTime(previous, now), after = observedInvitationTime(incoming, now);
+  return previous && before !== null && (after === null || before > after || preferPreviousOnTie && before === after) ? previous : incoming;
+}
 
 export class Dashboard {
-  constructor({ client, dataDir, providers = [], hiddenPlatforms = [], now = Date.now, refreshMs = 600000 }) {
-    Object.assign(this, { client, providers, now, refreshMs });
+  constructor({ client, dataDir, providers = [], hiddenPlatforms = [], now = Date.now, refreshMs = 600000, writeState = atomicJson }) {
+    Object.assign(this, { client, providers, now, refreshMs, writeState });
     this.hiddenPlatforms = new Set(hiddenPlatforms.map((platform) => String(platform).trim().toLowerCase()).filter(Boolean));
     this.file = path.join(dataDir, 'snapshot.json'); this.data = { accounts: [], updatedAt: null };
     this.lastError = ''; this.storageError = ''; this.pending = null; this.lastAttempt = null; this.closed = false;
+    this.writeTail = Promise.resolve();
   }
   async init() {
     try {
       const saved = JSON.parse(await readFile(this.file, 'utf8'));
       if (saved.version !== 1 || !Array.isArray(saved.accounts) || saved.accounts.length > 10000 || typeof saved.updatedAt !== 'string' || !Number.isFinite(Date.parse(saved.updatedAt)) ||
           !saved.accounts.every((account) => account && typeof account.id === 'string' && typeof account.name === 'string' && Array.isArray(account.metrics) && account.metrics.every((metric) => metric && typeof metric === 'object'))) throw new Error('Invalid snapshot');
-      this.data = { accounts: saved.accounts, updatedAt: saved.updatedAt };
+      this.data = { accounts: saved.accounts.map(account => ({ ...account, invitation: invitationFor(account, this.now()) })), updatedAt: saved.updatedAt };
       for (const provider of this.providers) provider.seed?.(saved.accounts);
     } catch (error) { if (error.code !== 'ENOENT') this.storageError = '上次额度快照无法读取；等待本次安全读取后更新。'; }
     return this;
@@ -40,7 +54,7 @@ export class Dashboard {
         else if (Number.isFinite(resetCredits.availableCount) && resetCredits.availableCount > 0 && expiries.length > 0) resetCredits.availableCount = Math.min(resetCredits.availableCount, valid.length);
         if (stale || expired || resetCredits.checkedAt && this.now() - Date.parse(resetCredits.checkedAt) > (resetCredits.source === 'sub2api-active-quota' ? 35 * 60000 : 900000)) resetCredits.freshness = 'stale';
       }
-      return { ...account, metrics, freshness, windowStats, resetCredits };
+      return { ...account, metrics, freshness, windowStats, resetCredits, invitation: invitationFor(account, this.now()) };
     });
     const known = (account) => account.metrics.some((metric) => metric.scope !== 'local' &&
       ['value', 'used', 'remaining', 'limit', 'usedPercent', 'remainingPercent'].some((field) => typeof metric[field] === 'number' && Number.isFinite(metric[field])));
@@ -49,9 +63,29 @@ export class Dashboard {
         stale: accounts.filter((a) => a.freshness === 'stale').length, errors: accounts.filter((a) => a.error || ['error', 'inactive', 'disabled'].includes(a.status)).length },
       notice: '读取 sub2api 已保存的额度快照；看板刷新时间不等于上游额度观测时间。' };
   }
+  persist() {
+    const state = structuredClone({ version: 1, ...this.data });
+    const writing = this.writeTail.then(() => this.writeState(this.file, state));
+    this.writeTail = writing.catch(() => {});
+    return writing;
+  }
+  async updateInvitation(id, invitation) {
+    if (this.closed) return this.snapshot();
+    if (!['string', 'number'].includes(typeof id) || typeof id === 'number' && !Number.isSafeInteger(id)
+      || !/^[1-9]\d{0,18}$/.test(String(id))) throw new Error('邀请账号 ID 无效。');
+    const index = this.data.accounts.findIndex(account => account.id === String(id));
+    const now = this.now(), incoming = sanitizeInvitation(invitation, { now });
+    if (index < 0 || !incoming || !invitationFor(this.data.accounts[index], now)) throw new Error('此账号的邀请信息尚未就绪，请先刷新账号列表。');
+    const account = this.data.accounts[index];
+    const selected = latestInvitation(invitationFor(account, now), incoming, now, false);
+    this.data = { ...this.data, accounts: this.data.accounts.map((value, i) => i === index ? { ...value, invitation: selected } : value) };
+    try { await this.persist(); this.storageError = ''; }
+    catch { this.storageError = '邀请信息已更新，但本地快照保存失败。'; }
+    return this.snapshot();
+  }
   async refresh({ force = false } = {}) {
     if (this.closed) return this.snapshot();
-    if (this.pending) return this.pending;
+    if (this.pending) { await this.pending; return this.snapshot(); }
     if (this.lastAttempt !== null && this.now() - this.lastAttempt < (force ? 15000 : this.refreshMs)) return this.snapshot();
     this.lastAttempt = this.now();
     const task = (async () => {
@@ -59,8 +93,13 @@ export class Dashboard {
         const result = await this.client.refresh();
         for (const provider of this.providers) result.accounts = await provider.enrich(result.accounts);
         if (this.closed) return;
-        this.data = { accounts: result.accounts, updatedAt: result.checkedAt }; this.lastError = '';
-        try { await atomicJson(this.file, { version: 1, ...this.data }); this.storageError = ''; }
+        const now = this.now(), previous = new Map(this.data.accounts.map(account => [account.id, invitationFor(account, now)]));
+        const accounts = result.accounts.map(account => {
+          const invitation = invitationFor(account, now);
+          return { ...account, invitation: invitation ? latestInvitation(previous.get(account.id), invitation, now) : null };
+        });
+        this.data = { accounts, updatedAt: result.checkedAt }; this.lastError = '';
+        try { await this.persist(); this.storageError = ''; }
         catch { this.storageError = '当前额度已读取，但本地快照保存失败。'; }
       } catch (error) {
         if (!this.closed) this.lastError = error.code === 'UNAUTHORIZED' || error.code === 'AUTH' ? 'sub2api 管理员 API Key 无效，请更新服务端配置。' : '本次读取 sub2api 失败，暂时保留上次快照。';

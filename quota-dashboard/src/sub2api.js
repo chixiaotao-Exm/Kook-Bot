@@ -2,6 +2,7 @@
 // Account-list snapshots are deliberately used instead of quota/probe endpoints:
 // even GET openai/quota can trigger automatic credit resets in that version.
 import { accountPlan } from './account-plan.js';
+import { normalizeInvitation } from './invitation-snapshot.js';
 const DEFAULT_STALE_MS = 15 * 60 * 1000;
 const PLATFORM_NAMES = { openai: 'OpenAI', anthropic: 'Claude', grok: 'Grok', deepseek: 'DeepSeek', kimi: 'Kimi', moonshot: 'Moonshot', zhipu: '智谱', gemini: 'Gemini', antigravity: 'Antigravity' };
 
@@ -70,7 +71,7 @@ function normalAccount(raw, index, now, staleAfterMs) {
     status: ['active', 'inactive', 'error', 'disabled'].includes(raw.status) ? raw.status : 'unknown',
     schedulable: typeof raw.schedulable === 'boolean' ? raw.schedulable : null,
     plan: '', ...accountPlan(raw), source: 'sub2api-cache', freshness: 'unknown', observedAt: null,
-    metrics: [], windowStats: [], resetCredits: null, notes: [], error: null,
+    metrics: [], windowStats: [], resetCredits: null, invitation: normalizeInvitation(raw, { now, staleAfterMs }), notes: [], error: null,
   };
   const metric = (key, label, kind, fields, observedAt, resetAt, options = {}) => {
     const observed = iso(observedAt), reset = iso(resetAt);
@@ -232,7 +233,7 @@ export function normalizeAccounts(rawAccounts, options = {}) {
     catch {
       return { id: `invalid-${index}`, name: '无法解析的账号', platform: 'unknown', platformLabel: '未知平台', type: 'unknown',
         status: 'unknown', schedulable: null, plan: '', ...accountPlan(null), source: 'sub2api-cache', freshness: 'unknown', observedAt: null,
-        metrics: [], windowStats: [], resetCredits: null, notes: ['此账号数据异常，其他账号仍正常显示。'], error: '账号缓存格式不正确。' };
+        metrics: [], windowStats: [], resetCredits: null, invitation: null, notes: ['此账号数据异常，其他账号仍正常显示。'], error: '账号缓存格式不正确。' };
     }
   });
 }

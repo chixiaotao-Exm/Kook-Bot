@@ -119,6 +119,16 @@ journalctl -u sub2api-quota-dashboard --since '10 minutes ago'
 
 ## API 与数据流
 
+### 可邀请与邮箱邀请
+
+OpenAI OAuth 主账号会显示 Sub2API 保存的可邀请人数；未查询的名额显示“未知”，不当作 0。打开“邀请”先刷新当前活动、名额和规则，输入邮箱后发送。工作区邀请的邮箱域名限制与其他条件以上游返回的规则为准。
+
+`INVITATIONS_ENABLED=true` 启用邀请功能。默认只有管理员可发；`PUBLIC_INVITES=true` 开放给所有访客，额度页面仍可免登录查看。访客浏览器自动建立同源会话，邀请请求仍检查 CSRF，不会将管理员 API Key 交给浏览器。邀请能力不会开放播报配置等管理操作。
+
+发送前重新检查活动和名额，上游要求明确确认时必须勾选规则确认。发送请求不自动重试；遇到超时或不确定结果时提示先核对收件箱。私有 `data/invitation-requests.json` 保存请求编号、收件邮箱的哈希及送达状态，用于重启后的去重，不保存原始邮箱。该文件损坏或无法写入时暂停发送，保留查看与刷新功能。
+
+邀请名额查询和发送分别使用固定的 `/api/v1/admin/openai/accounts/:id/referrals/refresh`、`referrals/invite` 接口，不调用额度重置或用卡接口。Nginx 的额度页面读取超时需至少 130 秒，以容纳上游邀请与预检。
+
 浏览器访问看板自己的接口；凭据留在服务端。主要接口如下：
 
 | 接口 | 用途 |
@@ -127,6 +137,9 @@ journalctl -u sub2api-quota-dashboard --since '10 minutes ago'
 | `GET /quota/api/status` | 清理后的账号快照 |
 | `GET /quota/api/key-presets` | 快捷查询名称，不含 Key |
 | `POST /quota/api/key-usage` | `{ "key": "sk-..." }` 或 `{ "presetId": "..." }` |
+| `GET /quota/api/invitations` | 缓存的可邀请人数及当前会话的邀请能力 |
+| `POST /quota/api/invitations/:id/refresh` | 刷新当前邀请活动和规则，正文 `{}` |
+| `POST /quota/api/invitations/:id/invite` | 邮箱、活动 ID、确认状态及唯一请求编号 |
 | `GET /quota/api/report-preview` | 当前播报预览；不发送消息 |
 
 服务端读取 Sub2API 的账号、本站用量等管理员接口，以提交的 API Key 调用 `GET /v1/usage`。可选主动查询调用 `POST /api/v1/admin/openai/accounts/:id/quota/refresh`。KOOK 侧使用官方网关、资产上传、频道消息与私信接口。

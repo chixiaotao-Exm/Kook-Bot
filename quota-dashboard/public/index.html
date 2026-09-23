@@ -6,8 +6,8 @@
   <meta name="color-scheme" content="dark">
   <meta name="theme-color" content="#0e1e32">
   <title>额度看板 · Sub2API</title>
-  <link rel="stylesheet" href="./style.css?v=15">
-  <script src="./app.js?v=16" defer></script>
+  <link rel="stylesheet" href="./style.css?v=16">
+  <script src="./app.js?v=17" defer></script>
 </head>
 <body>
   <section id="login-view" class="login-shell" hidden>
@@ -79,6 +79,20 @@
       <footer class="page-footer"><span>Sub2API <span class="subtle">/ 额度看板</span></span><span id="access-note" class="subtle">只读看板</span></footer>
     </main>
   </div>
+  <dialog id="invitation-dialog" class="invitation-dialog" aria-labelledby="invitation-heading">
+    <div class="invitation-dialog-heading"><div><span class="eyebrow">账号邀请</span><h2 id="invitation-heading">发送邀请</h2></div><button id="invitation-close" class="button text invitation-close" type="button" aria-label="关闭邀请窗口">×</button></div>
+    <div class="invitation-account"><strong id="invitation-account-name"></strong><span id="invitation-account-plan" class="invitation-plan"></span></div>
+    <div class="invitation-availability"><span id="invitation-program">邀请名额</span><strong id="invitation-count">正在确认…</strong></div>
+    <p id="invitation-description" class="invitation-description"></p>
+    <ul id="invitation-rules" class="invitation-rules" hidden></ul>
+    <p id="invitation-feedback" class="feedback" role="status" aria-live="polite" hidden></p>
+    <a id="invitation-login" class="manage-link" href="?manage=1" hidden>管理员登录后邀请 →</a>
+    <form id="invitation-form" autocomplete="off">
+      <label>接收邀请的邮箱<input id="invitation-email" name="recipientEmail" type="email" required maxlength="254" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="name@example.com"></label>
+      <label id="invitation-confirm-row" class="invitation-confirm" hidden><input id="invitation-confirm" type="checkbox"><span>我已阅读并同意上方邀请规则</span></label>
+      <div class="invitation-form-actions"><button id="invitation-refresh" class="button secondary" type="button">刷新名额</button><button id="invitation-submit" class="button primary" type="submit" disabled>发送邀请</button></div>
+    </form>
+  </dialog>
   <div id="boot-view" class="boot-view"><span class="brand-mark">S<span>2</span></span><p id="boot-message">正在连接额度看板…</p><button id="boot-retry" class="button secondary" hidden>重新连接</button></div>
   <div id="toast" class="toast" role="status" hidden></div>
 </body>
