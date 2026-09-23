@@ -18,6 +18,7 @@ import uuid
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from broker.repository import (RepositoryBackend, RepositoryError, REMOTE, REPOSITORY, MAX_BYTES, _default_runner)
 from broker.workspace import Workspace
+from broker.server import Broker, BrokerError
 
 
 GIT = shutil.which("git")
@@ -87,6 +88,38 @@ class RepositoryTests(unittest.TestCase):
         return {"approved": True, "checksPassed": True, "reviewPassed": True, "workHash": work_hash,
                 "checks": [{"name": "Node tests", "passed": True, "complete": True, "workHash": work_hash, "exitCode": 0}],
                 "review": {"summary": "Reviewed the change", "findings": []}}
+
+    def test_failed_broker_finalization_rolls_back_the_real_prepared_record(self):
+        broker = Broker(self.root / "failed-broker", repository=self.backend, sandbox=object())
+        with patch("broker.server._private_json", side_effect=BrokerError("STORAGE")):
+            with self.assertRaisesRegex(BrokerError, "STORAGE"):
+                broker.dispatch("create_job", None, {})
+        self.assertEqual(list(broker.jobs.iterdir()), [])
+        self.assertEqual(list((self.backend.root / "prepared").iterdir()), [])
+        created = broker.dispatch("create_job", None, {})
+        self.assertTrue((broker.jobs / created["jobId"] / "job.json").is_file())
+
+    def test_discard_prepared_rejects_mismatched_or_committed_tasks(self):
+        job_id, job_root, _meta, _workspace = self.prepare()
+        record = self.backend.root / "prepared" / (job_id + ".json")
+        original = record.read_bytes()
+        with self.assertRaisesRegex(RepositoryError, "JOB_CONFLICT"):
+            self.backend.discard_prepared(job_id, self.root / "wrong-job-root")
+        committed = job_root / "job.json"
+        committed.write_text("{}")
+        with self.assertRaisesRegex(RepositoryError, "INVALID_STATE"):
+            self.backend.discard_prepared(job_id, job_root)
+        committed.unlink()
+        publication = self.backend.root / "published" / (job_id + ".json")
+        publication.write_text('{"published":true}')
+        with self.assertRaisesRegex(RepositoryError, "INVALID_STATE"):
+            self.backend.discard_prepared(job_id, job_root)
+        self.assertEqual(record.read_bytes(), original)
+        publication.unlink()
+        self.backend.discard_prepared(job_id, job_root)
+        self.assertFalse(record.exists())
+        self.assertTrue((job_root / "work").is_dir())
+        self.backend.discard_prepared(job_id, job_root)
 
     def test_prepare_uses_fixed_main_and_exports_only_safe_regular_files(self):
         job_id, job_root, meta, workspace = self.prepare()

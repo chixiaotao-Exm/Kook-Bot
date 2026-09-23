@@ -118,3 +118,38 @@ test('pre-cancelled operations are not sent and in-flight cancellation closes tr
   const result = client.request('job_status', job, {}, { signal: c.signal }); c.abort();
   await assert.rejects(result, error => error.code === 'CANCELLED'); assert.equal(destroyed, true);
 });
+
+test('per-call deadlines may only shorten each operation timeout and are not sent in the RPC body', async () => {
+  for (const [operation, target, cap] of [['job_status', job, 30000], ['publish', job, 120000], ['create_job', null, 120000], ['run_checks', job, 210000]]) {
+    const f = fixture({ ok: true, data: {} });
+    for (const timeoutMs of [0, -1, NaN, Infinity, 1.5, '5', null, cap + 1]) {
+      await assert.rejects(f.client.request(operation, target, {}, { timeoutMs }), error => error.code === 'TOOL_INVALID');
+    }
+    assert.equal(f.calls.length, 0);
+    await f.client.request(operation, target, {}, { timeoutMs: cap });
+    assert.deepEqual(f.calls[0].body, { operation, jobId: target, args: {} });
+  }
+});
+
+test('shortened deadlines destroy a hanging request and release cancellation listeners', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const signal = new AbortController(); let destroyed = 0;
+  const client = new CodeBrokerClient({ requestImpl() {
+    const req = new EventEmitter(); req.end = () => {}; req.destroy = () => { destroyed++; }; return req;
+  } });
+  const pending = client.request('job_status', job, {}, { timeoutMs: 10, signal: signal.signal });
+  const rejected = assert.rejects(pending, error => error.code === 'TIMEOUT');
+  t.mock.timers.tick(9); assert.equal(destroyed, 0);
+  t.mock.timers.tick(1); await rejected; assert.equal(destroyed, 1);
+  assert.equal(getEventListeners(signal.signal, 'abort').length, 0);
+  signal.abort(); t.mock.timers.tick(30000); assert.equal(destroyed, 1);
+});
+
+test('cleanup diagnostics preserve the original broker failure without exposing its body', async () => {
+  const f = fixture({ ok: false, error: { code: 'GIT_FAILED', cleanupFailed: true, message: 'private path/token' } }, 400);
+  await assert.rejects(f.client.request('create_job', null), error => error.code === 'GIT_FAILED'
+    && error.cleanupFailed === true && !error.message.includes('private'));
+  for (const value of [null, true, 42, '"unexpected"']) {
+    await assert.rejects(fixture(value).client.request('job_status', job), error => error.code === 'BROKER_FAILED');
+  }
+});
