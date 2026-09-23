@@ -14,13 +14,21 @@ const help = rounds => (rounds === 0
   : `直接发送问题，让两个机器人轮流讨论，默认 ${rounds} 轮，共 ${rounds * 2} 次发言。\n`)
   + '讨论中可以随时补充或调整话题，下一位机器人会先回应你的补充。\n'
   + '“先暂停”：暂停讨论并保留上下文；“继续”：恢复暂停的讨论。\n'
-  + '“停止”：结束当前讨论，任何用户都可以停止。\n“互聊状态”：查看进度\n“帮助”：查看说明\n问题最多 2000 字，请勿包含密码或密钥。';
+  + '“停止”：停止发言并保留当前话题；“继续”可恢复。只有“新话题”会清空上下文，也可发送“新话题：问题”重新开始。\n'
+  + '“互聊状态”：查看进度\n“帮助”：查看说明\n问题最多 2000 字，请勿包含密码或密钥。';
 
 export function parseDuetCommand(content, selfId = '', defaultRounds = 0) {
   if (typeof content !== 'string') return null;
   let text = content.trim();
   if (validId(selfId)) text = text.replace(new RegExp(`^\\(met\\)${selfId}\\(met\\)\\s*`), '').trim();
   if (!text) return null;
+  const fresh = /^新话题(?:(?:[：:]\s*|\s+)([\s\S]*))?$/.exec(text);
+  if (fresh) {
+    const topic = (fresh[1] || '').trim();
+    if (CREDENTIAL.test(topic)) return { kind: 'credential' };
+    if (topic.length > MAX_TOPIC || !topic.isWellFormed()) return { kind: 'too_long' };
+    return { kind: 'new_topic', ...(topic ? { topic } : {}) };
+  }
   if (['停止', '停止互聊', '/停止互聊', '/停止'].includes(text)) return { kind: 'stop' };
   if (/^(?:暂停|先暂停|暂停一下|先暂停一下)[。!！]*$/.test(text)) return { kind: 'pause' };
   if (/^(?:继续|恢复|继续讨论|开始)[。!！]*$/.test(text)) return { kind: 'resume' };
@@ -57,7 +65,7 @@ export class DuetCommands {
   #now; #writeState; #logger; #defaultRounds; #seen = new Map(); #users = new Map(); #recent = [];
   #noticeUsers = new Map(); #recentNotices = []; #tasks = new Set(); #controllers = new Set();
   #operations = Promise.resolve(); #ready = false; #closed = false;
-  #counts = { commands: 0, starts: 0, contributions: 0, pauses: 0, resumes: 0, stops: 0, replies: 0, failures: 0 };
+  #counts = { commands: 0, starts: 0, contributions: 0, newTopics: 0, pauses: 0, resumes: 0, stops: 0, replies: 0, failures: 0 };
   #lastError = null; #lastReplyAt = null;
 
   constructor({ session, reply, getSelfId, getParticipantIds = () => [], resolveAuthor,
@@ -139,13 +147,29 @@ export class DuetCommands {
     catch { this.#ready = false; this.#counts.failures++; this.#lastError = 'STORAGE'; this.#log('duet_receipt_storage_failed'); return; }
     if (this.#closed) return;
     this.#counts.commands++;
+    if (parsed.kind === 'new_topic') {
+      try {
+        const result = typeof this.#session.newTopic === 'function'
+          ? await this.#session.newTopic({ ...(parsed.topic ? { topic: parsed.topic } : {}), userId: event.author_id,
+            receiptId: event.msg_id, replyMessageId: event.msg_id }) : { accepted: false, reason: 'NOT_READY' };
+        if (this.#closed) return;
+        if (result?.accepted === true) {
+          this.#counts.newTopics++; this.#lastError = null;
+          this.#notice(event, parsed.topic ? '已新建话题，接下来围绕你的新问题讨论。' : '已清空话题，直接发问题开始。', true);
+        } else if (result?.reason !== 'DUPLICATE') this.#notice(event, result?.reason === 'NOT_AUTHORIZED'
+          ? '只有已授权的操作者可以重置当前代码任务的话题。' : '暂时无法新建话题，原话题未确认清空，请稍后重试。', true);
+      } catch { this.#failed(event); }
+      return;
+    }
     if (parsed.kind === 'stop') {
       try {
-        const active = this.#session.snapshot().active;
+        const before = this.#session.snapshot(), active = before.active;
         const result = await this.#session.stop({ userId: event.author_id });
         if (result?.reason === 'NOT_AUTHORIZED') { this.#notice(event, '只有已授权的操作者可以控制代码任务。', true); return; }
         this.#counts.stops++;
-        this.#notice(event, active ? '已停止讨论。直接发送新问题即可重新开始。' : '当前没有正在进行的讨论。直接发送问题即可开始。');
+        this.#notice(event, active || before.threadId
+          ? '已停止，保留当前话题；发送“继续”可恢复，发送“新话题”才清空。'
+          : '当前没有正在进行的讨论。已有话题会保留，直接发送问题即可继续。');
       } catch { this.#failed(event); }
       return;
     }
@@ -173,11 +197,12 @@ export class DuetCommands {
     if (parsed.kind === 'invalid') { this.#notice(event, '轮数不符合要求。直接发送问题即可开始讨论，发送“停止”结束。'); return; }
     if (parsed.kind === 'status') {
       const status = this.#session.snapshot();
+      const topicHint = status.threadId ? '\n当前话题已保留，发送“新话题”才清空。' : '';
       if (status.mode === 'code') {
         const state = { creating: '准备工作区', coding: '实施中', reviewing: '复核中', running: '处理中', paused: '已暂停',
           publishing: '正在创建 PR', completed: '已完成', audited: '审查完成', needs_input: '需要补充信息', stopped: '已停止', interrupted: '已中断' }[status.status] || '处理中';
         this.#notice(event, `代码任务：${state}\n工具步骤：${Number.isSafeInteger(status.steps) ? status.steps : 0}`
-          + (status.prUrl ? `\n${status.prUrl}` : '') + '\n可发送“先暂停”“继续”或“停止”。'); return;
+          + (status.prUrl ? `\n${status.prUrl}` : '') + '\n可发送“先暂停”“继续”或“停止”。' + topicHint); return;
       }
       const labels = { idle: '未开始', running: '进行中', paused: '已暂停', completed: '已完成', stopped: '已停止',
         timeout: '已超时停止', failed: '已因错误停止', interrupted: '已中断' };
@@ -190,9 +215,9 @@ export class DuetCommands {
           && !CREDENTIAL.test(status.currentSpeaker) ? status.currentSpeaker : '等待中';
         this.#notice(event, header + (status.active || paused
           ? `第 ${Math.max(1, count(status.currentRound))} 轮 · 已发 ${count(status.completedTurns)} 条\n当前发言方：${speaker}\n${inputHint}`
-          : `已发 ${count(status.completedTurns)} 条。`));
+          : `已发 ${count(status.completedTurns)} 条。`) + topicHint);
       } else this.#notice(event, header + `已完成 ${count(status.completedTurns)} / ${count(status.totalTurns)} 次发言。`
-        + (status.active || paused ? `\n${inputHint}` : ''));
+        + (status.active || paused ? `\n${inputHint}` : '') + topicHint);
       return;
     }
     await this.#input(event, parsed, false);
@@ -201,7 +226,7 @@ export class DuetCommands {
   async #pauseResume(event, kind) {
     try {
       const method = this.#session[kind];
-      const result = typeof method === 'function' ? await method.call(this.#session, { userId: event.author_id }) : { reason: 'NOT_READY' };
+      const result = typeof method === 'function' ? await method.call(this.#session, { userId: event.author_id, receiptId: event.msg_id, replyMessageId: event.msg_id }) : { reason: 'NOT_READY' };
       if (this.#closed) return;
       if (result?.reason === 'NOT_AUTHORIZED') { this.#notice(event, '只有已授权的操作者可以控制代码任务。', true); return; }
       if (kind === 'pause') {

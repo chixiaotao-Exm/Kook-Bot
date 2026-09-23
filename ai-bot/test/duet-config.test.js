@@ -14,7 +14,7 @@ test('duet defaults use two separate bots, continuous discussion and an independ
   assert.deepEqual(config.models, ['gpt-6-astra', 'gpt-6-astra']);
   assert.deepEqual(config.labels, ['机器人A', '机器人B']);
   assert.equal(config.rounds, 0); assert.equal(config.deadlineMs, 0); assert.equal(config.betweenTurnsMs, 2000);
-  assert.equal(config.modelTimeoutMs, 180000); assert.equal(config.maxOutputTokens, 1200); assert.equal(config.reasoningEffort, 'low');
+  assert.equal(config.modelTimeoutMs, 600000); assert.equal(config.maxOutputTokens, 8192); assert.equal(config.reasoningEffort, 'xhigh');
   assert.equal(config.host, '127.0.0.1'); assert.equal(config.port, 19000); assert.equal(config.dataDir, path.resolve('./data'));
   assert.equal(config.baseUrl, 'http://127.0.0.1:8080/v1');
   assert.match(config.systemPrompts[0], /提出观点/); assert.match(config.systemPrompts[1], /审阅与改进/);
@@ -28,7 +28,7 @@ test('duet defaults use two separate bots, continuous discussion and an independ
 test('zero explicitly disables both total discussion limits while request timeout remains active', () => {
   const config = loadDuetConfig({ ...env, DUET_ROUNDS: '0', DUET_DEADLINE_SECONDS: '0' });
   assert.equal(config.rounds, 0); assert.equal(config.deadlineMs, 0);
-  assert.equal(config.modelTimeoutMs, 180000); assert.equal(config.betweenTurnsMs, 2000);
+  assert.equal(config.modelTimeoutMs, 600000); assert.equal(config.betweenTurnsMs, 2000);
   const finite = loadDuetConfig({ ...env, DUET_ROUNDS: '6', DUET_DEADLINE_SECONDS: '600' });
   assert.equal(finite.rounds, 6); assert.equal(finite.deadlineMs, 600000);
 });
@@ -62,6 +62,14 @@ test('model overrides, limits, role labels and data directory resolve independen
   assert.equal(config.maxOutputTokens, 2400); assert.equal(config.modelTimeoutMs, 60000); assert.equal(config.port, 19100);
 });
 
+test('xhigh defaults allow bounded reasoning output while explicit legacy budgets remain configurable', () => {
+  const maximum = loadDuetConfig({ ...env, MODEL_TIMEOUT_SECONDS: '600', DUET_MAX_OUTPUT_TOKENS: '16000', REASONING_EFFORT: 'xhigh' });
+  assert.deepEqual(maximum.models, ['gpt-6-astra', 'gpt-6-astra']);
+  assert.equal(maximum.reasoningEffort, 'xhigh'); assert.equal(maximum.maxOutputTokens, 16000); assert.equal(maximum.modelTimeoutMs, 600000);
+  const legacy = loadDuetConfig({ ...env, MODEL_TIMEOUT_SECONDS: '180', DUET_MAX_OUTPUT_TOKENS: '1200', REASONING_EFFORT: 'low' });
+  assert.equal(legacy.reasoningEffort, 'low'); assert.equal(legacy.maxOutputTokens, 1200); assert.equal(legacy.modelTimeoutMs, 180000);
+});
+
 test('missing or duplicate credentials and non-loopback health hosts fail without secret echo', () => {
   for (const changes of [{ KOOK_BOT_A_TOKEN: '' }, { KOOK_BOT_B_TOKEN: '' }, { KOOK_BOT_B_TOKEN: env.KOOK_BOT_A_TOKEN },
     { KOOK_BOT_A_TOKEN: `${env.KOOK_BOT_A_TOKEN}\nother` }, { OPENAI_API_KEY: '' }, { KOOK_CHANNEL_ID: '123157x' },
@@ -74,7 +82,7 @@ test('optional discussion limits and labels reject malformed or excessive values
   for (const changes of [{ DUET_ROUNDS: '7' }, { DUET_ROUNDS: '-1' }, { DUET_ROUNDS: '1.5' }, { DUET_ROUNDS: 2 },
     { DUET_DEADLINE_SECONDS: '601' }, { DUET_DEADLINE_SECONDS: '-1' }, { DUET_DEADLINE_SECONDS: '1' }, { DUET_DEADLINE_SECONDS: '29' },
     { DUET_BETWEEN_TURNS_MS: '-1' }, { DUET_BETWEEN_TURNS_MS: '30001' },
-    { DUET_MAX_OUTPUT_TOKENS: '2401' }, { DUET_MAX_OUTPUT_TOKENS: '0' }, { MODEL_TIMEOUT_SECONDS: '181' },
+    { DUET_MAX_OUTPUT_TOKENS: '16001' }, { DUET_MAX_OUTPUT_TOKENS: '0' }, { MODEL_TIMEOUT_SECONDS: '601' },
     { BOT_A_LABEL: '(met)all(met)' }, { BOT_A_LABEL: 'a'.repeat(33) }, { BOT_A_LABEL: 'same', BOT_B_LABEL: 'same' },
     { DUET_MODEL_A: 'bad model' }, { REASONING_EFFORT: 'unlimited' }]) assert.throws(() => loadDuetConfig({ ...env, ...changes }), safeError);
 });
