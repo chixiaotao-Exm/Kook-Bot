@@ -43,9 +43,10 @@ export class CodeBrokerClient {
             chunks.push(Buffer.from(chunk));
           });
           response.on('error', () => settle(new BrokerClientError('BROKER_FAILED')));
+          response.on('close', () => settle(new BrokerClientError('BROKER_FAILED')));
           response.on('end', () => {
             let value;
-            try { value = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+            try { value = JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(Buffer.concat(chunks))); }
             catch { settle(new BrokerClientError('BROKER_FAILED')); return; }
             if (value?.ok === true && response.statusCode === 200) settle(null, value.data);
             else {
