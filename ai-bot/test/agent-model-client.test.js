@@ -61,6 +61,18 @@ test('only assistant output_text reaches public text while allowed continuation 
   assert.deepEqual(result.output[1].content[0].annotations, []);
 });
 
+test('xhigh reasoning is sent exactly and an explicit ten-minute timeout remains bounded', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let sent, requestSignal;
+  const pending = make(async (_url, init) => { sent = JSON.parse(init.body); requestSignal = init.signal; return new Promise(() => {}); },
+    { reasoningEffort: 'xhigh', timeoutMs: 600000, maxOutputTokens: 8192 }).respond(INPUT, { tools: [TOOL] });
+  const rejected = assert.rejects(pending, hasCode('TIMEOUT'));
+  assert.deepEqual(sent.reasoning, { effort: 'xhigh' }); assert.equal(sent.model, 'gpt-6-astra');
+  assert.equal(sent.max_output_tokens, 8192); assert.equal(sent.parallel_tool_calls, false);
+  t.mock.timers.tick(599999); assert.equal(requestSignal.aborted, false);
+  t.mock.timers.tick(1); assert.equal(requestSignal.aborted, true); await rejected;
+});
+
 test('configured endpoint allows HTTPS or explicit loopback HTTP and normalizes one /v1', async () => {
   for (const baseUrl of ['https://example.invalid', 'https://example.invalid/', 'https://example.invalid/v1', 'https://example.invalid/v1/', 'http://127.0.0.1:8080/v1', 'http://[::1]:8080', 'http://localhost:8080']) {
     let requested;
@@ -236,8 +248,8 @@ test('caller cancellation avoids new requests and aborts active requests without
 });
 
 test('invalid client configuration and schema serialization errors remain sanitized', async () => {
-  for (const options of [{ apiKey: '' }, { apiKey: `secret\n${KEY}` }, { model: 'bad model' }, { timeoutMs: 0 },
-    { maxOutputTokens: 16001 }, { reasoningEffort: 'unlimited' }, { systemPrompt: '' }, { fetchImpl: null }]) {
+  for (const options of [{ apiKey: '' }, { apiKey: `secret\n${KEY}` }, { model: 'bad model' }, { timeoutMs: 0 }, { timeoutMs: 600001 },
+    { maxOutputTokens: 16001 }, { reasoningEffort: 'unlimited' }, { reasoningEffort: 'XHigh' }, { systemPrompt: '' }, { fetchImpl: null }]) {
     assert.throws(() => make(undefined, options), hasCode('CONFIG'));
   }
   const schema = { ...TOOL.parameters }; schema.circular = schema;

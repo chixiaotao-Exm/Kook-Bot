@@ -17,7 +17,7 @@ const flush = async () => { for (let n = 0; n < 20; n++) await Promise.resolve()
 async function fixture(t, options = {}) {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), 'duet-commands-'));
   let now = NOW, active = false, paused = false, rounds = 0;
-  const starts = [], contributions = [], pauses = [], resumes = [], stops = [], replies = [], logs = [];
+  const starts = [], contributions = [], newTopics = [], pauses = [], resumes = [], stops = [], replies = [], logs = [];
   const session = { async start(input) {
     starts.push(input); if (active) return { accepted: false, reason: 'BUSY' };
     active = true; paused = false; rounds = input.rounds;
@@ -25,6 +25,9 @@ async function fixture(t, options = {}) {
   }, async contribute(input) {
     if (!active) return { accepted: false, reason: 'NO_ACTIVE' };
     contributions.push(input); return { accepted: true, contributions: contributions.length, pendingInputs: contributions.length };
+  }, async newTopic(input) {
+    newTopics.push(input); active = Boolean(input.topic); paused = false;
+    return { accepted: true };
   }, async pause() {
     pauses.push(true);
     if (!active) return { paused: false, reason: 'NO_ACTIVE' };
@@ -44,7 +47,7 @@ async function fixture(t, options = {}) {
     now: () => now, logger: row => logs.push(row), ...options };
   const bot = await new DuetCommands(config).init();
   t.after(async () => { await bot.close(); await rm(dataDir, { recursive: true, force: true }); });
-  return { bot, config, dataDir, starts, contributions, pauses, resumes, stops, replies, logs, advance(ms) { now += ms; },
+  return { bot, config, dataDir, starts, contributions, newTopics, pauses, resumes, stops, replies, logs, advance(ms) { now += ms; },
     send(number, content, overrides = {}) { return bot.handle(event(number, content, { msg_timestamp: now, ...overrides })); } };
 }
 
@@ -80,6 +83,60 @@ test('only exact natural pause and resume aliases with optional terminal punctua
   for (const text of ['先暂停有什么含义？', '继续学习有什么好处？', '开始讨论人工智能', '暂停？', '恢复工作需要什么条件？']) {
     assert.deepEqual(parseDuetCommand(text), { kind: 'start', topic: text, rounds: 0 });
   }
+});
+
+test('only explicit new-topic syntax requests a context reset', () => {
+  assert.deepEqual(parseDuetCommand('新话题'), { kind: 'new_topic' });
+  assert.deepEqual(parseDuetCommand('新话题：'), { kind: 'new_topic' });
+  for (const value of ['新话题：春天去哪里旅行？', '新话题: 春天去哪里旅行？', '新话题 春天去哪里旅行？']) {
+    assert.deepEqual(parseDuetCommand(value), { kind: 'new_topic', topic: '春天去哪里旅行？' });
+  }
+  assert.deepEqual(parseDuetCommand(`(met)${SELF}(met) 新话题：春游`, SELF), { kind: 'new_topic', topic: '春游' });
+  for (const value of ['新话题是什么意思？', '我有一个新话题', '普通问题', '停止']) assert.notEqual(parseDuetCommand(value).kind, 'new_topic');
+  assert.equal(parseDuetCommand('新话题：sk-privatefixture123456789').kind, 'credential');
+  assert.equal(parseDuetCommand(`新话题 ${'长'.repeat(2001)}`).kind, 'too_long');
+});
+
+test('new-topic reset bypasses cooldown, remains durable and never runs for ordinary questions', async t => {
+  const entered = defer(), persisted = defer(); let hold = false;
+  const f = await fixture(t, { writeState: async (file, value) => {
+    if (hold) { entered.resolve(); await persisted.promise; }
+    await atomicJson(file, value);
+  } });
+  await f.send(1, '保留这个问题'); hold = true;
+  const reset = f.send(2, '新话题'); await entered.promise;
+  assert.equal(f.newTopics.length, 0); persisted.resolve(); await reset; await flush(); hold = false;
+  assert.deepEqual(f.newTopics[0], { userId: USER, receiptId: id(2), replyMessageId: id(2) });
+  assert.match(f.replies.at(-1).content, /已清空话题，直接发问题开始/);
+  await f.send(3, '新话题：春天去哪里旅行？'); await flush();
+  assert.equal(f.newTopics[1].topic, '春天去哪里旅行？'); assert.match(f.replies.at(-1).content, /已新建话题/);
+  assert.equal(f.bot.snapshot().newTopics, 2);
+  await f.send(3, '新话题：春天去哪里旅行？'); assert.equal(f.newTopics.length, 2);
+  await f.send(4, '我还有一个补充'); assert.equal(f.contributions.length, 1); assert.equal(f.newTopics.length, 2);
+  await f.send(5, '停止'); assert.equal(f.newTopics.length, 2);
+  const saved = await readFile(path.join(f.dataDir, 'duet-seen.json'), 'utf8');
+  assert.doesNotMatch(saved, /春天|保留这个问题/);
+});
+
+test('new-topic authorization or storage failures never claim the topic was cleared', async t => {
+  const f = await fixture(t, { session: { async start() {}, async stop() {}, snapshot() { return { active: true }; },
+    async newTopic() { return { accepted: false, reason: 'NOT_AUTHORIZED' }; } } });
+  await f.send(1, '新话题'); await flush();
+  assert.match(f.replies.at(-1).content, /只有已授权/); assert.doesNotMatch(f.replies.at(-1).content, /已清空|已新建/);
+  assert.equal(f.bot.snapshot().newTopics, 0);
+  const failed = await fixture(t, { writeState: async () => { throw new Error('private'); } });
+  await failed.send(1, '新话题：新的问题'); assert.equal(failed.newTopics.length, 0); assert.equal(failed.replies.length, 0);
+});
+
+test('stop and status explain that existing topic remains until an explicit reset', async t => {
+  const f = await fixture(t, { session: { async start() {}, async stop() { return { stopped: true }; },
+    snapshot() { return { active: false, threadId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', status: 'stopped', rounds: 0 }; } } });
+  await f.send(1, '停止'); await flush();
+  assert.match(f.replies.at(-1).content, /已停止，保留当前话题/); assert.match(f.replies.at(-1).content, /新话题.*才清空/);
+  f.advance(3000); await f.send(2, '互聊状态'); await flush();
+  assert.match(f.replies.at(-1).content, /当前话题已保留/);
+  f.advance(3000); await f.send(3, '帮助'); await flush();
+  assert.match(f.replies.at(-1).content, /只有“新话题”会清空上下文/);
 });
 
 test('pause and resume bypass command cooldown and confirm only completed state changes', async t => {
@@ -302,7 +359,7 @@ test('numeric-leading questions keep their complete topic and only exact stop me
   assert.equal(f.contributions[0].text, '为什么有些机器会突然停止运行？');
   assert.match(f.replies.at(-1).content, /已加入讨论/);
   f.advance(3000); await f.send(3, '停止'); await flush();
-  assert.equal(f.stops.length, 1); assert.match(f.replies.at(-1).content, /已停止讨论/);
+  assert.equal(f.stops.length, 1); assert.match(f.replies.at(-1).content, /已停止，保留当前话题/);
   assert.doesNotMatch(f.replies.at(-1).content, /\/互聊|\/停止/);
 });
 

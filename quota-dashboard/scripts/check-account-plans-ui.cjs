@@ -10,13 +10,19 @@ const observedAt = new Date().toISOString();
 const metric = { key: 'primary', label: '5 小时额度窗口', usedPercent: 23, remainingPercent: 77, scope: 'upstream', kind: 'percent', unit: '%', observedAt, freshness: 'fresh' };
 const account = (id, name, platform, type, planLabel, planSource) => ({ id, name, platform, type, planLabel, planSource, schedulable: true, status: 'active', freshness: 'fresh', observedAt, metrics: [{ ...metric }] });
 const accounts = [
-  account('1001', 'OpenAI_5X', 'openai', 'oauth', 'Pro 5x', 'upstream'),
-  account('1002', 'Claude 主力', 'claude', 'oauth', 'Max 20x', 'upstream'),
   account('1003', 'DeepSeek', 'deepseek', 'apikey', 'API 计费', 'type'),
+  account('1010', 'Team 甲10', 'openai', 'oauth', 'Team', 'upstream'),
+  account('1006', 'OpenAI Business', 'openai', 'oauth', 'Team Pro', 'upstream'),
   account('1004', 'Claude 未返回套餐', 'claude', 'oauth', '版本未知', 'unknown'),
   { ...account('1005', '旧缓存账号', 'openai', 'oauth'), plan: 'plus' },
-  account('1006', 'OpenAI Business', 'openai', 'oauth', 'Team Pro', 'upstream')
+  account('1008', 'Team 乙', 'openai', 'oauth', 'Team', 'upstream'),
+  account('1009', 'OpenAI API', 'openai', 'apikey', 'API 计费', 'type'),
+  account('1011', 'Team 甲2', 'openai', 'oauth', 'Team', 'upstream'),
+  account('1002', 'Claude 主力', 'claude', 'oauth', 'Max 20x', 'upstream'),
+  account('1001', 'OpenAI_5X', 'openai', 'oauth', 'Pro 5x', 'upstream'),
+  account('1007', 'Team 甲2', 'openai', 'oauth', 'Team', 'upstream'),
 ];
+const expectedIds = ['1001', '1006', '1007', '1011', '1010', '1008', '1009', '1005', '1004', '1002', '1003'];
 let hostile = false;
 const attack = '<img src=x onerror="window.planInjected=1">';
 const writes = [];
@@ -26,7 +32,7 @@ const server = http.createServer((req, res) => {
   if (pathname === '/quota/api/session') return json({ authenticated: false, publicAccess: true, canManage: false });
   if (pathname === '/quota/api/status' || pathname === '/quota/api/refresh') {
     if (req.method === 'POST') writes.push(pathname);
-    return json({ accounts: hostile ? [{ ...accounts[0], planLabel: attack, planSource: attack }] : accounts, updatedAt: observedAt, refreshing: false });
+    return json({ accounts: hostile ? [{ ...accounts.find(account => account.id === '1001'), planLabel: attack, planSource: attack }] : accounts, updatedAt: observedAt, refreshing: false });
   }
   const files = { '/quota/': 'index.html', '/quota/app.js': 'app.js', '/quota/style.css': 'style.css' };
   const filename = files[pathname];
@@ -43,7 +49,20 @@ const server = http.createServer((req, res) => {
     page.on('pageerror', error => errors.push(error.message));
     await page.goto(`http://127.0.0.1:${server.address().port}/quota/`);
     await page.locator('.account-card').first().waitFor();
-    assert.deepEqual(await page.locator('.account-plan').allTextContents(), ['Pro 5x', 'Max 20x', 'API 计费', '版本未知', '版本未知', 'Team Pro']);
+    const visibleIds = () => page.locator('.account-card').evaluateAll(cards => cards.map(card => card.dataset.accountId));
+    assert.deepEqual(await visibleIds(), expectedIds, 'Provider, plan, Chinese numeric name and ID tie-break sorting');
+    assert.deepEqual(await page.locator('.account-plan').allTextContents(), ['Pro 5x', 'Team Pro', 'Team', 'Team', 'Team', 'Team', 'API 计费', '版本未知', '版本未知', 'Max 20x', 'API 计费']);
+    assert.deepEqual(await page.locator('#platform-filters [data-platform]').evaluateAll(buttons => buttons.map(button => button.dataset.platform)), ['all', 'openai', 'claude', 'deepseek']);
+    assert.deepEqual(await page.locator('#platform-filters [data-platform]').allTextContents(), ['全部11', 'OpenAI8', 'Claude2', 'DeepSeek1']);
+    await page.locator('[data-platform="openai"]').click();
+    assert.deepEqual(await visibleIds(), expectedIds.slice(0, 8), 'Platform filtering preserves the sorted OpenAI groups');
+    await page.locator('#search').fill('Team 甲');
+    assert.deepEqual(await visibleIds(), ['1007', '1011', '1010'], 'Search keeps numeric name order and stable equal-name ID order');
+    await page.locator('#search').fill('');
+    await page.locator('[data-platform="claude"]').click();
+    assert.deepEqual(await visibleIds(), ['1004', '1002'], 'Other providers are grouped and ordered by account name');
+    await page.locator('[data-platform="all"]').click();
+    assert.deepEqual(await visibleIds(), expectedIds);
     assert.equal(await page.locator('#login-view').isVisible(), false);
     assert.equal(await page.locator('[data-account-details][open]').count(), 0);
     const checkLayout = async width => {
@@ -81,6 +100,6 @@ const server = http.createServer((req, res) => {
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
     assert.deepEqual(errors, []);
     assert.deepEqual(writes, []);
-    console.log(JSON.stringify({ labels: 6, sources: 3, legacyFallback: true, desktopAligned: true, widths: [1440, 390, 360], longBusinessPlanFits: true, overflow: false, injectionEscaped: true, writes: 0, scriptErrors: 0 }));
+    console.log(JSON.stringify({ labels: accounts.length, sortedIds: expectedIds, providers: ['OpenAI', 'Claude', 'DeepSeek'], filtersPreserveOrder: true, sources: 3, legacyFallback: true, desktopAligned: true, widths: [1440, 390, 360], longBusinessPlanFits: true, overflow: false, injectionEscaped: true, writes: 0, scriptErrors: 0 }));
   } finally { await browser.close(); server.close(); }
 })().catch(error => { console.error(error); server.close(); process.exitCode = 1; });

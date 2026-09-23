@@ -36,17 +36,28 @@ test('permits only configured HTTPS root/v1 and explicit loopback HTTP', () => {
 });
 
 test('invalid credentials/model/options fail without exposing values', () => {
-  for (const options of [{ apiKey: '' }, { apiKey: 'secret\nvalue' }, { model: '' }, { model: 'secret model' }, { timeoutMs: 0 }, { maxOutputTokens: 16001 }, { reasoningEffort: 'unbounded' }, { reasoningEffort: null }, { systemPrompt: '' }, { fetchImpl: null }]) assert.throws(() => make(undefined, options), hasCode('CONFIG'));
+  for (const options of [{ apiKey: '' }, { apiKey: 'secret\nvalue' }, { model: '' }, { model: 'secret model' }, { timeoutMs: 0 }, { timeoutMs: 600001 }, { maxOutputTokens: 16001 }, { reasoningEffort: 'unbounded' }, { reasoningEffort: 'XHigh' }, { reasoningEffort: null }, { systemPrompt: '' }, { fetchImpl: null }]) assert.throws(() => make(undefined, options), hasCode('CONFIG'));
 });
 
 test('supports explicit bounded reasoning and output budgets without changing the model', async () => {
-  for (const reasoningEffort of ['low', 'medium', 'high']) {
+  for (const reasoningEffort of ['low', 'medium', 'high', 'xhigh']) {
     let sent;
     await make(async (_url, options) => { sent = JSON.parse(options.body); return response(); }, { reasoningEffort, maxOutputTokens: 512 }).generate(messages);
     assert.deepEqual(sent.reasoning, { effort: reasoningEffort });
     assert.equal(sent.model, 'gpt-6-astra');
     assert.equal(sent.max_output_tokens, 512);
   }
+});
+
+test('explicit xhigh timeout permits ten minutes without changing the normal default', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let requestSignal, sent;
+  const pending = make(async (_url, options) => { requestSignal = options.signal; sent = JSON.parse(options.body); return new Promise(() => {}); },
+    { timeoutMs: 600000, reasoningEffort: 'xhigh', maxOutputTokens: 8192 }).generate(messages);
+  const rejected = assert.rejects(pending, hasCode('TIMEOUT'));
+  assert.equal(sent.reasoning.effort, 'xhigh'); assert.equal(sent.model, 'gpt-6-astra');
+  t.mock.timers.tick(599999); assert.equal(requestSignal.aborted, false);
+  t.mock.timers.tick(1); assert.equal(requestSignal.aborted, true); await rejected;
 });
 
 test('validates history roles, strings, final user message and input bounds before any request', async () => {
