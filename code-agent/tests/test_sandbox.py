@@ -1,6 +1,10 @@
 import io
+import os
 from pathlib import Path
+import runpy
+import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -81,6 +85,99 @@ class SandboxTests(unittest.TestCase):
         self.assertFalse(result["complete"])
         self.assertEqual(popen.call_args.args[0][-2:], ["ai-bot", "test/example.test.js"])
 
+    def test_repository_relative_test_paths_are_normalized_and_deduplicated(self):
+        result, popen, _ = self.run_mocked(project="ai-bot", test_files=["ai-bot/test/example.test.js", "test/example.test.js"])
+        self.assertTrue(result["passed"])
+        self.assertFalse(result["complete"])
+        self.assertEqual(popen.call_args.args[0][-2:], ["ai-bot", "test/example.test.js"])
+
+    def test_node_glob_names_cannot_produce_evidence_for_a_different_existing_file(self):
+        self.workspace.write_file("ai-bot/test/a.test.js", "// would pass if incorrectly selected\n")
+        self.workspace.write_file("ai-bot/test/[a].test.js", "throw new Error('this literal file must not be bypassed');\n")
+        self.workspace.write_file("ai-bot/test/{a,b}.test.js", "throw new Error('brace expansion must not bypass this file');\n")
+        for selected in ["test/[a].test.js", "ai-bot/test/[a].test.js", "test/{a,b}.test.js"]:
+            with self.subTest(selected=selected):
+                result, popen, cleanup = self.run_mocked(project="ai-bot", test_files=[selected])
+                self.assertFalse(result["passed"])
+                self.assertFalse(result["complete"])
+                self.assertEqual(result["errorCode"], "INVALID_TEST_FILES")
+                popen.assert_not_called()
+                cleanup.assert_not_called()
+
+    @unittest.skipUnless(shutil.which("node"), "Node is needed for actual full-suite discovery")
+    def test_grouped_node_filenames_remain_covered_by_full_project_discovery(self):
+        self.workspace.write_file("ai-bot/test/a.test.js", "require('node:test')('plain target', () => {});\n")
+        self.workspace.write_file("ai-bot/test/[a].test.js",
+                                  "require('node:test')('literal grouped target', () => { throw new Error('fixture failure'); });\n")
+        result = subprocess.run([shutil.which("node"), "--test", "--test-concurrency=1"], cwd=self.work / "ai-bot",
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=15)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b"literal grouped target", result.stdout)
+
+    def test_normalized_paths_are_accepted_by_the_image_entrypoint(self):
+        self.workspace.write_file("code-agent/tests/test_new.py", "# fixture\n")
+        self.workspace.write_file("code-agent/tests/__init__.py", "")
+        self.workspace.write_file("ai-bot/test/中文 sample.test.js", "const test = require('node:test');\ntest('fixture', () => {});\n")
+        self.workspace.write_file("code-agent/tests/test_中文 sample.py", "import unittest\nclass Fixture(unittest.TestCase):\n def test_ok(self): self.assertTrue(True)\n")
+        entrypoint = runpy.run_path(str(Path(__file__).resolve().parents[1] / "runtime" / "run-checks.py"))["main"]
+        for project, selected, expected in [
+            ("ai-bot", "ai-bot/test/example.test.js", ["node", "--test", "--test-concurrency=1", "test/example.test.js"]),
+            ("code-agent", "code-agent/tests/test_new.py", ["/usr/bin/python3", "-m", "unittest", "tests.test_new"]),
+            ("ai-bot", "ai-bot/test/中文 sample.test.js", ["node", "--test", "--test-concurrency=1", "test/中文 sample.test.js"]),
+            ("code-agent", "code-agent/tests/test_中文 sample.py", ["/usr/bin/python3", "-m", "unittest", "tests.test_中文 sample"]),
+        ]:
+            with self.subTest(project=project):
+                result, popen, _ = self.run_mocked(project=project, test_files=[selected])
+                self.assertTrue(result["passed"])
+                argv = popen.call_args.args[0]
+                image_args = argv[argv.index("/usr/local/bin/run-checks") + 1:]
+                runtime_root = Path(self.temp.name) / ("runtime-" + project)
+                def mapped_path(value):
+                    return {"/input": self.work, "/work/repo": runtime_root}.get(value, Path(value))
+                # Execute the actual entrypoint's validation and command building;
+                # only its mount locations, UID and external test process are fixtures.
+                with patch.dict(entrypoint.__globals__, {"Path": mapped_path}), \
+                        patch.object(sys, "argv", ["run-checks", *image_args]), \
+                        patch("os.getuid", return_value=1000, create=True), \
+                        patch.object(Path, "symlink_to"), patch.dict(os.environ), \
+                        patch("subprocess.run", return_value=subprocess.CompletedProcess(expected, 0)) as command:
+                    self.assertEqual(entrypoint(), 0)
+                self.assertEqual(command.call_args.args[0], expected)
+                self.assertEqual(command.call_args.kwargs["cwd"], runtime_root / project)
+                if "中文" in selected:
+                    executable = sys.executable if project == "code-agent" else shutil.which("node")
+                    if executable:
+                        actual = subprocess.run([executable, *expected[1:]], cwd=runtime_root / project,
+                                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=15)
+                        self.assertEqual(actual.returncode, 0, actual.stdout.decode("utf-8", errors="replace"))
+                        self.assertIn(b"1", actual.stdout)
+
+    @unittest.skipIf(os.name == "nt", "Host MAX_PATH prevents constructing this Linux workspace fixture")
+    def test_long_paths_use_workspace_limits_instead_of_the_legacy_runner_limit(self):
+        long_name = "test/" + "x" * 230 + ".test.js"
+        self.workspace.write_file("ai-bot/" + long_name, "// fixture\n")
+        result, popen, _ = self.run_mocked(project="ai-bot", test_files=["ai-bot/" + long_name])
+        self.assertTrue(result["passed"])
+        self.assertEqual(popen.call_args.args[0][-2:], ["ai-bot", long_name])
+        valid = runpy.run_path(str(Path(__file__).resolve().parents[1] / "runtime" / "run-checks.py"))["valid_test_path"]
+        self.assertTrue(valid(long_name, "ai-bot"))
+
+    def test_image_entrypoint_rejects_unsafe_paths_before_copying_or_launching(self):
+        entrypoint = runpy.run_path(str(Path(__file__).resolve().parents[1] / "runtime" / "run-checks.py"))["main"]
+        invalid = [("ai-bot", value) for value in ["../test/a.test.js", "/test/a.test.js", "--eval=evil",
+                   "test/../a.test.js", "test//a.test.js", "test/./a.test.js", "test/a\n.test.js",
+                   "test\\a.test.js", "test/a?.test.js", "test/*.test.js", "test/[a].test.js", "test/{a,b}.test.js",
+                   "test/@(a).test.js", "test/+(a).test.js", "test/!(a).test.js", "test/sub[a]/file.test.js",
+                   "src/a.test.js", "test/" + "x" * 256 + ".test.js"]]
+        invalid += [("code-agent", "tests/test_multi.part.py"), ("code-agent", "tests/a.part/test_new.py"),
+                    ("code-agent", "tests/example.test.js")]
+        for project, selected in invalid:
+            with self.subTest(selected=selected), patch.object(sys, "argv", ["run-checks", project, selected]), \
+                    patch("shutil.copytree") as copy, patch("subprocess.run") as command:
+                self.assertEqual(entrypoint(), 2)
+                copy.assert_not_called()
+                command.assert_not_called()
+
     def test_full_project_suite_covers_only_its_actual_changed_projects(self):
         self.workspace.write_file("ai-bot/new.js", "const value = 1;\n")
         result, _, _ = self.run_mocked(project="ai-bot")
@@ -115,6 +212,19 @@ class SandboxTests(unittest.TestCase):
         for args in ({"project": "other"}, {"project": "all", "test_files": ["test/example.test.js"]},
                      {"project": "ai-bot", "test_files": ["../outside.test.js"]},
                      {"project": "ai-bot", "test_files": ["--test-reporter=evil"]},
+                     {"project": "ai-bot", "test_files": ["music-bot/test/example.test.js"]},
+                     {"project": "ai-bot", "test_files": ["ai-bot/../music-bot/test/example.test.js"]},
+                     {"project": "ai-bot", "test_files": ["/ai-bot/test/example.test.js"]},
+                     {"project": "ai-bot", "test_files": ["ai-bot//test/example.test.js"]},
+                     {"project": "ai-bot", "test_files": ["ai-bot/./test/example.test.js"]},
+                     {"project": "ai-bot", "test_files": ["ai-bot/--test-reporter=evil"]},
+                     {"project": "ai-bot", "test_files": ["test/@(a).test.js"]},
+                     {"project": "ai-bot", "test_files": ["test/+(a).test.js"]},
+                     {"project": "ai-bot", "test_files": ["test/!(a).test.js"]},
+                     {"project": "ai-bot", "test_files": ["test/sub[a]/file.test.js"]},
+                     {"project": "code-agent", "test_files": ["tests/test_multi.part.py"]},
+                     {"project": "code-agent", "test_files": ["tests/a.part/test_new.py"]},
+                     {"project": "code-agent", "test_files": ["ai-bot/test/example.test.js"]},
                      {"project": "ai-bot", "test_files": ["src/server.js"]}):
             with self.subTest(args=args):
                 result, popen, _ = self.run_mocked(**args)
