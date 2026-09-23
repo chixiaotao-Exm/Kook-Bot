@@ -4,7 +4,13 @@
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
   const manageRequested = new URLSearchParams(location.search).get('manage') === '1';
+  const initialInvitationId = new URLSearchParams(location.search).get('invite');
   const state = { authenticated: false, publicAccess: false, canManage: false, accounts: [], platform: 'all', filter: 'all', query: '', view: 'overview', snapshot: null, reportConfig: null, reportingLoaded: false, loading: false, refreshing: false, csrfToken: null };
+  state.invitations = { enabled: false, publicInvites: false, canInvite: false };
+  const invitation = { id: null, generation: 0, value: null, prepared: false, loading: false, sending: false, message: '', error: false };
+  const invitationPrograms = new Set(['codex_referral_consumer', 'codex_referral_workspace']);
+  const invitationCount = value => typeof value?.availableCount === 'number' && Number.isSafeInteger(value.availableCount) && value.availableCount >= 0 ? value.availableCount : null;
+  const canInvite = () => state.invitations.enabled && state.invitations.canInvite && (state.invitations.publicInvites || state.authenticated);
   const canRead = () => state.publicAccess || state.authenticated;
   const isManaging = () => state.canManage && (!state.publicAccess || manageRequested);
   const providers = { openai: { name: 'OpenAI', icon: '◎' }, claude: { name: 'Claude', icon: '✳' }, anthropic: { name: 'Claude', icon: '✳' }, grok: { name: 'Grok', icon: '𝕏' }, deepseek: { name: 'DeepSeek', icon: 'D' }, gemini: { name: 'Gemini', icon: '✦' } };
@@ -75,7 +81,7 @@
     toastTimer = setTimeout(() => { $('#toast').hidden = true; }, 4500);
   }
 
-  async function api(path, { method = 'GET', body, signal } = {}) {
+  async function api(path, { method = 'GET', body, signal, timeoutMs = 45000 } = {}) {
     const headers = { Accept: 'application/json' };
     if (body !== undefined) headers['Content-Type'] = 'application/json';
     if (state.csrfToken && method !== 'GET') headers['X-CSRF-Token'] = state.csrfToken;
@@ -83,14 +89,15 @@
     const cancel = () => controller.abort();
     if (signal?.aborted) controller.abort();
     else signal?.addEventListener('abort', cancel, { once: true });
-    const timeout = setTimeout(() => controller.abort(), 45000);
-    let response;
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    let response, data;
     try {
       response = await fetch(`./api/${path}`, { method, headers, credentials: 'same-origin', cache: 'no-store', signal: controller.signal, ...(body !== undefined ? { body: JSON.stringify(body) } : {}) });
+      data = await response.json().catch(() => ({}));
+      if (controller.signal.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
     } catch (error) {
       throw new Error(path === 'key-usage' ? error.name === 'AbortError' ? '查询超时，请稍后重试。' : '暂时无法连接服务，请稍后重试。' : error.name === 'AbortError' ? '查询超时，保留最近一次结果，请稍后重试。' : '暂时无法连接服务，保留最近一次结果。');
     } finally { clearTimeout(timeout); signal?.removeEventListener('abort', cancel); }
-    const data = await response.json().catch(() => ({}));
     if (data.csrf || data.csrfToken) state.csrfToken = data.csrf || data.csrfToken;
     if (response.status === 401 && path === 'session') return { ...data, authenticated: false };
     if (!response.ok) {
@@ -126,13 +133,15 @@
     $('#report-readonly').hidden = managing;
     $('#manage-reports').hidden = !state.publicAccess || managing;
     $('#public-report-return').hidden = !state.publicAccess || !managing;
-    $('#access-note').textContent = state.publicAccess ? '只读看板' : '管理员';
+    $('#access-note').textContent = state.publicAccess ? state.invitations.enabled && state.invitations.publicInvites ? '公开看板' : '只读看板' : '管理员';
+    if ($('#invitation-dialog').open) renderInvitation();
   }
 
   async function showApp(session) {
     state.authenticated = Boolean(session.authenticated);
     if (typeof session.publicAccess === 'boolean') state.publicAccess = session.publicAccess;
     state.canManage = state.authenticated && session.canManage !== false;
+    applyInvitationCapabilities(session.invitations);
     state.csrfToken = session.csrf || session.csrfToken || state.csrfToken;
     $('#admin-name').textContent = session.user?.username || session.user?.name || session.user?.email || '管理员';
     $('#boot-view').hidden = true;
@@ -140,7 +149,8 @@
     $('#app-view').hidden = false;
     renderAccess();
     await loadStatus();
-    if (state.publicAccess && manageRequested && isManaging()) await showView('reports');
+    if (initialInvitationId && state.accounts.some(account => String(account.id) === initialInvitationId)) void openInvitation(initialInvitationId);
+    else if (state.publicAccess && manageRequested && isManaging()) await showView('reports');
     schedulePoll();
   }
 
@@ -327,6 +337,111 @@
   }
 
   const creditLabels = { unknown: '未知', checking: '查询中', available: '可用', resetting: '重置中', success: '重置成功', no_credit: '无卡', failed: '检查失败' };
+  function applyInvitationCapabilities(value) {
+    state.invitations = { enabled: value?.enabled === true, publicInvites: value?.publicInvites === true, canInvite: value?.canInvite === true };
+  }
+  function invitationHtml(account) {
+    const value = account.invitation;
+    if (!value || typeof value !== 'object') return '';
+    const count = invitationCount(value), enabled = state.invitations.enabled && value.supported === true;
+    const label = value.supported === false ? '邀请未开放' : count === null ? '可邀请 <strong>未知</strong>' : `可邀请 <strong>${number(count, 0)}</strong> 人`;
+    const note = value.freshness === 'stale' ? '上次记录' : value.programLabel || '邀请名额';
+    return `<div class="account-invitations${count === 0 || !enabled ? ' unavailable' : ''}" data-account-invitations><div><span class="invitation-label">${label}</span><small>${escapeHtml(note)}</small></div><button class="button secondary" type="button" data-invite-account="${escapeHtml(account.id)}" ${enabled ? '' : 'disabled'}>${enabled ? count > 0 && value.shouldShow ? '邀请' : '查看' : '未开放'}</button></div>`;
+  }
+  function currentInvitationAccount() { return state.accounts.find(account => String(account.id) === invitation.id); }
+  function invitationReady() {
+    const value = invitation.value;
+    return Boolean(canInvite() && currentInvitationAccount() && invitation.prepared && value?.supported === true &&
+      value.shouldShow === true && invitationCount(value) > 0 && invitationPrograms.has(value.programId));
+  }
+  function renderInvitation() {
+    if (!$('#invitation-dialog').open) return;
+    const account = currentInvitationAccount(), value = invitation.value;
+    const count = invitationCount(value), busy = invitation.loading || invitation.sending;
+    $('#invitation-heading').textContent = value?.title || '发送邀请';
+    $('#invitation-account-name').textContent = account?.name || '账号已不可用';
+    $('#invitation-account-plan').textContent = account ? accountPlan(account).label : '';
+    $('#invitation-program').textContent = value?.programLabel || '邀请名额';
+    $('#invitation-count').textContent = invitation.loading ? '正在确认…' : count === null ? '名额未知' : `可邀请 ${number(count, 0)} 人`;
+    $('#invitation-description').textContent = typeof value?.description === 'string' ? value.description : '';
+    const rules = Array.isArray(value?.rules) ? value.rules.filter(item => typeof item === 'string') : [];
+    $('#invitation-rules').innerHTML = rules.map(rule => `<li>${escapeHtml(rule)}</li>`).join('');
+    $('#invitation-rules').hidden = !rules.length;
+    const message = account ? invitation.message : '账号已不可用，请关闭窗口后刷新页面。';
+    $('#invitation-feedback').textContent = message;
+    $('#invitation-feedback').hidden = !message;
+    $('#invitation-feedback').className = `feedback${invitation.error || !account ? ' error' : ''}`;
+    $('#invitation-login').hidden = !state.invitations.enabled || state.invitations.publicInvites || state.authenticated;
+    $('#invitation-login').href = `?${new URLSearchParams({ manage: '1', invite: invitation.id || '' })}`;
+    $('#invitation-email').disabled = busy || !invitationReady();
+    $('#invitation-confirm-row').hidden = value?.requiresConfirmation !== true;
+    $('#invitation-confirm').disabled = busy || !invitationReady();
+    $('#invitation-confirm').required = value?.requiresConfirmation === true;
+    $('#invitation-submit').disabled = busy || !invitationReady() || value?.requiresConfirmation === true && !$('#invitation-confirm').checked;
+    $('#invitation-submit').textContent = invitation.sending ? '发送中…' : '发送邀请';
+    $('#invitation-refresh').disabled = busy || !state.invitations.enabled;
+    $('#invitation-refresh').textContent = invitation.loading ? '正在确认…' : '刷新名额';
+    $('#invitation-close').disabled = invitation.sending;
+    $('#invitation-dialog').setAttribute('aria-busy', String(busy));
+  }
+  function setAccountInvitation(id, value) {
+    const account = state.accounts.find(item => String(item.id) === id);
+    if (account) { account.invitation = value; renderAccounts(); }
+  }
+  async function refreshInvitation() {
+    if (invitation.loading || invitation.sending || !invitation.id || !$('#invitation-dialog').open) return;
+    const id = invitation.id, generation = ++invitation.generation;
+    invitation.loading = true; invitation.prepared = false; invitation.message = ''; invitation.error = false;
+    $('#invitation-confirm').checked = false; renderInvitation();
+    const current = () => generation === invitation.generation && invitation.id === id && $('#invitation-dialog').open;
+    try {
+      // Refresh the browser's CSRF session and capability before an explicit check.
+      const session = await api('session');
+      if (!current()) return;
+      state.authenticated = Boolean(session.authenticated); state.canManage = state.authenticated && session.canManage !== false;
+      applyInvitationCapabilities(session.invitations); renderAccess();
+      if (!canInvite()) throw new Error(state.invitations.publicInvites ? '邀请暂不可用，请稍后再试。' : '请先登录管理员账号，再发送邀请。');
+      const result = await api(`invitations/${encodeURIComponent(id)}/refresh`, { method: 'POST', body: {} });
+      if (!current()) return;
+      invitation.value = result.invitation; invitation.prepared = true; setAccountInvitation(id, result.invitation);
+      if (!invitationReady()) invitation.message = invitationCount(result.invitation) === 0 ? '当前没有可用邀请名额。' : '当前账号暂不可邀请，请稍后刷新名额。';
+    } catch (error) { if (current()) { invitation.message = error.message || '无法确认邀请名额，请稍后刷新。'; invitation.error = true; } }
+    finally { if (current()) { invitation.loading = false; renderInvitation(); } }
+  }
+  async function openInvitation(id) {
+    if (invitation.sending) return;
+    const account = state.accounts.find(item => String(item.id) === id);
+    if (!account?.invitation) return;
+    Object.assign(invitation, { id, generation: invitation.generation + 1, value: account.invitation, prepared: false, loading: false, message: '', error: false });
+    $('#invitation-form').reset();
+    if (!$('#invitation-dialog').open) $('#invitation-dialog').showModal();
+    renderInvitation(); await refreshInvitation();
+  }
+  async function sendInvitation() {
+    const form = $('#invitation-form');
+    if (invitation.loading || invitation.sending || !invitationReady() || !form.reportValidity()) return;
+    const id = invitation.id, generation = invitation.generation;
+    const email = $('#invitation-email').value.trim(), value = invitation.value;
+    const confirmed = value.requiresConfirmation === true && $('#invitation-confirm').checked;
+    if (value.requiresConfirmation === true && !confirmed) return;
+    invitation.sending = true; invitation.message = ''; invitation.error = false; renderInvitation();
+    try {
+      const result = await api(`invitations/${encodeURIComponent(id)}/invite`, { method: 'POST',
+        body: { email, programId: value.programId, confirmed, requestId: crypto.randomUUID() }, timeoutMs: 120000 });
+      if (generation !== invitation.generation || invitation.id !== id) return;
+      if (result.sent !== true) throw Object.assign(new Error('邀请结果未确认。'), { code: 'SEND_UNKNOWN' });
+      if (result.invitation) { invitation.value = result.invitation; setAccountInvitation(id, result.invitation); }
+      $('#invitation-email').value = '';
+      invitation.message = result.refreshFailed || result.cachePersisted === false ? '邀请已发送；名额显示可能延迟，请刷新确认。' : '邀请已发送，请对方查看邮箱。';
+    } catch (error) {
+      if (generation !== invitation.generation || invitation.id !== id) return;
+      invitation.error = true;
+      const uncertain = error.code === 'SEND_UNKNOWN' || !Number.isInteger(error.status) || error.status >= 500;
+      invitation.message = uncertain ? '发送结果未确认，请先检查收件邮箱；确认后手动刷新名额，不要重复发送。' : error.message || '邀请未发送，请刷新名额后重试。';
+    } finally {
+      if (generation === invitation.generation && invitation.id === id) { invitation.sending = false; invitation.prepared = false; renderInvitation(); }
+    }
+  }
   function resetCreditsHtml(credits, account) {
     if (!credits && !(platformKey(account) === 'openai' && /^(oauth|setup-token)$/i.test(account.type || ''))) return '';
     const validCount = value => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
@@ -369,7 +484,7 @@
     const notices = [stale ? '<span class="warning">旧缓存 · 非实时额度</span>' : '', account.quotaQuery?.message ? `<span class="warning">${escapeHtml(account.quotaQuery.message)}</span>` : '', issue ? `<span class="error" title="${escapeHtml(error || account.status)}">${escapeHtml(error ? String(error).slice(0, 52) + (String(error).length > 52 ? '…' : '') : '账号异常')}</span>` : ''].filter(Boolean).join('');
     const unknown = !known ? '<div class="unknown-block"><span>上游额度未知</span><small>未知 ≠ 0</small></div>' : !primary.length ? '<div class="unknown-block"><span>产品用量见详情</span></div>' : '';
     const metrics = primary.map(metric => `<div class="quota-window">${metricHtml(metric)}${windows.filter(window => window.metricKey && window.metricKey === metric.key).map(window => windowStatsHtml(window, { matched: true })).join('')}</div>`).join('') + windows.filter(window => !window.metricKey || !primaryKeys.has(window.metricKey)).map(window => `<div class="unmatched-window-stats">${windowStatsHtml(window)}</div>`).join('');
-    return `<article class="account-card ${stale ? 'stale' : ''} ${issue ? 'has-error' : ''}" data-account-id="${escapeHtml(account.id)}"><div class="account-header"><span class="provider-icon ${escapeHtml(Object.hasOwn(providers, platformKey(account)) ? platformKey(account) : '')}">${escapeHtml(provider.icon)}</span><div class="account-title"><h3 title="${escapeHtml(account.name)}">${escapeHtml(account.name || `账号 ${account.id}`)}</h3><p class="account-meta"><span>${escapeHtml(provider.name)}</span><span class="account-plan${plan.label === '版本未知' ? ' unknown' : ''}" title="${escapeHtml(`${plan.label} · ${plan.source}`)}">${escapeHtml(plan.label)}</span><span class="account-id">#${escapeHtml(account.id)}</span></p></div><span class="account-scheduling ${scheduling[0]}" data-account-scheduling="${scheduling[0]}" title="Sub2API 参与调度状态，仅展示；开启不代表账号当前一定可用。"><span aria-hidden="true">●</span>${scheduling[1]}</span></div>${resetCreditsHtml(account.resetCredits, account)}${notices ? `<div class="account-notices">${notices}</div>` : ''}<div class="metrics">${unknown}${metrics}</div>${accountDetailsHtml(account, secondary)}</article>`;
+    return `<article class="account-card ${stale ? 'stale' : ''} ${issue ? 'has-error' : ''}" data-account-id="${escapeHtml(account.id)}"><div class="account-header"><span class="provider-icon ${escapeHtml(Object.hasOwn(providers, platformKey(account)) ? platformKey(account) : '')}">${escapeHtml(provider.icon)}</span><div class="account-title"><h3 title="${escapeHtml(account.name)}">${escapeHtml(account.name || `账号 ${account.id}`)}</h3><p class="account-meta"><span>${escapeHtml(provider.name)}</span><span class="account-plan${plan.label === '版本未知' ? ' unknown' : ''}" title="${escapeHtml(`${plan.label} · ${plan.source}`)}">${escapeHtml(plan.label)}</span><span class="account-id">#${escapeHtml(account.id)}</span></p></div><span class="account-scheduling ${scheduling[0]}" data-account-scheduling="${scheduling[0]}" title="Sub2API 参与调度状态，仅展示；开启不代表账号当前一定可用。"><span aria-hidden="true">●</span>${scheduling[1]}</span></div>${resetCreditsHtml(account.resetCredits, account)}${invitationHtml(account)}${notices ? `<div class="account-notices">${notices}</div>` : ''}<div class="metrics">${unknown}${metrics}</div>${accountDetailsHtml(account, secondary)}</article>`;
   }
 
   function renderAccounts() {
@@ -406,6 +521,7 @@
     }
     renderSummary();
     renderAccounts();
+    renderInvitation();
   }
 
   async function loadStatus() {
@@ -688,6 +804,19 @@
   $('#logout').addEventListener('click', logout);
   $('#mobile-logout').addEventListener('click', logout);
   $('#refresh').addEventListener('click', requestRefresh);
+  $('#accounts').addEventListener('click', event => {
+    const button = event.target.closest('[data-invite-account]');
+    if (button && !button.disabled) void openInvitation(button.dataset.inviteAccount);
+  });
+  $('#invitation-form').addEventListener('submit', event => { event.preventDefault(); void sendInvitation(); });
+  $('#invitation-refresh').addEventListener('click', () => void refreshInvitation());
+  $('#invitation-confirm').addEventListener('change', renderInvitation);
+  $('#invitation-close').addEventListener('click', () => { if (!invitation.sending) $('#invitation-dialog').close(); });
+  $('#invitation-dialog').addEventListener('cancel', event => { if (invitation.sending) event.preventDefault(); });
+  $('#invitation-dialog').addEventListener('close', () => {
+    invitation.generation++; invitation.id = null; invitation.value = null; invitation.prepared = false;
+    invitation.loading = false; invitation.message = ''; $('#invitation-form').reset();
+  });
   $('#platform-filters').addEventListener('click', event => { const button = event.target.closest('[data-platform]'); if (!button) return; state.platform = button.dataset.platform; renderSummary(); renderAccounts(); });
   $('#search').addEventListener('input', event => { state.query = event.target.value; renderAccounts(); });
   $('#status-filter').addEventListener('change', event => { state.filter = event.target.value; renderAccounts(); });

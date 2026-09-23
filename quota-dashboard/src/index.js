@@ -14,6 +14,7 @@ import { BroadcastImageRenderer } from './broadcast-image.js';
 import { createKookImageSender } from './kook-image-sender.js';
 import { ActiveQuotaClient } from './active-quota.js';
 import { ActiveQuotaSchedule } from './active-quota-schedule.js';
+import { InvitationClient } from './invitations.js';
 
 const config = {
   dataDir: path.resolve(process.env.DATA_DIR || './data'), sub2apiUrl: process.env.SUB2API_URL || 'http://127.0.0.1:8080',
@@ -47,6 +48,14 @@ await scheduler.init();
 const defaultReportTimes = Array.from({ length: 48 }, (_, index) => `${String(Math.floor(index / 2)).padStart(2, '0')}:${index % 2 ? '30' : '00'}`);
 if (!configured) await scheduler.configure({ enabled: process.env.BROADCAST_ENABLED === 'true' && Boolean(send), times: process.env.BROADCAST_TIMES ? process.env.BROADCAST_TIMES.split(',').map((time) => time.trim()) : defaultReportTimes, timeZone: process.env.BROADCAST_TIME_ZONE || 'Asia/Shanghai' });
 await dashboard.refresh(); dashboard.start();
+const invitations = process.env.INVITATIONS_ENABLED !== 'false' ? await new InvitationClient({
+  baseUrl: config.sub2apiUrl, adminApiKey: config.adminApiKey, dataDir: config.dataDir,
+  getAccount: id => dashboard.snapshot().accounts.find(account => account.id === id),
+  onUpdated: async (id, invitation) => {
+    const result = await dashboard.updateInvitation(id, invitation);
+    if (result.storageError) throw new Error('Invitation snapshot not persisted');
+  },
+}).init() : undefined;
 const keyUsage = new KeyUsageClient({ baseUrl: config.sub2apiUrl });
 let queryGateway, queryBot;
 if (process.env.KOOK_TOKEN && process.env.KOOK_QUERY_ENABLED !== 'false') {
@@ -62,6 +71,7 @@ if (process.env.KOOK_TOKEN && process.env.KOOK_QUERY_ENABLED !== 'false') {
 }
 const web = new QuotaServer({ host: process.env.HOST || '127.0.0.1', port: Number(process.env.PORT || 18998), publicUrl: config.publicUrl, sub2apiUrl: config.sub2apiUrl,
   publicAccess: process.env.PUBLIC_ACCESS !== 'false',
+  invitations, publicInvites: process.env.PUBLIC_INVITES === 'true',
   keyUsage,
   queryBotStatus: () => queryBot ? { ...queryBot.snapshot(), ...queryGateway.snapshot(), queryLastError: queryBot.snapshot().lastError } : { enabled: false },
   activeQuotaStatus: () => activeQuota.snapshot(),
@@ -74,5 +84,5 @@ await web.start(); console.log(JSON.stringify({ event: 'started', port: Number(p
 void queryGateway?.start();
 activeQuota.start(); scheduler.start();
 let closing = false;
-async function shutdown() { if (closing) return; closing = true; const deadline = setTimeout(() => process.exit(1), 20000); queryGateway?.close(); dashboard.close(); await Promise.all([web.close(), scheduler.close(), queryBot?.close(), activeQuota.close()]); clearTimeout(deadline); process.exit(0); }
+async function shutdown() { if (closing) return; closing = true; const deadline = setTimeout(() => process.exit(1), 20000); queryGateway?.close(); dashboard.close(); await Promise.all([web.close(), scheduler.close(), queryBot?.close(), activeQuota.close(), invitations?.close()]); clearTimeout(deadline); process.exit(0); }
 process.once('SIGTERM', () => void shutdown()); process.once('SIGINT', () => void shutdown());
