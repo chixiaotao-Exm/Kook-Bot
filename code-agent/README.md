@@ -45,6 +45,10 @@ https://github.com/chixiaotao-Exm/Kook-Bot
 
 沙箱提供固定版本依赖。修改依赖声明后需要管理员重建镜像，当前任务不能用原镜像通过发布验证。工具不接受任意 shell 命令。
 
+`run_checks` 的 `project: null` 配合空 `testFiles` 检查全部项目；指定项目配合空列表运行该项目的完整检查。定向测试支持 `test/example.test.js` 和 `ai-bot/test/example.test.js` 两种路径，后者的项目名前缀必须与 `project` 一致；Python 项目使用 `tests/test_example.py` 或 `code-agent/tests/test_example.py`。文件必须位于 `test/` 或 `tests/`，支持合法的中文、空格和连字符路径，并沿用工作区路径长度限制。Python 通过 unittest 模块方式运行，因此目录及去掉 `.py` 后的文件名不能额外包含点。Broker 传给镜像的始终是项目内相对路径；升级后须重建测试镜像，使其入口支持扩展的文件名。定向测试仅用于诊断，不能替代发布前完整检查。
+
+Node 会将定向测试参数解释为 glob，故路径不能包含 `*?[]{}()`，避免请求 `test/[a].test.js` 时实际执行 `test/a.test.js` 并产生错误的测试证据。包含这些分组字符的现有文件仍可通过完整项目检查运行；中文和空格不受此限制。
+
 ## 部署
 
 Broker 代码放到 `/opt/kook-code-agent`，安装 Git、Python 3 和 Docker。在仓库根目录构建镜像：

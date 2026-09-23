@@ -9,16 +9,36 @@ import sys
 
 PROJECTS = ('ai-bot', 'quota-dashboard', 'music-bot', 'code-agent')
 
+def valid_test_path(value, project):
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        if len(value.encode('utf-8')) > 1024:
+            return False
+    except UnicodeError:
+        return False
+    parts = value.split('/')
+    if (len(parts) < 2 or len(parts) > 13 or parts[0] not in ('test', 'tests')
+            or re.search(r'[\x00-\x1f\x7f\\:*?"<>|]', value)
+            or any(part in ('', '.', '..') or part.endswith(('.', ' ')) or len(part.encode('utf-8')) > 255 for part in parts)):
+        return False
+    name = parts[-1]
+    if project == 'code-agent':
+        # unittest imports dotted module paths. Unicode, spaces and hyphens are
+        # valid importlib names; additional dots would address another module.
+        return name.startswith('test_') and name.endswith('.py') and not any('.' in part for part in [*parts[:-1], name[:-3]])
+    # Node interprets its positional test arguments as globs. A literal file
+    # such as [a].test.js must not produce evidence for the different a.test.js.
+    return not re.search(r'[\[\]{}()]', value) and name.endswith(('.test.js', '.test.cjs', '.test.mjs', '.spec.js', '.spec.cjs', '.spec.mjs'))
+
 def main():
     if len(sys.argv) < 2 or sys.argv[1] not in (*PROJECTS, 'all'):
         return 2
     project, files = sys.argv[1], sys.argv[2:]
-    if project == 'all' and files:
+    if project == 'all' and files or len(files) > 50:
         return 2
     for value in files:
-        parts = value.split('/')
-        if (len(value) > 240 or any(part in ('', '.', '..') for part in parts)
-                or parts[0] not in ('test', 'tests') or not re.fullmatch(r'[A-Za-z0-9_./-]+', value)):
+        if not valid_test_path(value, project):
             return 2
     # /work is a root-owned tmpfs mount. Copy into a user-owned subdirectory so
     # copytree can preserve timestamps and permissions without chmod on the mount.
