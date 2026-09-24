@@ -1,0 +1,25 @@
+[Unit]
+Description=GitHub notifications to KOOK
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kook-bridge
+Group=kook-bridge
+WorkingDirectory=/opt/kook-github-bridge
+EnvironmentFile=/opt/kook-github-bridge/.env
+ExecStart=/usr/bin/node /opt/kook-github-bridge/src/index.js
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=25
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/kook-github-bridge/data
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
