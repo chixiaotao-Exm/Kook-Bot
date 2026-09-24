@@ -1,0 +1,15 @@
+{
+  "serverUrl": "https://api.example.com/ops/",
+  "hostId": "music-cn",
+  "token": "REPLACE_WITH_A_UNIQUE_HOST_TOKEN",
+  "dataDir": "/var/lib/kook-ops-agent",
+  "intervalSeconds": 30,
+  "collectMetrics": true,
+  "services": [
+    { "id": "music", "name": "音乐机器人服务", "unit": "kook-music-bot.service", "expected": "running", "restartAllowed": true },
+    { "id": "nginx", "name": "网页反向代理", "unit": "nginx.service", "expected": "running", "restartAllowed": false }
+  ],
+  "probes": [
+    { "id": "music", "kind": "music", "url": "https://music.example.com/" }
+  ]
+}

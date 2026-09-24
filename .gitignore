@@ -3,6 +3,8 @@
 .env.*
 !.env.example
 production.env
+ops-center/config.json
+ops-center/agent/config.json
 .deploy-known-hosts
 *.pem
 *.key
