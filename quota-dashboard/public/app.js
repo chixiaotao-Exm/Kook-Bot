@@ -24,6 +24,9 @@
     accountCost: { label: 'A 费用', title: '账号计费', unit: 'USD' }, userCost: { label: 'U 费用', title: '用户扣费', unit: 'USD' } };
   const healthView = { query: '', filter: 'all' };
   const healthLabels = { healthy: '正常', limited: '限流中', temporary: '暂不可用', expired: '已到期', error: '异常', disabled: '已关闭', paused: '暂停调度', unknown: '待确认' };
+  const HEALTH_STALE_MS = 30 * 60000, HEALTH_FUTURE_MS = 60000;
+  const healthClock = { wall: Date.now(), tick: performance.now() };
+  let healthTimer = null, healthFingerprint = '';
   const keyQuery = { epoch: 0, controller: null, presets: [], presetsLoaded: false, loadingPresets: false, activePreset: null };
   const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
   const finite = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
@@ -56,8 +59,11 @@
     || accountCollator.compare(accountPlan(left).label, accountPlan(right).label)
     || accountCollator.compare(String(left.name || ''), String(right.name || ''))
     || accountCollator.compare(String(left.id || ''), String(right.id || ''));
-  const accountIssue = account => Boolean(account.error || ['error', 'disabled', 'inactive', 'rate_limited'].includes(account.status) ||
-    ['limited', 'temporary', 'expired', 'error'].includes(account.health?.state));
+  const accountIssue = account => {
+    const health = accountHealth(account);
+    return Boolean(account.error || ['error', 'disabled', 'inactive', 'rate_limited'].includes(account.status) ||
+      health.fresh && ['limited', 'temporary', 'expired', 'error'].includes(health.state));
+  };
   const knownMetric = metric => finite(metric.usedPercent) || finite(metric.remainingPercent) || finite(metric.remaining) || finite(metric.value) || finite(metric.balance) || finite(metric.used) || finite(metric.limit) || finite(metric.total) || Boolean(metric.display && metric.display !== '未知');
   const accountKnown = account => (account.metrics || []).some(metric => metric.scope !== 'local' && knownMetric(metric));
   const quarterHourTimes = Array.from({ length: 96 }, (_, index) => `${String(Math.floor(index / 4)).padStart(2, '0')}:${String(index % 4 * 15).padStart(2, '0')}`);
@@ -126,6 +132,7 @@
     clearTimeout(pollTimer);
     pauseAccountLoad();
     pauseTrends();
+    pauseHealthExpiry();
     $('#boot-view').hidden = true;
     $('#app-view').hidden = true;
     $('#login-view').hidden = false;
@@ -299,12 +306,78 @@
     if (rows.length) selectTrendDay(rows[Math.max(0, Math.min(rows.length - 1, index + step))].date, focus);
   }
 
-  function accountHealth(account) {
+  function healthNow() {
+    const tick = performance.now();
+    // A backwards wall-clock adjustment must not make an old observation fresh again.
+    healthClock.wall = Math.max(Date.now(), healthClock.wall + Math.max(0, tick - healthClock.tick));
+    healthClock.tick = tick;
+    return healthClock.wall;
+  }
+  function accountHealth(account, now = healthNow()) {
     const health = account.health || {}, known = Object.hasOwn(healthLabels, health.state);
-    const fresh = health.freshness === 'fresh' && typeof health.observedAt === 'string' && Number.isFinite(Date.parse(health.observedAt));
-    const status = known ? health.state : 'unknown';
+    const timestamp = value => typeof value === 'string' && value ? Date.parse(value) : NaN;
+    const observed = timestamp(health.observedAt), age = now - observed;
+    const freshness = health.freshness === 'stale' || Number.isFinite(age) && age > HEALTH_STALE_MS ? 'stale'
+      : health.freshness !== 'fresh' || !Number.isFinite(age) || age < -HEALTH_FUTURE_MS ? 'unknown' : 'fresh';
+    const fresh = freshness === 'fresh';
+    const blocks = { rate_limit: '限流', overload: '过载', temporary: '暂停' };
+    const issues = (Array.isArray(health.issues) ? health.issues : []).filter(issue => issue && typeof issue.code === 'string').map(issue => {
+      const until = timestamp(issue.until);
+      if (!Object.hasOwn(blocks, issue.code) || until > now) return { ...issue };
+      return { ...issue, code: `${issue.code}_${Number.isFinite(until) ? 'ended' : 'unknown'}`,
+        label: Number.isFinite(until) ? `原${blocks[issue.code]}时间已结束` : `${blocks[issue.code]}记录时间未知` };
+    });
+    const active = issues.filter(issue => Object.hasOwn(blocks, issue.code) && timestamp(issue.until) > now);
+    let status = known ? health.state : 'unknown', reason = health.reason || '信息不足，等待新的账号状态观测。';
+    if (issues.some(issue => ['unknown_type', 'unknown_status'].includes(issue.code))) status = 'unknown';
+    else if (status === 'error' || issues.some(issue => ['account_error', 'authentication'].includes(issue.code))) status = 'error';
+    else if (status !== 'unknown' && timestamp(health.expiresAt) <= now) {
+      status = 'expired'; reason = '超过账号配置到期时间，请在原服务核对。';
+      if (!issues.some(issue => issue.code === 'expired')) issues.push({ code: 'expired', label: '账号已到期', until: health.expiresAt });
+    } else if (status === 'disabled' || issues.some(issue => issue.code === 'disabled')) status = 'disabled';
+    else if (['limited', 'temporary'].includes(status) || active.length) {
+      status = active.some(issue => issue.code === 'rate_limit') ? 'limited' : active.length ? 'temporary' : 'unknown';
+      reason = status === 'limited' ? '原服务记录的限流时间尚未结束。' : status === 'temporary'
+        ? '原服务记录了尚未结束的临时阻断。' : issues.some(issue => issue.code.endsWith('_ended'))
+          ? '原阻断时间已结束，等待刷新确认是否恢复。' : '信息不足，等待新的账号状态观测。';
+    } else if (status === 'healthy' && issues.some(issue => issue.code.endsWith('_unknown') || issue.code.endsWith('_ended'))) {
+      status = 'unknown'; reason = '原阻断状态尚未重新确认，等待刷新。';
+    }
+    const recoverAt = ['limited', 'temporary'].includes(status) ? active.map(issue => issue.until).sort((a, b) => timestamp(a) - timestamp(b)).at(-1) || null : null;
     const category = !fresh || status === 'unknown' ? 'unknown' : status === 'healthy' ? 'healthy' : ['disabled', 'paused'].includes(status) ? 'paused' : 'attention';
-    return { ...health, state: status, label: known ? healthLabels[status] : '待确认', category, fresh };
+    return { ...health, state: status, label: healthLabels[status], reason, issues, recoverAt, freshness, category, fresh };
+  }
+  function pauseHealthExpiry() {
+    clearTimeout(healthTimer); healthTimer = null;
+  }
+  function healthStateKey() {
+    const now = healthNow();
+    return JSON.stringify(state.accounts.map(account => [account.id, accountHealth(account, now)]));
+  }
+  function scheduleHealthExpiry() {
+    pauseHealthExpiry();
+    if (document.hidden || !canRead() || $('#app-view').hidden || !state.accounts.length) return;
+    const now = healthNow();
+    let next = now + 60000;
+    const consider = value => { if (Number.isFinite(value) && value > now) next = Math.min(next, value); };
+    for (const account of state.accounts) {
+      const health = account.health || {}, observed = Date.parse(health.observedAt);
+      if (health.freshness === 'fresh') consider(observed + HEALTH_STALE_MS + 1);
+      consider(Date.parse(health.expiresAt));
+      for (const issue of Array.isArray(health.issues) ? health.issues : []) {
+        if (issue && ['rate_limit', 'overload', 'temporary'].includes(issue.code)) consider(Date.parse(issue.until));
+      }
+    }
+    healthTimer = setTimeout(() => { healthTimer = null; refreshHealthState(); }, Math.max(1, Math.ceil(next - now)));
+  }
+  function refreshHealthState() {
+    if (document.hidden || !canRead() || $('#app-view').hidden) { pauseHealthExpiry(); return; }
+    const fingerprint = healthStateKey();
+    if (fingerprint !== healthFingerprint) {
+      healthFingerprint = fingerprint;
+      renderSummary(); renderAccounts(); renderHealth();
+    }
+    scheduleHealthExpiry();
   }
   function accountHealthHtml(account) {
     if (!account.health) return '';
@@ -763,6 +836,7 @@
 
   function accountHtml(account) {
     const provider = platformInfo(account), stale = accountStale(account), issue = accountIssue(account), known = accountKnown(account);
+    const health = accountHealth(account);
     const plan = accountPlan(account);
     const scheduling = account.schedulable === true ? ['enabled', '调度开启'] : account.schedulable === false ? ['disabled', '调度关闭'] : ['unknown', '调度未知'];
     const allMetrics = account.metrics || [], hasGrokBilling = allMetrics.some(metric => metric.key === 'grok-billing');
@@ -771,7 +845,7 @@
     const windows = Array.isArray(account.windowStats) ? account.windowStats : [];
     const primaryKeys = new Set(primary.map(metric => metric.key));
     const error = account.error && typeof account.error === 'object' ? account.error.message || '查询失败' : account.error;
-    const notices = [stale ? '<span class="warning">旧缓存 · 非实时额度</span>' : '', account.quotaQuery?.message ? `<span class="warning">${escapeHtml(account.quotaQuery.message)}</span>` : '', issue ? `<span class="error" title="${escapeHtml(error || account.health?.reason || account.status)}">${escapeHtml(error ? String(error).slice(0, 52) + (String(error).length > 52 ? '…' : '') : healthLabels[account.health?.state] || '账号异常')}</span>` : ''].filter(Boolean).join('');
+    const notices = [stale ? '<span class="warning">旧缓存 · 非实时额度</span>' : '', account.quotaQuery?.message ? `<span class="warning">${escapeHtml(account.quotaQuery.message)}</span>` : '', issue ? `<span class="error" title="${escapeHtml(error || health.reason || account.status)}">${escapeHtml(error ? String(error).slice(0, 52) + (String(error).length > 52 ? '…' : '') : health.label)}</span>` : ''].filter(Boolean).join('');
     const unknown = !known ? '<div class="unknown-block"><span>上游额度未知</span><small>未知 ≠ 0</small></div>' : !primary.length ? '<div class="unknown-block"><span>产品用量见详情</span></div>' : '';
     const metrics = primary.map(metric => `<div class="quota-window">${metricHtml(metric)}${windows.filter(window => window.metricKey && window.metricKey === metric.key).map(window => windowStatsHtml(window, { matched: true })).join('')}</div>`).join('') + windows.filter(window => !window.metricKey || !primaryKeys.has(window.metricKey)).map(window => `<div class="unmatched-window-stats">${windowStatsHtml(window)}</div>`).join('');
     return `<article class="account-card ${stale ? 'stale' : ''} ${issue ? 'has-error' : ''}" data-account-id="${escapeHtml(account.id)}"><div class="account-header"><span class="provider-icon ${escapeHtml(Object.hasOwn(providers, platformKey(account)) ? platformKey(account) : '')}">${escapeHtml(provider.icon)}</span><div class="account-title"><h3 title="${escapeHtml(account.name)}">${escapeHtml(account.name || `账号 ${account.id}`)}</h3><p class="account-meta"><span>${escapeHtml(provider.name)}</span><span class="account-plan${plan.label === '版本未知' ? ' unknown' : ''}" title="${escapeHtml(`${plan.label} · ${plan.source}`)}">${escapeHtml(plan.label)}</span><span class="account-id">#${escapeHtml(account.id)}</span>${accountHealthHtml(account)}</p></div><span class="account-scheduling ${scheduling[0]}" data-account-scheduling="${scheduling[0]}" title="Sub2API 参与调度状态，仅展示；开启不代表账号当前一定可用。"><span aria-hidden="true">●</span>${scheduling[1]}</span></div>${accountLoadHtml(account)}${creditPanelsHtml(account)}${invitationHtml(account)}${notices ? `<div class="account-notices">${notices}</div>` : ''}<div class="metrics">${unknown}${metrics}</div>${accountDetailsHtml(account, secondary)}</article>`;
@@ -814,6 +888,7 @@
     renderAccounts();
     renderInvitation();
     syncTrendAccounts(); renderHealth();
+    healthFingerprint = healthStateKey(); scheduleHealthExpiry();
   }
 
   async function loadStatus() {
@@ -827,7 +902,7 @@
         $('#refresh-state').textContent = '暂时无法读取最新状态';
         $('#update-dot').classList.add('warning');
       }
-    } finally { state.loading = false; }
+    } finally { state.loading = false; refreshHealthState(); }
   }
 
   async function requestRefresh() {
@@ -1063,6 +1138,7 @@
     $('#health-view').hidden = view !== 'health';
     $('#breadcrumb-title').textContent = ({ overview: '额度总览', reports: '定时播报', 'key-usage': 'Key 用量', trends: '每日趋势', health: '账号健康' })[view] || '额度总览';
     $$('[data-view]').forEach(button => { button.classList.toggle('active', button.dataset.view === view); button.setAttribute('aria-current', button.dataset.view === view ? 'page' : 'false'); });
+    refreshHealthState();
     if (view === 'reports') await loadReports();
     if (view === 'key-usage') await loadKeyPresets();
     if (view === 'health') renderHealth();
@@ -1165,11 +1241,11 @@
     finally { $('#save-report').disabled = false; }
   });
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden) { pauseAccountLoad(); pauseTrends(); }
-    else if (canRead()) { loadStatus(); schedulePoll(); void refreshAccountLoad(); if (state.view === 'trends') void loadTrends(); }
+    if (document.hidden) { pauseAccountLoad(); pauseTrends(); pauseHealthExpiry(); }
+    else if (canRead()) { refreshHealthState(); loadStatus(); schedulePoll(); void refreshAccountLoad(); if (state.view === 'trends') void loadTrends(); }
   });
   window.addEventListener('pageshow', event => { if (event.persisted) location.reload(); });
-  window.addEventListener('pagehide', () => { resetKeyQuery({ clearInput: true }); pauseAccountLoad(); pauseTrends(); });
+  window.addEventListener('pagehide', () => { resetKeyQuery({ clearInput: true }); pauseAccountLoad(); pauseTrends(); pauseHealthExpiry(); });
 
   async function boot() {
     $('#boot-retry').hidden = true;
