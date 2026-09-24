@@ -231,6 +231,22 @@
     const host = state.data.hosts.find(item => item.id === command.hostId), service = list(host?.services).find(item => item.id === command.serviceId);
     return `<article class="command-item"><div><strong>${escapeHtml(text(host?.name, command.hostId))} / ${escapeHtml(text(service?.name, command.serviceId))}</strong>${badge({ label, tone })}</div>${command.message ? `<p>${escapeHtml(text(command.message))}</p>` : ''}<small>${escapeHtml(stamp(command.createdAt))}</small></article>`;
   }
+  function reportsHtml(reports) {
+    if (!reports || typeof reports !== 'object' || Array.isArray(reports)) return '';
+    const enabled = reports.enabled === true;
+    const reportTime = value => Number.isFinite(time(value)) ? new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai',
+      month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(value)) + ' · 北京时间' : null;
+    const next = reportTime(reports.nextRunAt), last = reportTime(reports.lastRunAt);
+    const statuses = { sent: ['已送达', 'good'], sending: ['发送中', 'warn'], uncertain: ['送达待确认', 'warn'], pending: ['待播报', ''], skipped: ['已跳过', ''] };
+    const channels = [['infra', '基础设施播报'], ['web', '网站接口播报']].map(([key, name]) => {
+      const result = reports.channels?.[key]; if (!result || typeof result !== 'object') return '';
+      const [label, tone] = Object.hasOwn(statuses, result.status) ? statuses[result.status] : ['待确认', ''];
+      const observed = reportTime(result.attemptedAt || result.slotAt);
+      return `<div class="notification-row"><span>${name}</span><strong${observed ? ` title="${escapeHtml(observed)}"` : ''}>${badge({ label, tone })}</strong></div>`;
+    }).join('');
+    const uncertain = ['infra', 'web'].some(key => reports.channels?.[key]?.status === 'uncertain');
+    return `<div class="notification-row"><span>定时播报</span><strong>${enabled ? '每30分钟自动播报' : '未开启'}</strong></div>${enabled ? `<div class="notification-row"><span>下次播报</span><strong>${escapeHtml(next || '等待排期')}</strong></div>` : ''}<div class="notification-row"><span>最近播报</span><strong>${escapeHtml(last || '尚未播报')}</strong></div>${channels}${reports.lastError ? `<p class="notification-note" role="status">${escapeHtml(text(reports.lastError))}</p>` : uncertain ? '<p class="notification-note" role="status">部分频道送达未确认，请核对对应 KOOK 频道。</p>' : ''}`;
+  }
   function render() {
     if (!state.authenticated) return;
     const data = state.data;
@@ -251,7 +267,7 @@
     $('#overview-attention').innerHTML = open.slice(0, 5).map(item => incidentHtml(item, true)).join('') || empty('暂时没有未恢复事件', '状态过期的目标仍需等待新采样确认。');
     $('#overview-monitors').innerHTML = monitors.slice(0, 5).map(monitor => monitorHtml(monitor, true)).join('') || empty('尚未配置监控目标');
     const notification = data.notification || {};
-    $('#notification-status').innerHTML = `<div class="notification-row"><span>通知服务</span>${badge({ label: notification.enabled === true ? '已开启' : '未开启', tone: notification.enabled === true ? 'good' : '' })}</div><div class="notification-row"><span>播报机器人</span><strong>${escapeHtml(text(notification.botName, '思维2'))}</strong></div><div class="notification-row"><span>基础设施频道</span><strong>${escapeHtml(text(notification.infraChannel, '未配置'))}</strong></div><div class="notification-row"><span>网站接口频道</span><strong>${escapeHtml(text(notification.webChannel, '未配置'))}</strong></div><div class="notification-row"><span>查询机器人</span>${badge({ label: data.queryBot?.connected === true ? '在线' : '未连接', tone: data.queryBot?.connected === true ? 'good' : '' })}</div>${notification.lastError ? `<p class="notification-note">${escapeHtml(text(notification.lastError))}</p>` : ''}`;
+    $('#notification-status').innerHTML = `<div class="notification-row"><span>通知服务</span>${badge({ label: notification.enabled === true ? '已开启' : '未开启', tone: notification.enabled === true ? 'good' : '' })}</div><div class="notification-row"><span>播报机器人</span><strong>${escapeHtml(text(notification.botName, '思维2'))}</strong></div><div class="notification-row"><span>基础设施频道</span><strong>${escapeHtml(text(notification.infraChannel, '未配置'))}</strong></div><div class="notification-row"><span>网站接口频道</span><strong>${escapeHtml(text(notification.webChannel, '未配置'))}</strong></div><div class="notification-row"><span>查询机器人</span>${badge({ label: data.queryBot?.connected === true ? '在线' : '未连接', tone: data.queryBot?.connected === true ? 'good' : '' })}</div>${reportsHtml(data.reports)}${notification.lastError ? `<p class="notification-note">${escapeHtml(text(notification.lastError))}</p>` : ''}`;
     $('#host-count').textContent = `${hosts.length} 台`; $('#host-list').innerHTML = hosts.map(host => hostHtml(host)).join('') || empty('尚未接入服务器');
     $('#monitor-count').textContent = `${monitors.length} 个`; $('#monitor-list').innerHTML = monitors.map(monitor => monitorHtml(monitor)).join('') || empty('尚未配置监控目标');
     $('#bot-count').textContent = `${bots.length} 个`; $('#bot-list').innerHTML = bots.map(({ bot, host }) => botHtml(bot, host)).join('') || empty('尚未收到机器人状态');
