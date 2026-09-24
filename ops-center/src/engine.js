@@ -132,7 +132,8 @@ export class OpsEngine {
       return { id: monitor.id, name: monitor.name, url: monitor.url, ...value, maintenance, state: maintenance ? 'maintenance' : !valid ? 'unknown' : value.ok ? 'up' : 'down' };
     }), incidents: data.incidents.slice(0, 100), commands: data.commands.slice(0, 50), audit: data.audit.slice(0, 100),
     notification: { enabled: Boolean(this.send), botName: '思维2', infraChannel: this.config.channelIds.infra, webChannel: this.config.channelIds.web, lastError: this.notificationError },
-    queryBot: this.queryBotStatus(), storageError: this.store.failed ? '状态存储不可用' : null };
+    queryBot: this.queryBotStatus(), reports: this.reportStatus?.() || { enabled: false, intervalMinutes: 30, nextRunAt: null, lastRunAt: null, channels: {}, lastError: null },
+    storageError: this.store.failed ? '状态存储不可用' : null };
   }
   async monitor(monitor) {
     let result; try { result = await this.probe(monitor); } catch { result = { ok: false, checkedAt: iso(this.now()), latencyMs: null, httpStatus: null, tlsDays: null, error: '监控请求失败' }; }
