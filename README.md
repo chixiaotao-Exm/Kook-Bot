@@ -9,6 +9,7 @@ KOOK 多机器人项目合集，包含双音乐源播放机器人、Sub2API 额�
 | `ai-bot/` | 文字 AI 对话、图片回复、实时进度，以及两个机器人按话题轮流互聊 | [AI 对话机器人](ai-bot/README.md) |
 | `code-agent/` | 实际源码读写、隔离测试与草稿 PR，固定操作本仓库 | [仓库执行工具](code-agent/README.md) |
 | `bridge-bot/` | GitHub 提交、PR 和 CI 结果的 KOOK 通知桥 | [通知桥](bridge-bot/README.md) |
+| `ops-center/` | Linux 资源与服务、网站接口与证书、机器人总览、KOOK 告警和状态查询 | [运维中心](ops-center/README.md) |
 
 ## 快速开始
 

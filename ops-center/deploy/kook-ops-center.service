@@ -1,0 +1,25 @@
+[Unit]
+Description=KOOK operations center and monitoring
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kook-ops
+Group=kook-ops
+WorkingDirectory=/opt/kook-ops-center
+EnvironmentFile=/opt/kook-ops-center/.env
+ExecStart=/usr/bin/node /opt/kook-ops-center/src/index.js
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=25
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/kook-ops-center/data
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
