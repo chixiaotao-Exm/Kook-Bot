@@ -1,0 +1,29 @@
+[Unit]
+Description=KOOK operations host status agent
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/kook-ops-agent
+ExecStart=/usr/bin/python3 -B /opt/kook-ops-agent/collector.py --config /etc/kook-ops-agent/config.json
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=45
+UMask=0077
+StateDirectory=kook-ops-agent
+StateDirectoryMode=0700
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ReadWritePaths=/var/lib/kook-ops-agent
+
+[Install]
+WantedBy=multi-user.target

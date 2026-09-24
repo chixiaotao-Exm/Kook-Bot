@@ -1,0 +1,61 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import http from 'node:http';
+import { randomUUID } from 'node:crypto';
+import { OpsServer } from '../src/server.js';
+import { AdminAuth } from '../src/auth.js';
+import { OpsError } from '../src/storage.js';
+
+async function fixture(t) {
+  const auth = new AdminAuth({ baseUrl: 'http://127.0.0.1/' }); let commands = 0, reports = 0;
+  const engine = { store: { failed: false }, snapshot: () => ({ hosts: [{ name: 'private-host' }] }),
+    ingest: async () => { reports++; return { commands: [] }; },
+    command: async (body, authorize) => { authorize(); commands++; return { id: 'ok' }; }, maintenance: async (body, authorize) => { authorize(); return { updated: true }; } };
+  const config = { publicUrl: 'http://ops.test/ops/', host: '127.0.0.1', port: 0, hosts: [{ id: 'linux', token: 'a'.repeat(48) }] };
+  const server = new OpsServer({ config, engine, auth, bodyTimeoutMs: 250 }); const address = await server.start();
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${address.port}/ops`;
+  const session = auth.create({ role: 'admin', email: 'admin@example.test' });
+  const headers = { cookie: `ops_session=${session.id}`, 'x-csrf-token': session.csrf, 'Content-Type': 'application/json', Origin: 'http://ops.test' };
+  return { base, auth, session, headers, server, engine, get commands() { return commands; }, get reports() { return reports; } };
+}
+test('anonymous visitors cannot read operational state or execute commands; agents cannot become admins', async t => {
+  const f = await fixture(t);
+  assert.equal((await fetch(f.base + '/api/snapshot')).status, 401);
+  assert.equal((await fetch(f.base + '/api/commands', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })).status, 401);
+  assert.equal((await fetch(f.base + '/api/snapshot', { headers: { Authorization: 'Bearer ' + 'a'.repeat(48) } })).status, 401);
+  const result = await fetch(f.base + '/api/snapshot', { headers: f.headers }); assert.equal(result.status, 200); assert.equal((await result.json()).hosts[0].name, 'private-host');
+  assert.equal(f.commands, 0);
+});
+test('wrong CSRF and foreign origins are rejected', async t => {
+  const f = await fixture(t);
+  for (const override of [{ 'x-csrf-token': 'wrong' }, { Origin: 'http://evil.test' }]) {
+    assert.equal((await fetch(f.base + '/api/maintenance', { method: 'POST', headers: { ...f.headers, ...override }, body: '{}' })).status, 403);
+  }
+});
+test('logout during a slow request body prevents its command from executing', async t => {
+  const f = await fixture(t);
+  const result = new Promise((resolve, reject) => {
+    const request = http.request(f.base + '/api/commands', { method: 'POST', headers: f.headers }, response => { response.resume(); resolve(response.statusCode); });
+    request.on('error', reject); request.write('{');
+    setTimeout(() => { f.auth.logout(f.session); request.end('"requestId":"' + randomUUID() + '"}'); }, 25);
+  });
+  assert.equal(await result, 401); assert.equal(f.commands, 0);
+});
+test('collector endpoint only accepts matching server-configured token', async t => {
+  const f = await fixture(t), body = JSON.stringify({ hostId: 'linux' });
+  assert.equal((await fetch(f.base + '/api/agent/report', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer wrong' }, body })).status, 401);
+  assert.equal((await fetch(f.base + '/api/agent/report', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + 'a'.repeat(48) }, body })).status, 200);
+  assert.equal(f.reports, 1);
+});
+test('health is degraded after storage failure and errors never expose raw exception details', async t => {
+  const f = await fixture(t); f.engine.store.failed = true;
+  assert.equal((await fetch(f.base + '/health')).status, 503);
+  f.engine.snapshot = () => { throw new Error('secret-token-value'); };
+  const result = await fetch(f.base + '/api/snapshot', { headers: f.headers }); assert.equal(result.status, 503); assert.ok(!(await result.text()).includes('secret-token'));
+});
+test('logout invalidates cookies immediately', async t => {
+  const f = await fixture(t);
+  assert.equal((await fetch(f.base + '/api/logout', { method: 'POST', headers: f.headers, body: '{}' })).status, 200);
+  assert.equal((await fetch(f.base + '/api/snapshot', { headers: f.headers })).status, 401);
+});
