@@ -61,6 +61,8 @@ export function buildScheduledSummary(snapshot, category, now = Date.now()) {
         if (!current || !known) { state = planned ? '计划停用 · 待确认' : '待确认'; warning = true; }
         else if (planned && bot.state === 'stopped') state = '计划停用';
         else if (planned) { state = `计划停用 · ${bot.state === 'online' ? '仍在线' : '状态待确认'}`; warning = true; }
+        else if (bot.health === 'degraded') { state = `异常${bot.lastError ? ` · ${safeOpsText(bot.lastError, 100)}` : ''}`; danger ||= !maintenance; }
+        else if (bot.health === 'unknown') { state = '业务状态待确认'; warning = true; }
         else if (bot.state === 'online') state = bot.playing === true ? '在线 · 播放中' : '在线';
         else if (bot.state === 'offline') { state = '离线'; danger ||= !maintenance; }
         else { state = '已停止'; warning = true; }

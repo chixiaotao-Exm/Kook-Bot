@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createHmac, randomUUID } from 'node:crypto';
 import net from 'node:net';
 import { BridgeServer, verifySignature } from '../src/server.js';
+import { NotificationQueue } from '../src/queue.js';
 
 const SECRET = 'test-only-secret-' + 'a'.repeat(32), REPO = 'chixiaotao-Exm/Kook-Bot';
 const sign = raw => 'sha256=' + createHmac('sha256', SECRET).update(raw).digest('hex');
@@ -24,6 +25,25 @@ async function fixture(t, options = {}) {
   };
   return { queued, logs, send, origin, server };
 }
+
+test('health exposes storage failure and refuses a healthy HTTP status for an unavailable queue', async t => {
+  const f = await fixture(t, { queue: { enqueue: async () => {}, snapshot: () => ({ ready: false, pending: 0, lastError: 'STORAGE' }) } });
+  const response = await fetch(f.origin + '/health');
+  assert.equal(response.status, 503); assert.equal((await response.json()).status, 'degraded');
+});
+
+test('a signed webhook with hanging durable admission ends in 503 and health degrades without sending', async t => {
+  let writes = 0, sends = 0;
+  const queue = await new NotificationQueue({ dataDir: `unused-${randomUUID()}`, writeTimeoutMs: 30,
+    writeState: () => ++writes === 1 ? Promise.resolve() : new Promise(() => {}),
+    send: async () => { sends++; throw Error('must not send'); } }).init();
+  t.after(() => queue.close());
+  const f = await fixture(t, { queue });
+  const response = await f.send(); assert.equal(response.status, 503);
+  const health = await fetch(f.origin + '/health'); assert.equal(health.status, 503);
+  const state = await health.json(); assert.equal(state.queue.ready, false); assert.equal(state.queue.lastError, 'STORAGE');
+  assert.equal(state.queue.pending, 0); assert.equal(sends, 0);
+});
 
 async function socketFixture(t, origin) {
   const socket = net.createConnection({ host: '127.0.0.1', port: Number(new URL(origin).port) });

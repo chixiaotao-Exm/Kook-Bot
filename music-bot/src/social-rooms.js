@@ -81,6 +81,7 @@ export class SocialRooms {
     } else if (event.kind === 'withdraw') this.record(botId, { kind: 'withdraw', actorName: this.requester(event.track).name, message: `撤回了待播歌曲：${event.track.name}` });
     else if (event.kind === 'playing') this.record(botId, { kind: 'playing', actorName: '机器人', message: `正在播放：${event.track.name}` });
     else if (event.kind === 'join' || event.kind === 'leave') this.record(botId, { kind: event.kind, actorName: '机器人', message: event.kind === 'join' ? '进入了语音频道' : '离开了语音频道' });
+    else if (event.kind === 'leave_pending') this.record(botId, { kind: event.kind, actorName: '机器人', message: '播放已停止，退出语音频道尚未确认。' });
     else if (event.kind === 'control' && actions[event.action]) this.record(botId, { kind: 'control', actorName: event.actorName || (event.automated ? '定时计划' : '控制台'), message: actions[event.action] });
   }
   record(botId, event) {

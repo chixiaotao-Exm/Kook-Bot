@@ -10,6 +10,7 @@ import time
 import uuid
 
 from .workspace import PROJECTS, WorkspaceError, validate_path
+from .projects import CHECK_PROTOCOL
 
 MAX_OUTPUT_BYTES = 64 * 1024
 _TRUNCATION = b"\n... [output truncated] ...\n"
@@ -120,7 +121,7 @@ class SandboxRunner:
     def run(self, workspace, project="all", test_files=None, cancel_event=None):
         result = {"passed": False, "exitCode": None, "summary": "测试未执行。", "output": "",
                   "truncated": False, "project": project if project in ("all", *PROJECTS) else "all",
-                  "complete": False, "workHash": None}
+                  "complete": False, "workHash": None, "coveredProjects": [], "checkProtocol": CHECK_PROTOCOL}
         try:
             test_files = self._validate_tests(workspace, project, [] if test_files is None else test_files)
             source = str(workspace.root)
@@ -143,7 +144,7 @@ class SandboxRunner:
                    "--memory", "768m", "--memory-swap", "768m", "--cpus", "1", "--user", "1000:1000",
                    "--tmpfs", "/work:rw,size=128m,mode=1777", "--tmpfs", "/tmp:rw,size=64m,mode=1777",
                    "--mount", f"type=bind,source={source},target=/input,readonly",
-                   self.image, "/usr/local/bin/run-checks", project, *test_files]
+                   self.image, "/usr/local/bin/run-checks", '--protocol=' + CHECK_PROTOCOL, project, *test_files]
         process, reader, error_code = None, None, None
         output = _Output()
         try:
@@ -186,7 +187,8 @@ class SandboxRunner:
                               "WORKSPACE_CHANGED": "工作区在测试期间发生变化，需要重新测试。"}.get(error_code, "沙箱未能完成测试。"))
             else:
                 result["passed"] = result["exitCode"] == 0
-                covers_all = project == "all" or bool(changed_projects) and changed_projects <= {project}
+                result["coveredProjects"] = list(PROJECTS if project == 'all' else (project,)) if result['passed'] and not test_files else []
+                covers_all = set(result['coveredProjects']) >= (changed_projects or set(PROJECTS))
                 result["complete"] = result["passed"] and not test_files and covers_all
                 result["summary"] = "测试通过。" if result["passed"] else "测试未通过。"
         except (OSError, subprocess.SubprocessError, WorkspaceError):

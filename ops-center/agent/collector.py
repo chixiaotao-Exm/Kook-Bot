@@ -250,7 +250,8 @@ class ServiceRunner:
                 if re.fullmatch(r"\d{1,12}", values.get(source, "")):
                     result[field] = int(values[source])
             result["ok"] = result["activeState"] == ("active" if service["expected"] == "running" else "inactive") \
-                and result["subState"] == ("running" if service["expected"] == "running" else "dead")
+                and result["subState"] == ("running" if service["expected"] == "running" else "dead") \
+                and (service["expected"] != "running" or isinstance(result["pid"], int) and result["pid"] > 0)
         except (OSError, ValueError, subprocess.SubprocessError):
             pass
         return result
@@ -386,13 +387,15 @@ class ProbeCollector:
         self.http, self.now, self.secrets = http or JsonHttp(), now, secrets
         self.music_sessions = set()
 
-    def bot(self, probe, identifier=None, name=None, state="unknown", channel=None, playing=None, error=""):
+    def bot(self, probe, identifier=None, name=None, state="unknown", channel=None, playing=None, error="", health=None, transport=None):
         identity = str(identifier or probe["id"])
         if not IDENTIFIER.fullmatch(identity) or plain(identity, 1000, self.secrets) != identity:
             identity = probe["id"][:60] + ":" + hashlib.sha256(identity.encode("utf-8", errors="replace")).hexdigest()[:32]
         return {"id": identity, "name": plain(name or probe.get("name") or probe["id"], 80, self.secrets), "kind": probe["kind"],
                 "state": state if state in STATES else "unknown", "channelName": plain(channel, 100, self.secrets),
-                "playing": playing if isinstance(playing, bool) else None, "lastError": plain(error, 200, self.secrets)}
+                "playing": playing if isinstance(playing, bool) else None, "lastError": plain(error, 200, self.secrets),
+                "health": health if health in ("healthy", "degraded", "unknown") else "healthy" if state in ("online", "stopped") else "degraded" if state == "offline" else "unknown",
+                "transport": transport if transport in ("connected", "disconnected") else None}
 
     def connection(self, value):
         if value.get("running") is False or value.get("enabled") is False:
@@ -462,9 +465,20 @@ class ProbeCollector:
                 state = "unknown"
             context = item.get("context") if isinstance(item.get("context"), dict) else {}
             channel = record.get("channelName") or record.get("channelId") or context.get("voiceChannelId")
+            issue = record.get("issue") or item.get("error") or ""
+            playing = record.get("status") == "playing"
+            transport = record.get("transport") if record.get("transport") in ("connected", "disconnected") else None
+            business = "unknown" if not fresh or not record else "degraded" if issue or record.get("level") in ("error", "warning") \
+                or playing and transport == "disconnected" else "healthy"
+            if playing and transport == "disconnected" and not issue:
+                issue = "语音发送连接已中断，播放状态需核对。"
+            if business == "unknown" and not issue:
+                issue = "状态样本已过期" if not fresh else "缺少机器人健康记录"
+            if state == "stopped" and fresh:
+                business, issue, playing, transport = "healthy", "", False, None
             result.append(self.bot(probe, f"{probe['id']}:{item.get('id', len(result))}", item.get("name") or item.get("username"), state,
-                                   channel, record.get("status") == "playing" if fresh and record.get("status") else None,
-                                   record.get("issue") or item.get("error") or ("状态样本已过期" if not fresh else "")))
+                                   channel, playing if business == "healthy" else False if business == "degraded" else None,
+                                   issue, business, transport if fresh else None))
         return result
 
 
@@ -505,7 +519,7 @@ class Agent:
             metrics = {key: None for key in metrics}
             services = [{**service, "activeState": "unknown", "subState": "unknown", "ok": False} for service in services]
         return {"hostId": self.config["hostId"], "observedAt": iso(self.now()), "metrics": metrics, "services": services,
-                "bots": [{**bot, "state": "unknown", "playing": None, "lastError": "状态样本已过期"} if finished - at > 120 else bot for at, bot in bots],
+                "bots": [{**bot, "state": "unknown", "health": "unknown", "transport": None, "playing": None, "lastError": "状态样本已过期"} if finished - at > 120 else bot for at, bot in bots],
                 "commandResults": self.ledger.pending()}
 
     def cycle(self):

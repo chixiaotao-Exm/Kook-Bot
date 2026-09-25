@@ -31,8 +31,9 @@ function summary(command, snapshot, category) {
     if (failed.length) { problems = true; lines.push(`服务需关注：${failed.slice(0, 4).map(service => named(service, '服务')).join('、')}${failed.length > 4 ? '…' : ''}`); }
   }
   if (showBots) for (const host of hosts) for (const bot of (Array.isArray(host.bots) ? host.bots.slice(0, 100) : [])) {
-    problems ||= bot.state === 'offline'; unknown ||= !['online', 'offline', 'stopped'].includes(bot.state);
-    lines.push(`${named(bot, '机器人')}：${label(bot.state)}${bot.playing === true ? ' · 正在播放' : ''}${bot.channelName ? ` · ${safeOpsText(bot.channelName, 70)}` : ''}`);
+    problems ||= bot.state === 'offline' || bot.health === 'degraded'; unknown ||= !['online', 'offline', 'stopped'].includes(bot.state) || bot.health === 'unknown';
+    const healthLabel = bot.health === 'degraded' ? '异常' : bot.health === 'unknown' ? '待确认' : label(bot.state);
+    lines.push(`${named(bot, '机器人')}：${healthLabel}${bot.playing === true && !['degraded', 'unknown'].includes(bot.health) ? ' · 正在播放' : ''}${bot.health === 'degraded' && bot.lastError ? ` · ${safeOpsText(bot.lastError, 100)}` : ''}${bot.channelName ? ` · ${safeOpsText(bot.channelName, 70)}` : ''}`);
   }
   if (showWeb) for (const monitor of monitors) {
     const state = monitor.maintenance ? 'maintenance' : monitor.state;

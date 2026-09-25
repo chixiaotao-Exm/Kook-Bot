@@ -8,6 +8,20 @@ import { createProvider } from '../src/provider.js';
 import { WebConsole } from '../src/web.js';
 import { readConfig } from '../src/config.js';
 import { UserError } from '../src/util.js';
+import { parseMusicInput } from '../src/music-input.js';
+
+test('QQ playlist preview uses the canonical 19-digit identifier and bounded chart IDs', async () => {
+  const id = '1234567890123456789', calls = [];
+  const web = new WebConsole({ config: { dataDir: 'unused' }, music: { async playlistDetails(...args) { calls.push(args); return { tracks: [] }; } } });
+  assert.equal(parseMusicInput(id, { source: 'qq', kind: 'playlist' }).id, id);
+  await web.get(new URL(`http://localhost/api/playlist?source=qq&id=${id}`));
+  await web.get(new URL('http://localhost/api/playlist?source=qq&id=top:123456'));
+  assert.deepEqual(calls.map(call => call[0]), [id, 'top:123456']);
+  for (const invalid of ['12345678901234567890', 'top:1234567', '0', 'https://y.qq.com/n/ryqq/playlist/123']) {
+    await assert.rejects(web.get(new URL(`http://localhost/api/playlist?source=qq&id=${encodeURIComponent(invalid)}`)), /有效的歌单/);
+  }
+  assert.equal(calls.length, 2);
+});
 
 const rawSong = (id) => ({ id, name: `Song ${id}`, ar: [{ name: 'Artist' }], dt: 180000,
   al: { name: 'Album', picUrl: 'http://p1.music.126.net/cover.jpg' } });

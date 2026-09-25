@@ -41,7 +41,7 @@ window.opsConsole = (() => {
       if (!window.createOpsPanel) {
         window.__OPS_EMBED_ONLY__ = true;
         await new Promise((resolve, reject) => {
-          const script = document.createElement('script'); script.src = '/ops/app.js?v=4';
+          const script = document.createElement('script'); script.src = '/ops/app.js?v=5';
           const timer = setTimeout(() => { script.remove(); reject(new Error('运维脚本加载超时，请重试。')); }, 15000);
           script.onload = () => { clearTimeout(timer); resolve(); };
           script.onerror = () => { clearTimeout(timer); script.remove(); reject(new Error('运维脚本加载失败，请重试。')); };
