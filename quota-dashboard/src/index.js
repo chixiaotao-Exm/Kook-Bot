@@ -77,6 +77,7 @@ if (process.env.KOOK_TOKEN && process.env.KOOK_QUERY_ENABLED !== 'false') {
 }
 const web = new QuotaServer({ host: process.env.HOST || '127.0.0.1', port: Number(process.env.PORT || 18998), publicUrl: config.publicUrl, sub2apiUrl: config.sub2apiUrl,
   publicAccess: process.env.PUBLIC_ACCESS !== 'false',
+  publicManagement: process.env.PUBLIC_MANAGEMENT === 'true',
   invitations, publicInvites: process.env.PUBLIC_INVITES === 'true',
   keyUsage, accountLoad, usageTrends,
   queryBotStatus: () => queryBot ? { ...queryBot.snapshot(), ...queryGateway.snapshot(), queryLastError: queryBot.snapshot().lastError } : { enabled: false },

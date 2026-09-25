@@ -71,6 +71,10 @@ export class TaskRouter {
   async resume(options) {
     if (!this.code?.snapshot().active && !this.discussion.snapshot().active && this.thread?.context()) {
       if (!options?.receiptId) return { resumed: false, reason: 'NOT_READY' };
+      const previous = this.code?.snapshot();
+      if (this.mode() === 'code' && previous?.jobId && ['interrupted', 'needs_input', 'stopped'].includes(previous.status)) {
+        return { resumed: false, reason: this.operators.has(options.userId) ? 'RESTART_REQUIRED' : 'NOT_AUTHORIZED' };
+      }
       const result = await this.start({ ...options, topic: '继续当前话题，结合前面的要求和结果推进。' });
       return result.accepted ? { resumed: true, mode: result.mode || this.mode() } : { resumed: false, reason: result.reason };
     }

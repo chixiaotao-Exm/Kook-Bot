@@ -37,6 +37,12 @@ const output = path.join(root, 'data', 'screenshots');
       Storage.prototype.getItem = function (key) { if (key === 'auth_token') window.authReads++; return get.call(this, key); };
     });
     const page = await context.newPage();
+    // This suite tests quota in isolation; operations has its own real-server integration suite.
+    await page.route('**/ops/api/**', route => {
+      const endpoint = new URL(route.request().url()).pathname.split('/').pop();
+      return route.fulfill({ status: endpoint === 'login' ? 503 : 200, contentType: 'application/json',
+        body: JSON.stringify(endpoint === 'session' ? { authenticated: false, csrf: 'fixture-ops' } : endpoint === 'logout' ? { ok: true } : { error: '运维离线测试' }) });
+    });
     const errors = [], requests = [];
     page.on('pageerror', error => errors.push(error.message));
     page.on('request', request => { if (request.url().includes('/api/')) requests.push({ url: request.url(), method: request.method() }); });
@@ -106,8 +112,7 @@ const output = path.join(root, 'data', 'screenshots');
     await page.goto(base);
     await page.locator('.account-card').first().waitFor();
     await page.locator('[data-view=reports]').click();
-    check(await page.locator('#report-form').isHidden() && await page.locator('#admin-label').isHidden(), 'Normal URL remains public for logged-in administrators');
-    await page.locator('#manage-reports').click();
+    check(await page.locator('#report-form').isVisible() && await page.locator('#admin-label').isVisible(), 'Unified console retains explicit administrator login across views');
     await page.locator('#report-form').waitFor({ state: 'visible' });
     await page.locator('#mobile-logout').click();
     await page.locator('.account-card').first().waitFor();

@@ -112,7 +112,7 @@ export function normalizeGithubEvent(eventName, payload, { repository = DEFAULT_
     if (!workflowId || !runId || !attempt || !sha || zero(sha) || typeof run.name !== 'string' || !run.name.trim()
       || run.name.length > 10000 || run.head_branch != null && !refName(run.head_branch)) return null;
     const [result, theme] = RESULTS[run.conclusion];
-    notification = { key: keyFor(['ci', repoKey, workflowId, sha, attempt, run.conclusion]), kind: 'ci',
+    notification = { key: keyFor(['ci', repoKey, runId, attempt]), kind: 'ci',
       title: safeText(`${safeText(run.name, 70)} · ${result}`, 100),
       lines: [`分支：${run.head_branch ? safeText(run.head_branch, 250) : '未提供'}`, `提交：${sha.slice(0, 8)}`, `运行次数：${attempt}`],
       theme, url: `${base}/actions/runs/${runId}` };

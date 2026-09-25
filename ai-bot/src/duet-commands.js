@@ -202,7 +202,10 @@ export class DuetCommands {
         const state = { creating: '准备工作区', coding: '实施中', reviewing: '复核中', running: '处理中', paused: '已暂停',
           publishing: '正在创建 PR', completed: '已完成', audited: '审查完成', needs_input: '需要补充信息', stopped: '已停止', interrupted: '已中断' }[status.status] || '处理中';
         this.#notice(event, `代码任务：${state}\n工具步骤：${Number.isSafeInteger(status.steps) ? status.steps : 0}`
-          + (status.prUrl ? `\n${status.prUrl}` : '') + '\n可发送“先暂停”“继续”或“停止”。' + topicHint); return;
+          + (status.prUrl ? `\n${status.prUrl}` : '')
+          + (status.retryPaused ? '\n模型连续出错，原工作区与补丁已保留，发送“继续”重试。'
+            : status.retryWaiting ? '\n模型暂不可用，正在等待自动重试，原工作区已保留。' : '')
+          + '\n可发送“先暂停”“继续”或“停止”。' + topicHint); return;
       }
       const labels = { idle: '未开始', running: '进行中', paused: '已暂停', completed: '已完成', stopped: '已停止',
         timeout: '已超时停止', failed: '已因错误停止', interrupted: '已中断' };
@@ -245,6 +248,7 @@ export class DuetCommands {
         this.#notice(event, '已恢复讨论，会继续回应暂停期间记录的补充。', true);
       } else this.#notice(event, result?.reason === 'NOT_PAUSED'
         ? '当前讨论没有暂停，你可以直接补充问题。'
+        : result?.reason === 'RESTART_REQUIRED' ? '原代码任务已结束或服务已重启，旧工作区仍保留，无法直接续跑。请先检查旧任务；如需从仓库重新开始，请发送“新话题：代码任务：你的要求”。'
         : result?.reason === 'NO_ACTIVE' ? '当前没有可恢复的讨论。直接发送一个问题即可开始。'
           : '暂时无法恢复讨论，请稍后重试。', true);
     } catch { this.#failed(event); }

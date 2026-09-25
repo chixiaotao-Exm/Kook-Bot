@@ -4,7 +4,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { AdminAuth } from './auth.js';
 import { OpsError } from './storage.js';
 
-const files = { '/': ['index.html', 'text/html; charset=utf-8'], '/index.html': ['index.html', 'text/html; charset=utf-8'], '/app.js': ['app.js', 'text/javascript; charset=utf-8'], '/style.css': ['style.css', 'text/css; charset=utf-8'] };
+const files = { '/panel.html': ['index.html', 'text/html; charset=utf-8'], '/app.js': ['app.js', 'text/javascript; charset=utf-8'], '/style.css': ['style.css', 'text/css; charset=utf-8'] };
 const equal = (a, b) => typeof a === 'string' && typeof b === 'string' && Buffer.byteLength(a) === Buffer.byteLength(b) && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 export class OpsServer {
   constructor({ config, engine, auth, bodyTimeoutMs = 10000 }) {
@@ -23,8 +23,8 @@ export class OpsServer {
   authorize(req, { admin = true } = {}) {
     if (req.headers.origin && req.headers.origin !== this.origin.origin) throw new OpsError('请求来源不匹配。', 403);
     const session = this.auth.get(req.headers.cookie);
-    if (!session || admin && session.user?.role !== 'admin') throw new OpsError('请登录 Sub2API 管理员账号。', 401);
-    if (req.method !== 'GET' && !equal(req.headers['x-csrf-token'], session.csrf)) throw new OpsError('会话已更新，请重新登录。', 403);
+    if (!session || admin && this.config.publicManagement !== true && session.user?.role !== 'admin') throw new OpsError('会话已失效，请刷新页面。', 401);
+    if (req.method !== 'GET' && !equal(req.headers['x-csrf-token'], session.csrf)) throw new OpsError('会话已更新，请刷新页面重试。', 403);
     return session;
   }
   async body(req, limit = 16384) {
@@ -62,6 +62,7 @@ export class OpsServer {
       }
       if (!route.startsWith('/api/')) {
         if (!['GET', 'HEAD'].includes(req.method)) throw new OpsError('请求方法不支持。', 405);
+        if (route === '/' || route === '/index.html' || url.pathname === this.basePath) { res.writeHead(302, { Location: '/quota/#ops-overview', 'Cache-Control': 'no-store' }); return res.end(); }
         if (url.pathname === this.basePath) { res.writeHead(302, { Location: this.basePath + '/' }); return res.end(); }
         const file = files[route]; if (!file) throw new OpsError('页面不存在。', 404);
         const value = await readFile(new URL('../public/' + file[0], import.meta.url)); res.writeHead(200, { 'Content-Type': file[1], 'Cache-Control': 'no-cache' }); return res.end(req.method === 'HEAD' ? undefined : value);
@@ -71,7 +72,8 @@ export class OpsServer {
       if (req.headers.origin && req.headers.origin !== this.origin.origin) throw new OpsError('请求来源不匹配。', 403);
       if (route === '/api/session' && req.method === 'GET') {
         let session = this.auth.get(req.headers.cookie); if (!session) { session = this.auth.create(); this.cookie(res, session); }
-        return this.json(res, 200, { authenticated: session.user?.role === 'admin', csrf: session.csrf, user: session.user });
+        return this.json(res, 200, { authenticated: session.user?.role === 'admin', publicManagement: this.config.publicManagement === true,
+          canManage: this.config.publicManagement === true || session.user?.role === 'admin', csrf: session.csrf, user: session.user });
       }
       if (route === '/api/login' && req.method === 'POST') {
         const before = this.authorize(req, { admin: false }), body = await this.body(req);
@@ -84,6 +86,7 @@ export class OpsServer {
       if (route === '/api/logout' && req.method === 'POST') {
         this.auth.logout(this.authorize(req, { admin: false })); this.cookie(res, null); return this.json(res, 200, { authenticated: false });
       }
+      if (this.config.publicManagement === true && route === '/api/snapshot' && req.method === 'GET') return this.json(res, 200, this.engine.snapshot());
       this.authorize(req);
       if (route === '/api/snapshot' && req.method === 'GET') return this.json(res, 200, this.engine.snapshot());
       if (route === '/api/commands' && req.method === 'POST') {

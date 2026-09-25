@@ -8,12 +8,12 @@ from pathlib import Path
 import re
 import stat
 import tempfile
+from .projects import PROJECTS
 
 MAX_FILES = 1000
 MAX_BYTES = 8 * 1024 * 1024
 MAX_FILE_BYTES = 256 * 1024
 MAX_READ_CHARS = 16_000
-PROJECTS = ("ai-bot", "quota-dashboard", "music-bot", "code-agent")
 _BLOCKED = {".git", ".kook-agent", "node_modules", "data", "release", "output", "deployed.md"}
 _SECRET_NAMES = {".npmrc", ".pypirc", "id_rsa", "id_ed25519", "id_ecdsa", "credentials.json"}
 _WINDOWS_DEVICE = re.compile(r"^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)", re.I)

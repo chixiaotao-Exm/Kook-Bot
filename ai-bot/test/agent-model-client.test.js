@@ -20,6 +20,22 @@ const make = (fetchImpl = async () => response(), options = {}) => new AgentResp
 const hasCode = expected => error => error instanceof AgentModelClientError && error instanceof ModelClientError
   && error.code === expected && !String(error).includes(KEY);
 
+test('only transient model failures carry retry classification; adapters never replay requests', async () => {
+  for (const status of [400, 401, 403, 408, 429, 500, 502, 503, 504]) {
+    let requests = 0;
+    const client = make(async () => { requests++; return response({}, { status }); });
+    await assert.rejects(client.respond(INPUT), error => error instanceof AgentModelClientError
+      && error.retryable === [408, 429, 500, 502, 503, 504].includes(status));
+    assert.equal(requests, 1);
+  }
+  await assert.rejects(make(async () => { throw new Error('network'); }).respond(INPUT), error => error.code === 'NETWORK' && error.retryable);
+  for (const [status, code, retryable] of [['failed', 'server_error', true], ['failed', 'rate_limit_exceeded', true],
+    ['cancelled', 'server_error', false], ['failed', 'other_error', false]]) {
+    await assert.rejects(make(async () => response(raw([], { status, error: { code } }))).respond(INPUT),
+      error => error.code === 'UPSTREAM_ERROR' && error.retryable === retryable);
+  }
+});
+
 test('two-step stateless function protocol preserves encrypted reasoning and matches tool results', async () => {
   const requests = [];
   const client = make(async (url, init) => {

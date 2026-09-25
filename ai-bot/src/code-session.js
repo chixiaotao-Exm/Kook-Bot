@@ -13,6 +13,8 @@ const SEEN_TTL = 86400000;
 const MAX_SEEN = 4096;
 const MAX_CONTEXT = 105000;
 const MAX_TOOL_RESULT = 20000;
+const CHECK_PROJECTS = ['ai-bot', 'quota-dashboard', 'music-bot', 'code-agent', 'bridge-bot', 'ops-center'];
+const RECOVERABLE_MODEL_ERRORS = new Set(['NETWORK', 'TIMEOUT', 'RATE_LIMIT', 'UPSTREAM_ERROR']);
 const RESULT_TRUNCATED = '\n... [output truncated] ...\n';
 const CREDENTIAL = /(?:\bsk-[a-z0-9_-]{12,}|\badmin-[a-f0-9]{16,}|\b\d{1,4}\/[a-z0-9+/=]{4,}\/[a-z0-9+/=]{10,}|\bauthorization\s*:\s*bearer\s+\S{12,})/gi;
 const CODES = new Set(['PAUSED', 'CANCELLED', 'TIMEOUT', 'AUTH', 'RATE_LIMIT', 'NETWORK', 'UPSTREAM_ERROR', 'MODEL_MISMATCH',
@@ -39,7 +41,7 @@ const TOOLS = [
   tool('search_code', '在当前仓库中搜索代码，最多返回 100 项。', { query: stringSchema, path: nullable('string'), maxResults: { type: 'integer', minimum: 1, maximum: 100 } }),
   tool('write_file', '创建或更新仓库文件。现有文件使用读取时的 expectedSha256，防止覆盖新内容。', { path: stringSchema, content: stringSchema, expectedSha256: nullable('string') }),
   tool('replace_text', '替换文件中明确的一段文本，必须提供读取时的 expectedSha256。', { path: stringSchema, oldText: stringSchema, newText: stringSchema, expectedSha256: nullable('string') }),
-  tool('run_checks', '运行固定检查，不接受命令。project 为 null 且 testFiles 为空时检查全部项目；指定 project 且 testFiles 为空时运行该项目完整检查。定向测试接受项目内路径 test/example.test.js 或同项目仓库路径 ai-bot/test/example.test.js，均须位于 test/ 或 tests/；code-agent 使用 tests/test_example.py。Node 定向路径不支持 glob 元字符 *?[]{}()，这类文件请运行完整项目检查。定向测试不算完整发布验证。', { project: nullable('string'), testFiles: { type: 'array', items: stringSchema } }),
+  tool('run_checks', `运行固定检查，不接受命令。项目：${CHECK_PROJECTS.join('、')}。project 为 null 且 testFiles 为空时检查全部项目；指定 project 且 testFiles 为空时运行该项目完整检查，ops-center 包含 Node 和 agent Python 测试。定向测试接受项目内路径 test/example.test.js 或同项目仓库路径 ai-bot/test/example.test.js，均须位于 test/ 或 tests/；code-agent 使用 tests/test_example.py。Node 定向路径不支持 glob 元字符 *?[]{}()，这类文件以及 ops agent Python 请运行完整项目检查。定向测试不算完整发布验证。`, { project: nullable('string'), testFiles: { type: 'array', items: stringSchema } }),
   tool('get_diff', '取得工作区实际变更、完整文件列表和 workHash。', { path: nullable('string'), maxChars: numberSchema }),
 ];
 const REVIEW = tool('finish_review', '提交基于实际代码与检查证据的独立审阅。发现问题时 approved 必须为 false。', {
@@ -144,7 +146,7 @@ function argumentsFor(name, args) {
     if (name === 'replace_text' && !args.oldText) throw fault('TOOL_INVALID');
   }
   if (name === 'run_checks') {
-    if (!(args.project === null || ['ai-bot', 'music-bot', 'quota-dashboard', 'code-agent'].includes(args.project))
+    if (!(args.project === null || CHECK_PROJECTS.includes(args.project))
       || !Array.isArray(args.testFiles) || args.testFiles.length > 30 || args.project === null && args.testFiles.length) throw fault('TOOL_INVALID');
     const testFiles = args.testFiles.map(file => {
       if (!relativeFile(file)) throw fault('TOOL_INVALID');
@@ -211,10 +213,12 @@ export class CodeSession {
   #maxSteps; #maxCycles; #now; #clock; #setTimeout; #clearTimeout; #publishWait; #pollInterval; #writeState;
   #ready = false; #closed = false; #seen = new Map(); #active = null; #last = null; #task = null;
   #operations = Promise.resolve(); #writes = Promise.resolve();
+  #modelRetryDelaysMs;
 
   constructor({ participants, broker, progress, operatorIds, channelId, dataDir, logger = () => {}, repository = REPOSITORY,
     maxSteps = 60, maxCycles = 3, now = Date.now, setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout,
-    publishWaitMs = 180000, pollIntervalMs = 5000, writeState = atomicJson, monotonicNow = () => performance.now() } = {}) {
+    publishWaitMs = 180000, pollIntervalMs = 5000, writeState = atomicJson, monotonicNow = () => performance.now(),
+    modelRetryDelaysMs = [5000, 15000] } = {}) {
     if (!Array.isArray(participants) || participants.length !== 2 || participants.some(participant => typeof participant?.client?.respond !== 'function' || typeof participant?.reply !== 'function')
       || typeof broker?.request !== 'function' || !(operatorIds instanceof Set) || operatorIds.size < 1
       || [...operatorIds].some(id => typeof id !== 'string' || !ID.test(id)) || repository !== REPOSITORY
@@ -222,12 +226,14 @@ export class CodeSession {
       || !Number.isInteger(maxSteps) || maxSteps < 1 || maxSteps > 100 || !Number.isInteger(maxCycles) || maxCycles < 1 || maxCycles > 5
       || !Number.isInteger(publishWaitMs) || publishWaitMs < 0 || publishWaitMs > 180000
       || !Number.isInteger(pollIntervalMs) || pollIntervalMs < 1 || pollIntervalMs > 30000
-      || typeof monotonicNow !== 'function') throw fault('CONFIG');
+      || typeof monotonicNow !== 'function' || !Array.isArray(modelRetryDelaysMs) || modelRetryDelaysMs.length > 4
+      || modelRetryDelaysMs.some(delay => !Number.isInteger(delay) || delay < 1 || delay > 60000)) throw fault('CONFIG');
     this.#participants = participants; this.#broker = broker; this.#progress = progress; this.#operators = new Set(operatorIds);
     this.#channelId = channelId; this.#dataDir = dataDir; this.#file = dataDir ? path.join(dataDir, 'code-seen.json') : null;
     this.#logger = logger; this.#repository = repository; this.#maxSteps = maxSteps; this.#maxCycles = maxCycles;
     this.#now = now; this.#clock = monotonicNow; this.#setTimeout = setTimeoutImpl; this.#clearTimeout = clearTimeoutImpl;
     this.#publishWait = publishWaitMs; this.#pollInterval = pollIntervalMs; this.#writeState = writeState;
+    this.#modelRetryDelaysMs = [...modelRetryDelaysMs];
   }
 
   async init() {
@@ -258,7 +264,9 @@ export class CodeSession {
       threadId: run?.threadId || null,
       contributions: run?.contributions || 0, checksPassed: run?.checksPassed === true, reviewPassed: run?.reviewPassed === true,
       workHash: run?.workHash || null, prUrl: run?.publication?.prUrl || null, compareUrl: run?.publication?.compareUrl || null,
-      reportAvailable: run?.reportAvailable === true, lastError: run?.error || null };
+      reportAvailable: run?.reportAvailable === true, lastError: run?.error || null,
+      retryAttempt: run?.retryAttempt || 0, retryWaiting: run?.retryWaiting === true,
+      retryPaused: run?.retryPaused === true, retryErrorCode: run?.retryErrorCode || null };
   }
 
   #authorized(userId) { return this.#operators.has(userId); }
@@ -295,7 +303,8 @@ export class CodeSession {
     const run = { topic: topic.trim(), threadId, threadContext: priorContext, receiptId, replyMessageId, controller: new AbortController(), operation: null,
       jobId: null, baseSha: null, status: 'creating', stage: 'creating', steps: 0, cycles: 0, paused: false, waiters: [],
       notes: [], recentNotes: [], version: 0, contributions: 0, evidence: [], checksPassed: false, reviewPassed: false,
-      publication: null, publishAttempted: false, error: null, progress: null, reportAvailable: false, cancelPending: Promise.resolve() };
+      publication: null, publishAttempted: false, error: null, progress: null, reportAvailable: false, cancelPending: Promise.resolve(),
+      retryAttempt: 0, retryWaiting: false, retryPaused: false, retryErrorCode: null };
     this.#seen.set(receiptId, this.#now()); this.#active = run;
     try { await this.#persist(); }
     catch { this.#active = null; this.#last = { ...run, status: 'needs_input', error: 'STORAGE' }; return { accepted: false, reason: 'NOT_READY' }; }
@@ -417,6 +426,7 @@ export class CodeSession {
     try { await this.#persist(); }
     catch { run.resuming = false; run.paused = true; run.status = 'needs_input'; run.error = 'STORAGE'; run.controller.abort(fault('STORAGE')); return { resumed: false, reason: 'NOT_READY' }; }
     run.resuming = false;
+    if (run.retryPaused) { run.retryAttempt = 0; run.retryPaused = false; run.retryErrorCode = null; }
     for (const wake of run.waiters.splice(0)) wake();
     this.#detail(run, '继续处理已保留的工作区'); try { await run.progress?.resume?.(); } catch {}
     return { resumed: true };
@@ -457,7 +467,12 @@ export class CodeSession {
         if (run.steps >= this.#maxSteps) throw fault('BUDGET');
         run.steps++;
         return this.#participants[index].client.respond(context, { tools: definitions, signal });
-      }); } catch (caught) { if (caught?.code === 'PAUSED') continue; throw caught; }
+      }); } catch (caught) {
+        if (caught?.code === 'PAUSED') continue;
+        if (await this.#recoverModel(run, caught)) continue;
+        throw caught;
+      }
+      run.retryAttempt = 0; run.retryWaiting = false; run.retryPaused = false; run.retryErrorCode = null;
       this.#assert(run);
       if (!object(result) || !Array.isArray(result.output) || !Array.isArray(result.calls) || result.calls.length > 16) throw fault('FORMAT');
       context.push(...result.output);
@@ -499,6 +514,27 @@ export class CodeSession {
       }
       if (reviewed) return reviewed;
     }
+  }
+
+  async #recoverModel(run, caught) {
+    // Only retry model reads explicitly classified by the adapter, before any
+    // tools are admitted. Unknown writes and publication are never replayed.
+    if (caught?.retryable !== true || !RECOVERABLE_MODEL_ERRORS.has(caught.code)) return false;
+    this.#assert(run); run.retryErrorCode = safeCode(caught);
+    if (run.retryAttempt < this.#modelRetryDelaysMs.length) {
+      const delay = this.#modelRetryDelaysMs[run.retryAttempt++];
+      run.retryWaiting = true;
+      this.#detail(run, `模型暂不可用，${delay / 1000} 秒后重试（${run.retryAttempt}/${this.#modelRetryDelaysMs.length}），保留原工作区`);
+      try { await this.#delay(run, delay); } finally { run.retryWaiting = false; }
+    } else {
+      run.retryPaused = true;
+      // Pausing the live run preserves jobId, patches, notes, and function-call
+      // context. Process restarts remain explicitly interrupted, never replayed.
+      await this.pause({ userId: this.#operators.values().next().value });
+      this.#detail(run, '模型连续出错，原工作区和进度已保留；发送“继续”重试');
+      await this.#waitReady(run);
+    }
+    return true;
   }
 
   async #delay(run, ms, deadline = null) {

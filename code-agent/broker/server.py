@@ -19,6 +19,7 @@ import uuid
 from .repository import RepositoryBackend, RepositoryError, REPOSITORY
 from .sandbox import SandboxRunner
 from .workspace import Workspace, WorkspaceError
+from .projects import PROJECTS, CHECK_PROTOCOL
 
 MAX_REQUEST = 512 * 1024
 MAX_RESPONSE = 256 * 1024
@@ -318,7 +319,8 @@ class Broker:
                      "workHash": result.get("workHash"), "exitCode": result.get("exitCode"),
                      "summary": str(result.get("summary", ""))[:1000], "output": output,
                      "truncated": result.get("truncated") is True,
-                     "project": result.get("project") if result.get("project") in ("all", "ai-bot", "music-bot", "quota-dashboard", "code-agent") else "all",
+                     "project": result.get("project") if result.get("project") in ("all", *PROJECTS) else "all",
+                     "coveredProjects": result.get('coveredProjects', []), "checkProtocol": result.get('checkProtocol'),
                      "checkedAt": time.time(), "checkId": str(uuid.uuid4())}
             if not isinstance(check["workHash"], str) or not _HASH.fullmatch(check["workHash"]):
                 check.update(workHash=workspace.work_hash(), passed=False, complete=False)
@@ -326,6 +328,11 @@ class Broker:
                 check.update(passed=False, complete=False)
             if check["workHash"] != workspace.work_hash():
                 check.update(passed=False, complete=False)
+            coverage = check['coveredProjects']
+            if (check['checkProtocol'] != CHECK_PROTOCOL or not isinstance(coverage, list)
+                    or any(not isinstance(name, str) or name not in PROJECTS for name in coverage)
+                    or not set(coverage) >= set(workspace.changed_projects() or PROJECTS)):
+                check['complete'] = False
             code = "CANCELLED" if event.is_set() else result.get("errorCode")
             if isinstance(code, str) and _CODE.fullmatch(code):
                 check["errorCode"] = code
@@ -359,11 +366,15 @@ class Broker:
         if report.get("workHash") != current:
             raise BrokerError("STALE_HASH")
         matching = [check for check in state["checks"] if check.get("workHash") == current]
-        trusted = [check for check in matching if check.get("passed") is True and check.get("complete") is True and check.get("exitCode") == 0]
+        required = set(workspace.changed_projects() or PROJECTS)
+        trusted = [check for check in matching if check.get("passed") is True and check.get("complete") is True and check.get("exitCode") == 0
+                   and check.get('checkProtocol') == CHECK_PROTOCOL and isinstance(check.get('coveredProjects'), list)
+                   and all(isinstance(name, str) and name in PROJECTS for name in check['coveredProjects'])
+                   and set(check['coveredProjects']) >= required]
         if not trusted or matching[-1].get("passed") is not True:
             raise BrokerError("CHECKS_REQUIRED")
         secured = {**report, "workHash": current, "approved": True, "reviewPassed": True, "checksPassed": True,
-                   "checks": [{key: check[key] for key in ("passed", "complete", "workHash", "exitCode", "project", "summary")} for check in trusted[-1:]]}
+                   "checks": [{key: check[key] for key in ("passed", "complete", "workHash", "exitCode", "project", "summary", "coveredProjects", "checkProtocol")} for check in trusted[-1:]]}
         result = self.repository.publish(state["jobId"], root, state["meta"], workspace, secured)
         published = _publication(result, state["meta"]["branch"])
         state["publication"] = published

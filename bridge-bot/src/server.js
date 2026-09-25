@@ -60,7 +60,10 @@ export class BridgeServer {
   }
   async handle(req, res) {
     try {
-      if (req.url === '/health' && req.method === 'GET') return this.json(res, 200, { status: 'ok', queue: this.queue.snapshot?.() || {} });
+      if (req.url === '/health' && req.method === 'GET') {
+        const queue = this.queue.snapshot?.() || {}, healthy = queue.ready !== false && queue.lastError !== 'STORAGE';
+        return this.json(res, healthy ? 200 : 503, { status: healthy ? 'ok' : 'degraded', queue });
+      }
       if (req.url !== '/github') return this.json(res, 404, { error: 'not_found' });
       if (req.method !== 'POST') return this.json(res, 405, { error: 'method_not_allowed' });
       const eventName = this.singleHeader(req, 'x-github-event'), deliveryId = this.singleHeader(req, 'x-github-delivery');

@@ -16,7 +16,7 @@ export class OpsEngine {
   hostFresh(value, now = this.now()) { return value && fresh(value.lastSeenAt, now, this.config.hostStaleMs) && fresh(value.observedAt, now, this.config.hostStaleMs); }
   hostProblem(value) {
     if (value.services.some(service => !service.ok)) return '服务状态不符合运行计划';
-    if (value.bots.some(bot => bot.state === 'offline' || bot.state === 'unknown')) return '机器人连接异常或状态未知';
+    if (value.bots.some(bot => bot.state === 'offline' || bot.state === 'unknown' || ['degraded', 'unknown'].includes(bot.health))) return '机器人连接或业务状态异常，或状态未知';
     if (value.metrics.diskPercent >= 90) return '磁盘使用率达到 90%';
     if (value.metrics.memoryPercent >= 90) return '内存使用率达到 90%';
     if (value.metrics.cpuPercent >= 90) return 'CPU 使用率达到 90%';
@@ -44,13 +44,20 @@ export class OpsEngine {
       const reported = raw.services.find(item => item?.id === config.id) || {};
       const activeState = ['active', 'inactive', 'failed', 'activating', 'deactivating', 'reloading'].includes(reported.activeState) ? reported.activeState : 'unknown';
       return { ...config, activeState, subState: text(reported.subState, 30), pid: number(reported.pid, 1e9), restarts: number(reported.restarts, 1e9),
-        ok: config.expected === 'stopped' ? activeState === 'inactive' : activeState === 'active' };
+        ok: config.expected === 'stopped' ? activeState === 'inactive'
+          : activeState === 'active' && reported.subState === 'running' && number(reported.pid, 1e9) > 0 };
     });
     const seen = new Set();
     const bots = raw.bots.filter(item => item && typeof item.id === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,95}$/.test(item.id) && !seen.has(item.id) && seen.add(item.id))
-      .map(item => ({ id: item.id, name: text(item.name) || item.id, kind: text(item.kind, 30),
-        state: ['online', 'offline', 'stopped', 'unknown'].includes(item.state) ? item.state : 'unknown',
-        channelName: text(item.channelName), playing: item.playing === true, lastError: text(item.lastError, 180) }));
+      .map(item => {
+        const state = ['online', 'offline', 'stopped', 'unknown'].includes(item.state) ? item.state : 'unknown';
+        const lastError = state === 'stopped' && item.kind === 'music' ? '' : text(item.lastError, 180), transport = state !== 'stopped' && ['connected', 'disconnected'].includes(item.transport) ? item.transport : null;
+        const health = state === 'unknown' ? 'unknown' : state === 'stopped' ? 'healthy' : state === 'offline' ? 'degraded'
+          : item.kind === 'music' && (lastError || item.playing === true && transport === 'disconnected') ? 'degraded'
+            : ['healthy', 'degraded', 'unknown'].includes(item.health) ? item.health : 'healthy';
+        return { id: item.id, name: text(item.name) || item.id, kind: text(item.kind, 30), state, health, transport,
+          channelName: text(item.channelName), playing: item.playing === true && state === 'online' && health === 'healthy', lastError };
+      });
     return { observedAt: raw.observedAt, lastSeenAt: iso(now), services, bots, metrics: {
       cpuPercent: number(raw.metrics.cpuPercent), memoryPercent: number(raw.metrics.memoryPercent), diskPercent: number(raw.metrics.diskPercent),
       load1: number(raw.metrics.load1, 100000), uptimeSeconds: number(raw.metrics.uptimeSeconds, 1e12) } };
@@ -124,7 +131,7 @@ export class OpsEngine {
       return { id: host.id, name: host.name, observedAt: value?.observedAt || null, lastSeenAt: value?.lastSeenAt || null, maintenance,
         state: maintenance ? 'maintenance' : !valid ? 'unknown' : this.hostProblem(value) ? 'down' : 'up',
         metrics: value?.metrics || {}, services: value?.services || host.services.map(({ token, ...service }) => ({ ...service, activeState: 'unknown', ok: false })),
-        bots: [...(value?.bots || []).map(bot => valid ? bot : { ...bot, state: bot.state === 'stopped' ? 'stopped' : 'unknown', playing: false }),
+        bots: [...(value?.bots || []).map(bot => valid ? bot : { ...bot, state: bot.state === 'stopped' ? 'stopped' : 'unknown', health: 'unknown', transport: null, playing: false }),
           ...host.services.filter(service => service.expected === 'stopped').map(service => ({ id: `planned:${service.id}`, name: service.name, kind: 'discussion',
             state: valid && value.services.find(item => item.id === service.id)?.activeState === 'inactive' ? 'stopped' : 'unknown', channelName: '', playing: false, lastError: '' }))], history: value?.history || [] };
     }), monitors: this.config.monitors.map(monitor => {
