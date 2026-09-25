@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 
-const SOURCE = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+const SOURCE = (await readFile(new URL('../public/app.js', import.meta.url), 'utf8')).replaceAll('\r\n', '\n');
 const NOW = Date.parse('2026-09-25T12:00:00Z');
 const iso = offset => new Date(NOW + offset).toISOString();
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
@@ -60,7 +60,7 @@ async function harness(t, { authenticated = false, fetch: handler } = {}) {
       throw Error('Unexpected fixture route');
     },
   });
-  const tail = SOURCE.lastIndexOf('})();'); assert.ok(tail > 0);
+  const tail = SOURCE.lastIndexOf('  return {\n    show(view)'); assert.ok(tail > 0);
   vm.runInContext(SOURCE.slice(0, tail) + 'globalThis.ops = { state, currentTime, hostState, monitorState, botState, serviceState, monitorLink, sparkline, loadSnapshot, render, showView, openRestart, submitRestart, changeMaintenance, pausePolling, loseSession };\n' + SOURCE.slice(tail), context);
   await settle(() => !get('boot-view').hidden ? false : !context.ops.state.loading);
   t.after(() => context.ops.loseSession());

@@ -9,8 +9,10 @@ import { UsageTrendsError } from './usage-trends.js';
 const staticRoot = fileURLToPath(new URL('../public/', import.meta.url));
 export class QuotaServer {
   #keyPresets; #keyUsage; #keyQueryTimes = []; #invitations; #accountLoad; #usageTrends;
-  constructor({ host = '127.0.0.1', port = 18998, publicUrl, sub2apiUrl, dashboard, scheduler, reporter = {}, auth, preview = false, publicAccess = false, keyUsage, keyPresets = [], queryBotStatus, activeQuotaStatus, invitations, publicInvites = false, accountLoad, usageTrends }) {
+  constructor({ host = '127.0.0.1', port = 18998, publicUrl, sub2apiUrl, dashboard, scheduler, reporter = {}, auth, preview = false, publicAccess = false, publicManagement = false, keyUsage, keyPresets = [], queryBotStatus, activeQuotaStatus, invitations, publicInvites = false, accountLoad, usageTrends }) {
     Object.assign(this, { host, port, dashboard, scheduler, reporter, preview, publicAccess });
+    this.publicManagement = publicManagement === true;
+    this.publicAccess ||= this.publicManagement;
     this.queryBotStatus = queryBotStatus;
     this.activeQuotaStatus = activeQuotaStatus;
     this.#keyUsage = keyUsage;
@@ -129,7 +131,7 @@ export class QuotaServer {
       if (!route.startsWith('/api/')) {
         if (!['GET', 'HEAD'].includes(req.method)) return this.json(res, 405, { error: '请求方法不支持。' });
         if (url.pathname === this.basePath && this.basePath) { res.writeHead(302, { Location: this.basePath + '/' }); return res.end(); }
-        const allowed = { '/': ['index.html', 'text/html; charset=utf-8'], '/index.html': ['index.html', 'text/html; charset=utf-8'], '/app.js': ['app.js', 'text/javascript'], '/style.css': ['style.css', 'text/css'] };
+        const allowed = { '/console.js': ['console.js', 'text/javascript'], '/console-panel.css': ['console-panel.css', 'text/css'], '/': ['index.html', 'text/html; charset=utf-8'], '/index.html': ['index.html', 'text/html; charset=utf-8'], '/app.js': ['app.js', 'text/javascript'], '/style.css': ['style.css', 'text/css'] };
         const file = allowed[route]; if (!file) return this.json(res, 404, { error: '页面不存在。' });
         const contents = await readFile(staticRoot + file[0]); res.writeHead(200, { 'Content-Type': file[1], 'Cache-Control': 'no-cache' }); return res.end(req.method === 'HEAD' ? undefined : contents);
       }
@@ -138,7 +140,8 @@ export class QuotaServer {
       let session = this.auth.get(req.headers.cookie);
       if (route === '/api/session' && req.method === 'GET') {
         if (!session) { session = this.auth.create(); this.cookie(res, session); }
-        return this.json(res, 200, { authenticated: Boolean(session.user), publicAccess: this.publicAccess, canManage: Boolean(session.user), csrf: session.csrf, user: session.user, preview: this.preview,
+        return this.json(res, 200, { authenticated: Boolean(session.user), publicAccess: this.publicAccess, publicManagement: this.publicManagement,
+          canManage: this.publicManagement || Boolean(session.user), csrf: session.csrf, user: session.user, preview: this.preview,
           invitations: this.invitationCapabilities(session) });
       }
       if (route === '/api/account-load') {
@@ -183,7 +186,7 @@ export class QuotaServer {
         return this.json(res, 200, { authenticated: true, publicAccess: this.publicAccess, canManage: true, user: session.user, csrf: session.csrf,
           invitations: this.invitationCapabilities(session) });
       }
-      if (!session.user) throw new AuthError('请使用 sub2api 管理员身份登录。');
+      if (!session.user && !(this.publicManagement && route === '/api/report-config')) throw new AuthError('请使用 sub2api 管理员身份登录。');
       if (this.reportImage(req, res, route)) return;
       if (await this.keyRoute(req, res, route, url)) return;
       if (route === '/api/logout' && req.method === 'POST') { this.auth.logout(session); this.cookie(res, null); return this.json(res, 200, { ok: true }); }
@@ -196,6 +199,7 @@ export class QuotaServer {
         if (route === '/api/refresh') { await this.dashboard.refresh({ force: true }); return this.json(res, 200, this.status()); }
         if (route === '/api/report-config') {
           const value = await this.body(req);
+          if (this.auth.get(req.headers.cookie)?.id !== session.id) throw new AuthError('会话已失效，请刷新页面后重试。');
           try { await this.scheduler.configure({ enabled: value.enabled, times: value.times, timeZone: value.timeZone }); }
           catch { throw new AuthError('播报设置未保存，请检查时间、时区和机器人配置。', 400); }
           return this.json(res, 200, this.reportConfig());
