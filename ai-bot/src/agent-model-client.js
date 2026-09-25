@@ -1,6 +1,7 @@
 import { ModelClientError } from './model-client.js';
 
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
+const RETRYABLE_HTTP_STATUS = new Set([408, 429, 500, 502, 503, 504]);
 const MAX_CONTEXT_CHARS = 160000;
 const MAX_TEXT_CHARS = 32000;
 const MAX_ARGUMENT_CHARS = 64000;
@@ -12,9 +13,9 @@ const DEFAULT_PROMPT = '你是 KOOK 中的代码协作助手，只使用提供�
 const object = value => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 
 export class AgentModelClientError extends ModelClientError {
-  constructor(code, message) { super(code, message); this.name = 'AgentModelClientError'; }
+  constructor(code, message, { retryable = false } = {}) { super(code, message, { retryable }); this.name = 'AgentModelClientError'; }
 }
-const failure = (code, message) => new AgentModelClientError(code, message);
+const failure = (code, message, retryable = false) => new AgentModelClientError(code, message, { retryable });
 const invalid = code => failure(code, code === 'CONFIG' ? '代码助手配置不正确，请联系管理员。'
   : code === 'INPUT_LIMIT' ? '代码任务上下文过长，请缩小本次任务范围。'
     : code === 'RESPONSE_LIMIT' ? '模型返回的数据过大，已停止本次操作。' : '模型工具协议格式不正确，已停止本次操作。');
@@ -185,7 +186,8 @@ function inputItems(input, names) {
 
 function normalize(raw, model, names, requestedChoice, previousIds) {
   if (!object(raw)) throw invalid('FORMAT');
-  if (raw.error || ['failed', 'cancelled'].includes(raw.status)) throw failure('UPSTREAM_ERROR', '模型服务暂时出错，本次操作已停止。');
+  if (raw.error || ['failed', 'cancelled'].includes(raw.status)) throw failure('UPSTREAM_ERROR', '模型服务暂时出错，本次操作已停止。',
+    raw.status !== 'cancelled' && ['server_error', 'rate_limit_exceeded'].includes(raw.error?.code));
   if (raw.model != null && raw.model !== model) throw failure('MODEL_MISMATCH', '模型与配置不一致，本次操作已停止。');
   if (!['completed', 'incomplete'].includes(raw.status) || !Array.isArray(raw.output) || raw.output.length > 128) throw invalid('FORMAT');
   const calls = [], parts = [], ids = new Set(previousIds); let refused = false;
@@ -274,7 +276,7 @@ export class AgentResponsesClient {
     const abort = error => { rejectAborted(error); controller.abort(error); };
     const callerAbort = () => abort(failure('CANCELLED', '本次代码任务请求已取消。'));
     signal?.addEventListener('abort', callerAbort, { once: true });
-    const timer = setTimeout(() => abort(failure('TIMEOUT', '模型处理超时，本次操作已停止。')), this.#timeout);
+    const timer = setTimeout(() => abort(failure('TIMEOUT', '模型处理超时，本次操作已停止。', true)), this.#timeout);
     try {
       const request = async () => {
         const response = await this.#fetch(this.#url, { method: 'POST', redirect: 'manual', signal: controller.signal,
@@ -290,8 +292,8 @@ export class AgentResponsesClient {
         if (!response?.ok) {
           cancelBody(response?.body);
           if ([401, 403].includes(response?.status)) throw failure('AUTH', '模型服务鉴权失败，请联系管理员。');
-          if (response?.status === 429) throw failure('RATE_LIMIT', '模型服务达到频率或额度限制，请稍后重试。');
-          throw failure('UPSTREAM_ERROR', '模型服务暂时不可用，本次操作已停止。');
+          if (response?.status === 429) throw failure('RATE_LIMIT', '模型服务达到频率或额度限制，请稍后重试。', true);
+          throw failure('UPSTREAM_ERROR', '模型服务暂时不可用，本次操作已停止。', RETRYABLE_HTTP_STATUS.has(response?.status));
         }
         return normalize(await readJson(response, controller.signal), this.#model, names, selected, ids);
       };
@@ -299,7 +301,7 @@ export class AgentResponsesClient {
     } catch (caught) {
       if (caught instanceof AgentModelClientError) throw caught;
       if (controller.signal.aborted && controller.signal.reason instanceof AgentModelClientError) throw controller.signal.reason;
-      throw failure('NETWORK', '暂时无法连接模型服务，本次操作已停止。');
+      throw failure('NETWORK', '暂时无法连接模型服务，本次操作已停止。', true);
     } finally { clearTimeout(timer); signal?.removeEventListener('abort', callerAbort); }
   }
 }

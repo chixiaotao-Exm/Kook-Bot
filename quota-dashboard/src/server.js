@@ -180,8 +180,17 @@ export class QuotaServer {
       }
       if (!session) throw new AuthError('请先登录管理员账号。');
       if (req.method === 'POST' && req.headers['x-csrf-token'] !== session.csrf) throw new AuthError('会话已更新，请刷新页面重试。', 403);
+      const authorize = ({ management = false } = {}) => {
+        const current = this.auth.get(req.headers.cookie);
+        if (!current || current.id !== session.id) throw new AuthError('会话已失效，请刷新页面后重试。');
+        if (req.headers['x-csrf-token'] !== current.csrf) throw new AuthError('会话已更新，请刷新页面重试。', 403);
+        if (management && !current.user && !this.publicManagement) throw new AuthError('请使用 sub2api 管理员身份登录。');
+        return current;
+      };
       if (route === '/api/login' && req.method === 'POST') {
-        const verified = await this.auth.login(await this.body(req), req.socket.remoteAddress || 'unknown'); this.auth.logout(session);
+        const value = await this.body(req); authorize();
+        const verified = await this.auth.login(value, req.socket.remoteAddress || 'unknown');
+        authorize(); this.auth.logout(session);
         session = this.auth.create(verified.user, verified.expires); this.cookie(res, session);
         return this.json(res, 200, { authenticated: true, publicAccess: this.publicAccess, canManage: true, user: session.user, csrf: session.csrf,
           invitations: this.invitationCapabilities(session) });
@@ -199,9 +208,9 @@ export class QuotaServer {
         if (route === '/api/refresh') { await this.dashboard.refresh({ force: true }); return this.json(res, 200, this.status()); }
         if (route === '/api/report-config') {
           const value = await this.body(req);
-          if (this.auth.get(req.headers.cookie)?.id !== session.id) throw new AuthError('会话已失效，请刷新页面后重试。');
-          try { await this.scheduler.configure({ enabled: value.enabled, times: value.times, timeZone: value.timeZone }); }
-          catch { throw new AuthError('播报设置未保存，请检查时间、时区和机器人配置。', 400); }
+          const authorizeManagement = () => authorize({ management: true }); authorizeManagement();
+          try { await this.scheduler.configure({ enabled: value.enabled, times: value.times, timeZone: value.timeZone }, { authorize: authorizeManagement }); }
+          catch (error) { if (error instanceof AuthError) throw error; throw new AuthError('播报设置未保存，请检查时间、时区和机器人配置。', 400); }
           return this.json(res, 200, this.reportConfig());
         }
       }

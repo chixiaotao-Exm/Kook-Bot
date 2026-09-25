@@ -34,7 +34,7 @@ function element(id) {
     showModal() { this.open = true; }, close() { this.open = false; },
   };
 }
-async function harness(t, { authenticated = false, fetch: handler } = {}) {
+async function harness(t, { authenticated = false, fetch: handler, onView = () => {} } = {}) {
   const elements = new Map(), timers = new Map(), calls = [], documentEvents = new Map(), windowEvents = new Map();
   let wall = NOW, tick = 0, timerId = 0;
   const get = id => { if (!elements.has(id)) elements.set(id, element(id)); return elements.get(id); };
@@ -45,7 +45,7 @@ async function harness(t, { authenticated = false, fetch: handler } = {}) {
     addEventListener: (name, callback) => documentEvents.set(name, callback) };
   class ClockDate extends Date { static now() { return wall; } }
   const context = vm.createContext({ Date: ClockDate, performance: { now: () => tick }, URL, document,
-    window: { addEventListener: (name, callback) => windowEvents.set(name, callback) }, AbortController, crypto: { randomUUID: () => 'a6020d81-72fe-4b0e-a4d9-cf24a8080f25' },
+    window: { __OPS_EMBED_ONLY__: true, addEventListener: (name, callback) => windowEvents.set(name, callback) }, AbortController, crypto: { randomUUID: () => 'a6020d81-72fe-4b0e-a4d9-cf24a8080f25' },
     setTimeout: (callback, delay) => { const id = ++timerId; timers.set(id, { callback, delay, at: tick + delay }); return id; },
     clearTimeout: id => timers.delete(id),
     fetch: async (url, options) => {
@@ -62,9 +62,10 @@ async function harness(t, { authenticated = false, fetch: handler } = {}) {
   });
   const tail = SOURCE.lastIndexOf('  return {\n    show(view)'); assert.ok(tail > 0);
   vm.runInContext(SOURCE.slice(0, tail) + 'globalThis.ops = { state, currentTime, hostState, monitorState, botState, serviceState, monitorLink, sparkline, loadSnapshot, render, showView, openRestart, submitRestart, changeMaintenance, pausePolling, loseSession };\n' + SOURCE.slice(tail), context);
+  const panel = context.window.createOpsPanel(document, { onView });
   await settle(() => !get('boot-view').hidden ? false : !context.ops.state.loading);
   t.after(() => context.ops.loseSession());
-  return { ops: context.ops, get, calls, timers, document, nav, async event(name) { documentEvents.get(name)?.(); await settle(); },
+  return { panel, ops: context.ops, get, calls, timers, document, nav, async event(name) { documentEvents.get(name)?.(); await settle(); },
     advance(ms, { runTimers = true, changeWall = true } = {}) {
       const end = tick + ms;
       for (let index = 0; runTimers && index < 10000; index++) {
@@ -228,4 +229,53 @@ test('a wall-clock rollback cannot turn old host data healthy again', async t =>
   const f = await harness(t, { authenticated: true }); f.document.hidden = true; await f.event('visibilitychange');
   f.setWall(NOW - 3600000); f.advance(151000, { changeWall: false });
   assert.equal(f.ops.hostState(snapshot().hosts[0]).state, 'unknown'); assert.equal(f.ops.monitorState(snapshot().monitors[0]).state, 'unknown');
+});
+
+test('late restart receipts retain their outcome without overriding a newer navigation choice', async t => {
+  for (const navigation of ['hidden', 'another-view', 'hidden-and-returned', 'unchanged']) await t.test(navigation, async t => {
+    const entered = deferred(), receipt = deferred(), navigations = [], raw = snapshot();
+    const f = await harness(t, { authenticated: true, onView: view => navigations.push(view), fetch: call => {
+      if (call.route === 'commands') { entered.resolve(); return receipt.promise; }
+      if (call.route === 'snapshot') return response(raw);
+    } });
+    f.panel.show('hosts'); await settle(() => !f.ops.state.loading);
+    f.ops.openRestart('host-1', 'music'); const pending = f.ops.submitRestart(); await entered.promise;
+    if (navigation.startsWith('hidden')) f.panel.hide();
+    if (navigation === 'hidden-and-returned' || navigation === 'another-view') { f.panel.show('bots'); await settle(() => !f.ops.state.loading); }
+    const command = { id: 'late-command', hostId: 'host-1', serviceId: 'music', status: 'succeeded', createdAt: iso(0) };
+    raw.commands = [command]; receipt.resolve(response({ command })); await pending;
+    assert.deepEqual(navigations, navigation === 'unchanged' ? ['events'] : []);
+    assert.equal(f.ops.state.view, navigation === 'unchanged' ? 'events' : navigation === 'hidden' ? 'hosts' : 'bots');
+    assert.equal(f.ops.state.data.commands[0].status, 'succeeded'); assert.equal(f.ops.state.mutation, null);
+    assert.equal(f.calls.filter(call => call.route === 'commands').length, 1);
+    if (navigation === 'hidden') { f.panel.show('events'); await settle(() => !f.ops.state.loading); assert.match(f.get('command-list').innerHTML, /成功/); }
+  });
+});
+
+test('a hidden restart whose receipt is uncertain stays protected from resubmission', async t => {
+  const entered = deferred(), receipt = deferred(), navigations = [];
+  const f = await harness(t, { authenticated: true, onView: view => navigations.push(view), fetch: call => {
+    if (call.route === 'commands') { entered.resolve(); return receipt.promise; }
+  } });
+  f.ops.openRestart('host-1', 'music'); const pending = f.ops.submitRestart(); await entered.promise;
+  f.panel.hide(); receipt.resolve(response({ error: '回执未知' }, 503)); await pending;
+  assert.deepEqual(navigations, []); assert.equal(f.ops.state.uncertainRestarts.has('host-1:music'), true);
+  f.panel.show('hosts'); await settle(() => !f.ops.state.loading);
+  f.ops.openRestart('host-1', 'music'); assert.equal(f.get('restart-dialog').open, false);
+});
+
+test('degraded bot health is not counted or displayed as healthy playback, while old reports stay compatible', async t => {
+  const raw = snapshot(), host = raw.hosts[0], music = host.bots[0];
+  Object.assign(music, { health: 'degraded', transport: 'disconnected', playing: true, lastError: '语音连接中断' });
+  const f = await harness(t, { authenticated: true, fetch: call => call.route === 'snapshot' ? response(raw) : undefined });
+  assert.equal(f.ops.botState(music, host).state, 'degraded'); assert.equal(f.ops.botState(music, host).tone, 'bad');
+  const html = f.get('bot-list').innerHTML;
+  assert.match(html, /异常/); assert.match(html, /语音连接/); assert.match(html, /已断开/); assert.doesNotMatch(html, /正在播放|badge good/);
+  assert.match(f.get('overview-stats').innerHTML, /<span>机器人<\/span>[\s\S]*?<strong class="stat-value">0<small>\/ 2/);
+  assert.equal(f.ops.botState({ ...music, health: 'unknown' }, host).state, 'unknown');
+  assert.equal(f.ops.botState({ ...music, state: 'stopped' }, host).label, '计划停用');
+  assert.equal(f.ops.botState(music, host, NOW + 120001).state, 'unknown');
+  const legacy = { ...music }; delete legacy.health;
+  assert.equal(f.ops.botState(legacy, host).state, 'online');
+  assert.equal(f.ops.botState({ ...music, health: 'healthy' }, host).tone, 'good');
 });

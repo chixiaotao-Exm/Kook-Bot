@@ -3,7 +3,7 @@
 window.createOpsPanel = function(root = document, options = {}) {
   const $ = selector => root.querySelector(selector);
   const $$ = selector => [...root.querySelectorAll(selector)];
-  let active = true;
+  let active = true, navigationGeneration = 0;
   const hidden = () => document.hidden || !active;
   const state = { authenticated: false, canManage: false, publicManagement: false, csrf: '', user: null, data: null, epoch: 0, view: 'overview',
     loading: false, failed: false, poll: null, aging: null, snapshotController: null, controllers: new Set(),
@@ -54,6 +54,8 @@ window.createOpsPanel = function(root = document, options = {}) {
     const parent = hostState(host, now);
     if (!parent.fresh || parent.state === 'unknown') return { state: 'unknown', label: '待确认', tone: '', fresh: false };
     if (bot.state === 'stopped') return { state: 'stopped', label: '计划停用', tone: '', fresh: true };
+    if (bot.state === 'online' && bot.health === 'degraded') return { state: 'degraded', label: '异常', tone: 'bad', fresh: true };
+    if (bot.state === 'online' && bot.health === 'unknown') return { state: 'unknown', label: '待确认', tone: '', fresh: true };
     if (bot.state === 'online') return { state: 'online', label: '在线', tone: 'good', fresh: true };
     if (bot.state === 'offline') return { state: 'offline', label: '离线', tone: 'bad', fresh: true };
     return { state: 'unknown', label: '待确认', tone: '', fresh: true };
@@ -180,6 +182,7 @@ window.createOpsPanel = function(root = document, options = {}) {
   }
   function showView(view) {
     if (!Object.hasOwn(views, view)) return;
+    navigationGeneration++;
     state.view = view; const [name, title, description] = views[view];
     $('#breadcrumb-name').textContent = name; $('#page-title').textContent = title; $('#page-description').textContent = description;
     $$('.view').forEach(node => { node.hidden = node.id !== `view-${view}`; });
@@ -221,7 +224,10 @@ window.createOpsPanel = function(root = document, options = {}) {
   }
   function botHtml(bot, host) {
     const status = botState(bot, host);
-    return `<article class="glass bot-card"><div class="card-heading"><div class="bot-identity"><span class="bot-icon" aria-hidden="true">✦</span><div><h3>${escapeHtml(text(bot.name, bot.id))}</h3><p>${escapeHtml(text(bot.kind, '机器人'))}</p></div></div>${badge(status)}</div><dl class="bot-meta"><div><dt>所在服务器</dt><dd>${escapeHtml(text(host.name, host.id))}</dd></div><div><dt>频道</dt><dd>${escapeHtml(text(bot.channelName, '未提供'))}</dd></div><div><dt>播放状态</dt><dd>${!status.fresh ? '待确认' : bot.playing === true ? '♫ 正在播放' : bot.playing === false ? '当前未播放' : '未提供'}</dd></div><div><dt>最近观测</dt><dd>${escapeHtml(stamp(host.observedAt || host.lastSeenAt))}</dd></div></dl>${bot.lastError ? `<p class="bot-error">${escapeHtml(text(bot.lastError))}</p>` : ''}</article>`;
+    const playback = !status.fresh || status.state === 'unknown' ? '待确认' : status.state === 'degraded' ? '播放异常'
+      : bot.playing === true ? '♫ 正在播放' : bot.playing === false ? '当前未播放' : '未提供';
+    const transport = ['connected', 'disconnected'].includes(bot.transport) ? `<div><dt>语音连接</dt><dd>${!status.fresh ? '待确认' : bot.transport === 'connected' ? '已连接' : '已断开'}</dd></div>` : '';
+    return `<article class="glass bot-card"><div class="card-heading"><div class="bot-identity"><span class="bot-icon" aria-hidden="true">✦</span><div><h3>${escapeHtml(text(bot.name, bot.id))}</h3><p>${escapeHtml(text(bot.kind, '机器人'))}</p></div></div>${badge(status)}</div><dl class="bot-meta"><div><dt>所在服务器</dt><dd>${escapeHtml(text(host.name, host.id))}</dd></div><div><dt>频道</dt><dd>${escapeHtml(text(bot.channelName, '未提供'))}</dd></div><div><dt>播放状态</dt><dd>${playback}</dd></div>${transport}<div><dt>最近观测</dt><dd>${escapeHtml(stamp(host.observedAt || host.lastSeenAt))}</dd></div></dl>${bot.lastError ? `<p class="bot-error">${escapeHtml(text(bot.lastError))}</p>` : ''}</article>`;
   }
   function incidentHtml(item, compact = false) {
     const resolved = item.state === 'resolved';
@@ -304,7 +310,7 @@ window.createOpsPanel = function(root = document, options = {}) {
     const selected = state.restart; if (!selected || selected.pending || selected.submitted || !state.canManage) return;
     const host = state.data?.hosts.find(item => item.id === selected.hostId), service = list(host?.services).find(item => item.id === selected.serviceId);
     if (!host || !service || !canRestart(host, service)) { $('#restart-error').textContent = '服务状态已变化，请关闭后刷新。'; $('#restart-error').hidden = false; return; }
-    const epoch = state.epoch; selected.pending = true; selected.submitted = true; state.mutation = `restart:${selected.hostId}:${selected.serviceId}`;
+    const epoch = state.epoch, navigation = navigationGeneration; selected.pending = true; selected.submitted = true; state.mutation = `restart:${selected.hostId}:${selected.serviceId}`;
     $('#restart-confirm').disabled = true; $('#restart-confirm').textContent = '正在提交…'; $('#restart-cancel').disabled = true; render();
     try {
       const result = await api('commands', { method: 'POST', body: { hostId: selected.hostId, serviceId: selected.serviceId, action: 'restart', requestId: selected.requestId }, epoch });
@@ -312,8 +318,11 @@ window.createOpsPanel = function(root = document, options = {}) {
       if (!result?.command || !['pending', 'dispatched', 'succeeded', 'failed', 'unknown'].includes(result.command.status)) throw Error('未取得可确认的命令记录。');
       state.data.commands = [result.command, ...state.data.commands.filter(command => command.id !== result.command.id)];
       if (result.command.status === 'unknown') state.uncertainRestarts.set(`${selected.hostId}:${selected.serviceId}`, selected.requestId);
-      $('#restart-dialog').close(); state.restart = null; showView('events'); options.onView?.('events');
-      toast(result.command.status === 'succeeded' ? '服务重启成功。' : result.command.status === 'failed' ? '重启失败，请查看操作记录。' : '请求已记录，请查看执行结果。', result.command.status === 'failed');
+      $('#restart-dialog').close(); state.restart = null;
+      if (active && navigation === navigationGeneration) {
+        showView('events'); options.onView?.('events');
+        toast(result.command.status === 'succeeded' ? '服务重启成功。' : result.command.status === 'failed' ? '重启失败，请查看操作记录。' : '请求已记录，请查看执行结果。', result.command.status === 'failed');
+      }
       await loadSnapshot();
     } catch (error) {
       if (epoch !== state.epoch) return;
@@ -359,7 +368,7 @@ window.createOpsPanel = function(root = document, options = {}) {
   }).catch(error => { if (bootEpoch === state.epoch) loseSession(error.message || '无法连接运维中心，请稍后重试。'); });
   return {
     show(view) { active = true; showView(view); if (state.canManage) { render(); scheduleAging(); void loadSnapshot(); } },
-    hide() { active = false; pausePolling(); if ($('#restart-dialog').open) $('#restart-dialog').close(); state.restart = null; },
+    hide() { active = false; navigationGeneration++; pausePolling(); if ($('#restart-dialog').open) $('#restart-dialog').close(); state.restart = null; },
     clear() { loseSession(); },
     async refreshSession() {
       const epoch = state.epoch, result = await api('session', { epoch });

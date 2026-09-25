@@ -8,6 +8,7 @@ import { WebAuth } from './web-auth.js';
 import { atomicJson, log, UserError } from './util.js';
 import { musicSource } from './music-sources.js';
 import { parseMusicInput } from './music-input.js';
+import { qqId } from './qq-music.js';
 
 const root = fileURLToPath(new URL('../web/', import.meta.url));
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css', '.js': 'text/javascript', '.png': 'image/png', '.webp': 'image/webp', '.jpg': 'image/jpeg', '.vrm': 'model/gltf-binary', '.ico': 'image/x-icon', '.svg': 'image/svg+xml', '.md': 'text/plain; charset=utf-8' };
@@ -424,7 +425,7 @@ export class WebConsole {
         const offsetText = url.searchParams.get('offset') ?? '0';
         const limitText = url.searchParams.get('limit') ?? '50';
         const offset = Number(offsetText); const limit = Number(limitText);
-        if (!(source === 'qq' ? /^(?:top:)?[1-9]\d{0,17}$/ : /^[1-9]\d{0,17}$/).test(id)) throw new UserError('请输入有效的歌单 ID。');
+        if (source === 'qq' ? qqId(id, 'playlist') !== id : !/^[1-9]\d{0,17}$/.test(id)) throw new UserError('请输入有效的歌单 ID。');
         if (!/^\d+$/.test(offsetText) || !/^\d+$/.test(limitText) || !Number.isSafeInteger(offset) ||
             !Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new UserError('歌单分页位置无效，每页可读取 1-100 首歌曲。');
         return this.cached(`source:${source}:playlist:${id}:${offset}:${limit}`, () => this.music.playlistDetails(id, { offset, limit }, source));
@@ -471,7 +472,7 @@ export class WebConsole {
         else this.record('已重新尝试连接机器人', id);
         return { ok: true, bots: this.bots() };
       }
-      case '/api/channel': await player.join(await this.context(data, runtime), { authorize }); record('已加入语音频道'); break;
+      case '/api/channel': await player.join(await this.context(data, runtime), { authorize, expectedEpoch: playbackEpoch }); record('已加入语音频道'); break;
       case '/api/features': {
         if (!runtime.features) throw new UserError('机器人尚未就绪，暂时无法修改房间设置。');
         if (!['radio', 'schedules', 'rules'].includes(data.section)) throw new UserError('房间设置类型无效。');

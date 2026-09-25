@@ -442,14 +442,61 @@ test('new operator notes during review invalidate that review and trigger a fres
 test('PR lookup requires the exact published commit before reporting a PR URL', async t => {
   let lookups = 0;
   const publication = { published: true, branch: 'kook-agent/task-fixture-job-123', commit: 'd'.repeat(40) };
-  const f = await fixture(t, { config: { publishWaitMs: 20, pollIntervalMs: 1 }, broker: async operation => {
+  const clock = pollingClock();
+  const f = await fixture(t, { config: { ...clock.config, publishWaitMs: 20, pollIntervalMs: 1 }, broker: async operation => {
     if (operation === 'publish') return publication;
     if (operation === 'job_status') return ++lookups === 1 ? { ...publication, commit: 'e'.repeat(40), prUrl: `https://github.com/${REPO}/pull/999` }
       : { ...publication, prUrl: `https://github.com/${REPO}/pull/43` };
   } });
-  await f.session.start(initial()); const state = await f.done();
+  await f.session.start(initial()); await until(() => lookups === 1);
+  await clock.advance(1); const state = await f.done();
   assert.equal(state.status, 'completed'); assert.equal(state.prUrl, `https://github.com/${REPO}/pull/43`);
   assert.equal(f.posts.some(post => post.content.includes('/pull/999')), false);
+});
+
+test('temporary model errors retry then pause the original job; resume preserves patches and tool context', async t => {
+  let attempts = 0, recovered = false;
+  const f = await fixture(t, { config: { modelRetryDelaysMs: [1, 1] }, coder: async input => {
+    if (++attempts === 1) return called('write_file', { path: 'ai-bot/src/new.js', content: '// saved patch', expectedSha256: null });
+    if (!recovered) throw Object.assign(new Error('fixture outage'), { code: 'NETWORK', retryable: true });
+    assert.ok(input.some(item => item.type === 'function_call_output'));
+    return final('继续完成已保留的修改');
+  } });
+  await f.session.start(initial());
+  await until(() => f.session.snapshot().paused || !f.session.snapshot().active);
+  const paused = f.session.snapshot();
+  assert.equal(paused.paused, true); assert.equal(paused.retryPaused, true);
+  assert.equal(paused.jobId, 'fixture-job-123'); assert.equal(attempts, 4);
+  recovered = true;
+  assert.equal((await f.session.resume({ userId: USER })).resumed, true);
+  assert.equal((await f.done()).status, 'completed');
+  assert.equal(f.calls.filter(item => item.operation === 'create_job').length, 1);
+  assert.equal(f.calls.filter(item => item.operation === 'write_file').length, 1);
+  assert.equal(f.calls.filter(item => item.operation === 'publish').length, 1);
+});
+
+test('stop during a model retry delay cancels recovery without another request or publication', async t => {
+  let attempts = 0;
+  const f = await fixture(t, { config: { modelRetryDelaysMs: [60000] }, coder: async () => {
+    attempts++; throw Object.assign(new Error('fixture network'), { code: 'NETWORK', retryable: true });
+  } });
+  await f.session.start(initial()); await until(() => f.session.snapshot().retryWaiting);
+  assert.equal((await f.session.stop({ userId: USER })).stopped, true);
+  assert.equal((await f.done()).status, 'stopped'); assert.equal(attempts, 1);
+  assert.equal(f.calls.some(item => item.operation === 'publish'), false);
+});
+
+test('model test tools accept every trusted runner project, including bridge and ops', async t => {
+  const source = await readFile(new URL('../../code-agent/broker/projects.py', import.meta.url), 'utf8');
+  const projects = [...source.match(/^PROJECTS = \((.*)\)$/m)[1].matchAll(/'([^']+)'/g)].map(match => match[1]);
+  assert.ok(projects.includes('bridge-bot') && projects.includes('ops-center'));
+  for (const project of projects) {
+    let step = 0;
+    const f = await fixture(t, { coder: async () => ++step === 1
+      ? called('run_checks', { project, testFiles: [] }) : final('检查完成') });
+    await f.session.start(initial()); assert.equal((await f.done()).status, 'completed');
+    assert.ok(f.calls.some(call => call.operation === 'run_checks' && call.args.project === project));
+  }
 });
 
 function pollingClock() {
