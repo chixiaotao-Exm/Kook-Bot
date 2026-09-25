@@ -24,7 +24,8 @@ export class QueueError extends Error {
   }
 }
 
-async function atomicState(file, value) {
+async function atomicState(file, value, { signal } = {}) {
+  signal?.throwIfAborted();
   await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
   const temporary = `${file}.${randomUUID()}.tmp`;
   let handle;
@@ -32,6 +33,7 @@ async function atomicState(file, value) {
     handle = await open(temporary, 'wx', 0o600);
     await handle.writeFile(JSON.stringify(value)); await handle.sync();
     await handle.close(); handle = null;
+    signal?.throwIfAborted();
     await rename(temporary, file);
     if (process.platform !== 'win32') {
       const directory = await open(path.dirname(file), 'r');
@@ -46,13 +48,13 @@ async function atomicState(file, value) {
 /** Durable at-most-once delivery for bounded, already-normalized notifications. */
 export class NotificationQueue {
   #file; #send; #validate; #now; #write; #setTimeout; #clearTimeout;
-  #interval; #maxRecords; #retention; #retryFloor; #sendTimeout;
+  #interval; #maxRecords; #retention; #retryFloor; #sendTimeout; #writeTimeout; #maxPending; #pending = 0;
   #records = []; #tail = Promise.resolve(); #initializing = null; #worker = null; #closing = null;
   #timer = null; #ready = false; #closed = false; #started = false; #lastError = null; #nextSendAt = 0;
 
   constructor({ dataDir, send, validate = () => true, now = Date.now, writeState = atomicState,
     intervalMs = 1000, maxRecords = 1000, retentionMs = 7 * 86400000, retryFloorMs = 15000,
-    sendTimeoutMs = 10000, setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout } = {}) {
+    sendTimeoutMs = 10000, writeTimeoutMs = 5000, maxPending = 32, setTimeoutImpl = setTimeout, clearTimeoutImpl = clearTimeout } = {}) {
     if (typeof dataDir !== 'string' || !dataDir || /[\x00]/.test(dataDir) || typeof send !== 'function'
       || typeof validate !== 'function' || typeof now !== 'function' || typeof writeState !== 'function'
       || typeof setTimeoutImpl !== 'function' || typeof clearTimeoutImpl !== 'function'
@@ -60,11 +62,14 @@ export class NotificationQueue {
       || !Number.isSafeInteger(maxRecords) || maxRecords < 1 || maxRecords > 10000
       || !Number.isSafeInteger(retentionMs) || retentionMs < 1 || retentionMs > 365 * 86400000
       || !Number.isSafeInteger(retryFloorMs) || retryFloorMs < 1 || retryFloorMs > MAX_RETRY_MS
-      || !Number.isSafeInteger(sendTimeoutMs) || sendTimeoutMs < 1 || sendTimeoutMs > 10000) throw new QueueError('CONFIG', 400);
+      || !Number.isSafeInteger(sendTimeoutMs) || sendTimeoutMs < 1 || sendTimeoutMs > 10000
+      || !Number.isSafeInteger(writeTimeoutMs) || writeTimeoutMs < 1 || writeTimeoutMs > 10000
+      || !Number.isSafeInteger(maxPending) || maxPending < 1 || maxPending > 128) throw new QueueError('CONFIG', 400);
     this.#file = path.join(dataDir, 'bridge-queue.json');
     this.#send = send; this.#validate = validate; this.#now = now; this.#write = writeState;
     this.#interval = intervalMs; this.#maxRecords = maxRecords; this.#retention = retentionMs;
     this.#retryFloor = retryFloorMs; this.#sendTimeout = sendTimeoutMs;
+    this.#writeTimeout = writeTimeoutMs; this.#maxPending = maxPending;
     this.#setTimeout = setTimeoutImpl; this.#clearTimeout = clearTimeoutImpl;
   }
 
@@ -121,8 +126,19 @@ export class NotificationQueue {
     this.#records = this.#records.map(record => record.state === 'sending' ? this.#terminal(record, 'uncertain', 'STORAGE') : record);
   }
   async #commit(records, nextSendAt = this.#nextSendAt) {
-    try { await this.#write(this.#file, structuredClone({ version: 1, records, nextSendAt })); }
+    if (this.#lastError === 'STORAGE') throw new QueueError('STORAGE');
+    const controller = new AbortController(); let timer;
+    try {
+      await Promise.race([
+        Promise.resolve().then(() => this.#write(this.#file, structuredClone({ version: 1, records, nextSendAt }), { signal: controller.signal })),
+        new Promise((_, reject) => { timer = this.#setTimeout(() => {
+          controller.abort(); reject(new QueueError('STORAGE'));
+        }, this.#writeTimeout); }),
+      ]);
+    }
     catch { this.#failStorage(); throw new QueueError('STORAGE'); }
+    finally { this.#clearTimeout(timer); controller.abort(); }
+    if (this.#lastError === 'STORAGE') throw new QueueError('STORAGE');
     this.#records = records; this.#nextSendAt = nextSendAt;
   }
   #terminal(record, state, errorCode, messageId) {
@@ -160,8 +176,13 @@ export class NotificationQueue {
 
   enqueue(value) {
     let notification;
-    try { this.#assertReady(); notification = this.#notification(value); }
+    try {
+      this.#assertReady();
+      if (this.#pending >= this.#maxPending) throw new QueueError('CAPACITY');
+      notification = this.#notification(value);
+    }
     catch (caught) { return Promise.reject(caught); }
+    this.#pending++;
     return this.#serial(async () => {
       this.#assertReady();
       const now = this.#clock(), records = this.#prune(this.#records, now);
@@ -171,7 +192,7 @@ export class NotificationQueue {
       await this.#commit(records);
       if (this.#lastError === 'CAPACITY') this.#lastError = null;
       return { accepted: true, duplicate: false };
-    });
+    }).finally(() => { this.#pending--; });
   }
 
   start() {
@@ -251,7 +272,7 @@ export class NotificationQueue {
   snapshot() {
     const counts = { queued: 0, sending: 0, sent: 0, rejected: 0, uncertain: 0 };
     for (const record of this.#records) counts[record.state]++;
-    return { ...counts, lastError: this.#lastError };
+    return { ...counts, ready: this.#ready && !this.#closed, pending: this.#pending, lastError: this.#lastError };
   }
   close() {
     if (this.#closing) return this.#closing;

@@ -58,7 +58,7 @@ test('real journal replacements stay mode 0600 and terminal records retain no no
   assert.equal(record.state, 'sent'); assert.equal(record.messageId, messageId);
   assert.equal(record.notification, undefined); assert.equal(record.title, undefined);
   if (process.platform !== 'win32') assert.equal((await stat(f.file)).mode & 0o777, 0o600);
-  assert.deepEqual(f.queue.snapshot(), { queued: 0, sending: 0, sent: 1, rejected: 0, uncertain: 0, lastError: null });
+  assert.deepEqual(f.queue.snapshot(), { queued: 0, sending: 0, sent: 1, rejected: 0, uncertain: 0, ready: true, pending: 0, lastError: null });
   assert.doesNotMatch(JSON.stringify(f.queue.snapshot()), /GitHub|summary|key|messageId/);
 });
 
@@ -322,4 +322,37 @@ test('closing during the pre-send write returns the unsent record to queued with
   const closing = f.queue.close(); release.resolve(); await working; await closing;
   const record = (await f.read()).records[0];
   assert.equal(f.sends.length, 0); assert.equal(record.state, 'queued'); assert.equal(record.attempts, 0); assert.equal(f.timers.size, 0);
+});
+
+test('pending admissions are bounded and a hung write times out, releases close, and fails closed after late completion', async t => {
+  const entered = deferred(), late = deferred(), lateDone = deferred(); let writes = 0, signal;
+  const f = await fixture(t, { maxPending: 2, writeTimeoutMs: 80, writeState: async (file, value, options) => {
+    writes++; if (writes === 2) { signal = options.signal; entered.resolve(); await late.promise; }
+    await save(file, value); if (writes === 2) lateDone.resolve();
+  } });
+  const first = assert.rejects(f.queue.enqueue(notification(1)), fails('STORAGE'));
+  await entered.promise;
+  const second = assert.rejects(f.queue.enqueue(notification(2)), fails('CLOSED'));
+  await assert.rejects(f.queue.enqueue(notification(3)), fails('CAPACITY'));
+  assert.equal(f.queue.snapshot().pending, 2); const closing = f.queue.close();
+  await f.advance(80); await Promise.all([first, second, closing]);
+  assert.equal(signal.aborted, true); assert.equal(f.queue.snapshot().pending, 0);
+  assert.equal(f.queue.snapshot().ready, false); assert.equal(f.queue.snapshot().lastError, 'STORAGE');
+  late.resolve(); await lateDone.promise;
+  assert.equal(f.queue.snapshot().queued, 0); assert.equal(f.sends.length, 0);
+  await assert.rejects(f.queue.enqueue(notification(4)), fails('CLOSED'));
+});
+
+test('write timeout during send claim starts no send, and a late write never restores queue readiness', async t => {
+  const entered = deferred(), late = deferred(), lateDone = deferred(); let writes = 0;
+  const f = await fixture(t, { writeTimeoutMs: 60, writeState: async (file, value) => {
+    if (++writes === 3) { entered.resolve(); await late.promise; }
+    await save(file, value); if (writes === 3) lateDone.resolve();
+  } });
+  await f.queue.enqueue(notification()); f.queue.start(); const working = f.advance(0); await entered.promise;
+  await f.advance(60); await working;
+  assert.equal(f.queue.snapshot().ready, false); assert.equal(f.queue.snapshot().lastError, 'STORAGE'); assert.equal(f.sends.length, 0);
+  late.resolve(); await lateDone.promise;
+  await assert.rejects(f.queue.enqueue(notification(2)), fails('STORAGE'));
+  assert.throws(() => f.queue.start(), fails('STORAGE')); assert.equal(f.sends.length, 0);
 });

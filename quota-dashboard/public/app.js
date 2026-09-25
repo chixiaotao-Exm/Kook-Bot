@@ -5,6 +5,10 @@
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
   const manageRequested = new URLSearchParams(location.search).get('manage') === '1';
   const initialInvitationId = new URLSearchParams(location.search).get('invite');
+  const consoleViews = { overview: '额度总览', reports: '定时播报', 'key-usage': 'Key 用量', trends: '每日趋势', health: '账号健康',
+    'ops-overview': '运行概览', 'ops-hosts': '服务器', 'ops-web': '网站与接口', 'ops-bots': '机器人', 'ops-events': '事件记录' };
+  const hashView = () => Object.hasOwn(consoleViews, location.hash.slice(1)) ? location.hash.slice(1) : null;
+  let opsAuthenticated = false, returnView = null;
   const state = { authenticated: false, publicAccess: false, canManage: false, accounts: [], platform: 'all', filter: 'all', query: '', view: 'overview', snapshot: null, reportConfig: null, reportingLoaded: false, loading: false, refreshing: false, csrfToken: null };
   state.invitations = { enabled: false, publicInvites: false, canInvite: false };
   const invitation = { id: null, generation: 0, value: null, prepared: false, loading: false, sending: false, message: '', error: false };
@@ -12,7 +16,7 @@
   const invitationCount = value => typeof value?.availableCount === 'number' && Number.isSafeInteger(value.availableCount) && value.availableCount >= 0 ? value.availableCount : null;
   const canInvite = () => state.invitations.enabled && state.invitations.canInvite && (state.invitations.publicInvites || state.authenticated);
   const canRead = () => state.publicAccess || state.authenticated;
-  const isManaging = () => state.canManage && (!state.publicAccess || manageRequested);
+  const isManaging = () => (state.authenticated || state.publicManagement) && state.canManage;
   const providers = { openai: { name: 'OpenAI', icon: '◎' }, claude: { name: 'Claude', icon: '✳' }, anthropic: { name: 'Claude', icon: '✳' }, grok: { name: 'Grok', icon: '𝕏' }, deepseek: { name: 'DeepSeek', icon: 'D' }, gemini: { name: 'Gemini', icon: '✦' } };
   const expandedAccounts = new Set();
   let pollTimer;
@@ -116,7 +120,13 @@
     if (response.status === 401 && path === 'session') return { ...data, authenticated: false };
     if (!response.ok) {
       if (response.status === 401 && path !== 'login' && path !== 'key-usage') {
-        if (state.publicAccess) { state.authenticated = false; state.canManage = false; renderAccess(); }
+        if (state.publicAccess) {
+          state.authenticated = false; state.canManage = false;
+          if (state.publicManagement) {
+            try { const fresh = await api('session'); state.canManage = fresh.canManage === true; } catch {}
+          }
+          renderAccess();
+        }
         else showLogin();
       }
       const error = new Error(data.error?.message || data.message || (typeof data.error === 'string' ? data.error : '') || `请求失败（${response.status}）`);
@@ -133,6 +143,7 @@
     pauseAccountLoad();
     pauseTrends();
     pauseHealthExpiry();
+    window.opsConsole.hide();
     $('#boot-view').hidden = true;
     $('#app-view').hidden = true;
     $('#login-view').hidden = false;
@@ -142,22 +153,26 @@
 
   function renderAccess() {
     const managing = isManaging();
-    $('#admin-label').hidden = !managing;
-    $('#public-label').hidden = !state.publicAccess || managing;
-    $('#logout').hidden = !managing;
-    $('#mobile-logout').hidden = !managing;
+    $('#admin-label').hidden = state.publicManagement || !managing && !opsAuthenticated;
+    $('#public-label').hidden = !state.publicManagement && (!state.publicAccess || managing || opsAuthenticated);
+    $('#public-label').lastChild.textContent = state.publicManagement ? '访客模式' : '公开看板';
+    $('#logout').hidden = state.publicManagement || !managing && !opsAuthenticated;
+    $('#mobile-logout').hidden = state.publicManagement || !managing && !opsAuthenticated;
+    $('#console-login').hidden = state.publicManagement || managing && opsAuthenticated;
+    $('#console-mobile-login').hidden = state.publicManagement || managing && opsAuthenticated;
     $('#report-form').hidden = !managing;
     $('#report-readonly').hidden = managing;
     $('#manage-reports').hidden = !state.publicAccess || managing;
-    $('#public-report-return').hidden = !state.publicAccess || !managing;
-    $('#access-note').textContent = state.publicAccess ? state.invitations.enabled && state.invitations.publicInvites ? '公开看板' : '只读看板' : '管理员';
+    $('#public-report-return').hidden = state.publicManagement || !state.publicAccess || !managing;
+    $('#access-note').textContent = state.publicManagement ? '访客模式' : managing || opsAuthenticated ? '管理员' : state.publicAccess ? state.invitations.enabled && state.invitations.publicInvites ? '公开看板' : '只读看板' : '管理员';
     if ($('#invitation-dialog').open) renderInvitation();
   }
 
   async function showApp(session) {
     state.authenticated = Boolean(session.authenticated);
+    state.publicManagement = session.publicManagement === true;
     if (typeof session.publicAccess === 'boolean') state.publicAccess = session.publicAccess;
-    state.canManage = state.authenticated && session.canManage !== false;
+    state.canManage = (state.authenticated || state.publicManagement) && session.canManage !== false;
     applyInvitationCapabilities(session.invitations);
     state.csrfToken = session.csrf || session.csrfToken || state.csrfToken;
     $('#admin-name').textContent = session.user?.username || session.user?.name || session.user?.email || '管理员';
@@ -168,6 +183,7 @@
     await loadStatus();
     void refreshAccountLoad();
     if (initialInvitationId && state.accounts.some(account => String(account.id) === initialInvitationId)) void openInvitation(initialInvitationId);
+    else if (returnView || hashView()) { const view = returnView || hashView(); returnView = null; await showView(view); }
     else if (state.publicAccess && manageRequested && isManaging()) await showView('reports');
     schedulePoll();
   }
@@ -737,7 +753,7 @@
       // Refresh the browser's CSRF session and capability before an explicit check.
       const session = await api('session');
       if (!current()) return;
-      state.authenticated = Boolean(session.authenticated); state.canManage = state.authenticated && session.canManage !== false;
+      state.authenticated = Boolean(session.authenticated); state.canManage = (state.authenticated || state.publicManagement) && session.canManage !== false;
       applyInvitationCapabilities(session.invitations); renderAccess();
       if (!canInvite()) throw new Error(state.invitations.publicInvites ? '邀请暂不可用，请稍后再试。' : '请先登录管理员账号，再发送邀请。');
       const result = await api(`invitations/${encodeURIComponent(id)}/refresh`, { method: 'POST', body: {} });
@@ -1126,18 +1142,30 @@
   }
 
   async function showView(view) {
+    if (!Object.hasOwn(consoleViews, view)) return;
     clearTimeout(toastTimer);
     $('#toast').hidden = true;
     if (state.view === 'key-usage' && view !== 'key-usage') resetKeyQuery({ clearInput: true });
     if (state.view === 'trends' && view !== 'trends') pauseTrends();
     state.view = view;
+    if (location.hash !== `#${view}`) history.pushState(null, '', `#${view}`);
+    const operations = view.startsWith('ops-');
+    $('#ops-view').hidden = !operations;
+    if (operations) void window.opsConsole.show(view.slice(4)); else window.opsConsole.hide();
     $('#overview-view').hidden = view !== 'overview';
     $('#reports-view').hidden = view !== 'reports';
     $('#key-usage-view').hidden = view !== 'key-usage';
     $('#trends-view').hidden = view !== 'trends';
     $('#health-view').hidden = view !== 'health';
-    $('#breadcrumb-title').textContent = ({ overview: '额度总览', reports: '定时播报', 'key-usage': 'Key 用量', trends: '每日趋势', health: '账号健康' })[view] || '额度总览';
+    $('#breadcrumb-title').textContent = consoleViews[view];
+    document.title = `${consoleViews[view]} · 星港控制台`;
     $$('[data-view]').forEach(button => { button.classList.toggle('active', button.dataset.view === view); button.setAttribute('aria-current', button.dataset.view === view ? 'page' : 'false'); });
+    const nav = $('.sidebar nav'), selected = $('.sidebar .nav-item.active');
+    if (innerWidth <= 800 && selected) {
+      const parent = nav.getBoundingClientRect(), child = selected.getBoundingClientRect();
+      if (child.left < parent.left) nav.scrollLeft += child.left - parent.left;
+      else if (child.right > parent.right) nav.scrollLeft += child.right - parent.right;
+    }
     refreshHealthState();
     if (view === 'reports') await loadReports();
     if (view === 'key-usage') await loadKeyPresets();
@@ -1152,7 +1180,17 @@
     button.disabled = true;
     button.textContent = '正在登录…';
     $('#login-error').hidden = true;
-    try { await api('session'); const session = await api('login', { method: 'POST', body: { email: form.elements.email.value.trim(), password: form.elements.password.value } }); form.elements.password.value = ''; await showApp(session); }
+    try {
+      await api('session');
+      const credentials = { email: form.elements.email.value.trim(), password: form.elements.password.value };
+      form.elements.password.value = '';
+      const session = await api('login', { method: 'POST', body: credentials });
+      let opsError;
+      try { await window.opsConsole.login(credentials); } catch (error) { opsError = error; }
+      finally { credentials.password = ''; }
+      await showApp(session);
+      if (opsError) toast(`额度管理已登录；运维登录未完成：${opsError.message}`);
+    }
     catch (error) { $('#login-error').textContent = error.message; $('#login-error').hidden = false; }
     finally { button.disabled = false; button.textContent = '登录'; }
   });
@@ -1166,14 +1204,34 @@
       if (!token) throw new Error('没有找到已有的 Sub2API 登录，请先在原站登录管理员账号，或使用上方邮箱密码。');
       await api('session');
       const session = await api('login', { method: 'POST', body: { token } });
+      let opsError;
+      try { await window.opsConsole.login({ token }); } catch (error) { opsError = error; }
+      finally { token = null; }
       await showApp(session);
+      if (opsError) toast(`额度管理已登录；运维登录未完成：${opsError.message}`);
     } catch (error) { $('#login-error').textContent = error.message; $('#login-error').hidden = false; }
     finally { button.disabled = false; }
   });
   async function logout() {
-    try { await api('logout', { method: 'POST', body: {} }); state.accounts = []; state.snapshot = null; state.reportingLoaded = false; state.csrfToken = null; if (state.publicAccess) location.assign('./'); else showLogin(); }
-    catch (error) { if (error.status !== 401) toast(error.message); }
+    window.opsConsole.hide();
+    const results = await Promise.allSettled([(async () => { await api('session'); await api('logout', { method: 'POST', body: {} }); })(), window.opsConsole.logout()]);
+    state.authenticated = false; state.canManage = false; opsAuthenticated = false;
+    state.accounts = []; state.snapshot = null; state.reportingLoaded = false; state.csrfToken = null;
+    const failed = results.some(result => result.status === 'rejected' && result.reason.status !== 401);
+    if (failed) { showLogin('部分服务未确认退出，请重试退出。'); $('#logout-retry').hidden = false; }
+    else if (state.publicAccess) location.assign('./'); else showLogin();
   }
+  function consoleLogin() { returnView = state.view; showLogin(); }
+  window.opsConsole.configure({ onLogin: consoleLogin, onView: view => void showView(view), onSession: (authenticated, user) => {
+    opsAuthenticated = authenticated;
+    if (authenticated && !state.authenticated) $('#admin-name').textContent = user?.email || '管理员';
+    renderAccess();
+  } });
+  $('#console-login').addEventListener('click', consoleLogin);
+  $('#console-mobile-login').addEventListener('click', consoleLogin);
+  $('#ops-retry').addEventListener('click', () => window.opsConsole.show(state.view.slice(4)));
+  $('#logout-retry').addEventListener('click', logout);
+  window.addEventListener('popstate', () => { if (!$('#app-view').hidden) void showView(hashView() || 'overview'); });
   $('#logout').addEventListener('click', logout);
   $('#mobile-logout').addEventListener('click', logout);
   $('#refresh').addEventListener('click', requestRefresh);
@@ -1252,7 +1310,7 @@
     try {
       const session = await api('session');
       state.publicAccess = Boolean(session.publicAccess);
-      if (session.authenticated || state.publicAccess && !manageRequested) await showApp(session);
+      if (session.authenticated || session.publicManagement || state.publicAccess && !manageRequested) await showApp(session);
       else showLogin();
     }
     catch (error) {

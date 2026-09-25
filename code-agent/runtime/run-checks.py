@@ -6,8 +6,15 @@ import re
 import shutil
 import subprocess
 import sys
+import runpy
 
-PROJECTS = ('ai-bot', 'quota-dashboard', 'music-bot', 'code-agent')
+_registry = Path(__file__).with_name('check-projects.py')
+if not _registry.is_file():
+    _registry = Path(__file__).resolve().parents[1] / 'broker/projects.py'
+_inventory = runpy.run_path(str(_registry))
+PROJECTS = _inventory['PROJECTS']
+DEPENDENCY_PROJECTS = _inventory['DEPENDENCY_PROJECTS']
+CHECK_PROTOCOL = _inventory['CHECK_PROTOCOL']
 
 def valid_test_path(value, project):
     if not isinstance(value, str) or not value:
@@ -32,9 +39,17 @@ def valid_test_path(value, project):
     return not re.search(r'[\[\]{}()]', value) and name.endswith(('.test.js', '.test.cjs', '.test.mjs', '.spec.js', '.spec.cjs', '.spec.mjs'))
 
 def main():
-    if len(sys.argv) < 2 or sys.argv[1] not in (*PROJECTS, 'all'):
+    # New brokers require this protocol. Old images reject the extra argument,
+    # so an obsolete four-project image cannot produce complete evidence.
+    if len(sys.argv) > 1 and sys.argv[1].startswith('--protocol='):
+        if sys.argv[1] != '--protocol=' + CHECK_PROTOCOL:
+            return 2
+        arguments = sys.argv[2:]
+    else:
+        arguments = sys.argv[1:]
+    if not arguments or arguments[0] not in (*PROJECTS, 'all'):
         return 2
-    project, files = sys.argv[1], sys.argv[2:]
+    project, files = arguments[0], arguments[1:]
     if project == 'all' and files or len(files) > 50:
         return 2
     for value in files:
@@ -46,7 +61,7 @@ def main():
     if not source.is_dir() or os.getuid() == 0:
         return 2
     shutil.copytree(source, work, dirs_exist_ok=True)
-    for name in PROJECTS[:3]:
+    for name in DEPENDENCY_PROJECTS:
         dependency = work / name / 'node_modules'
         if dependency.exists() or dependency.is_symlink():
             raise RuntimeError('Unexpected dependency folder in input')
@@ -73,6 +88,8 @@ def main():
             commands.append(['node', '--test', '--test-concurrency=1', *files])
             if name == 'music-bot' and not files:
                 commands.append(['/opt/python/bin/python', 'qq/test_provider.py'])
+            if name == 'ops-center' and not files:
+                commands.append(['/usr/bin/python3', '-m', 'unittest', 'discover', '-s', 'agent', '-p', 'test_*.py', '-v'])
         for command in commands:
             result = subprocess.run(command, cwd=directory, check=False)
             if result.returncode:

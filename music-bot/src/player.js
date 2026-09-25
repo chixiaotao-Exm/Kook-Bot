@@ -5,6 +5,8 @@ import { atomicJson, label, log, sleep, UnavailableError, UserError } from './ut
 import { validTrack } from './music-sources.js';
 
 const HISTORY_LIMIT = 50;
+const LEAVE_ATTEMPTS = 3;
+const LEAVE_PENDING = '播放已停止，退出语音频道尚未确认；请稍后核对频道或重试退出。';
 
 export class Player {
   constructor(config, api, music, audio, notify) {
@@ -13,6 +15,7 @@ export class Player {
     this.queue = []; this.history = []; this.current = null; this.context = null; this.stream = null;
     this.volume = config.volume; this.mode = 'off'; this.tail = Promise.resolve(); this.persistTail = Promise.resolve();
     this.closed = false; this.voiceJoined = false; this.voiceConnection = null;
+    this.pendingLeave = null; this.leaveTimer = null;
     // Invalidate provider work immediately when a user interrupts or leaves.
     this.operationEpoch = 0; this.trackEpoch = 0;
     this.listeners = new Set();
@@ -53,6 +56,14 @@ export class Player {
     if (![1, 2].includes(state.version) || !Array.isArray(state.queue) || !state.queue.every(valid) ||
         (state.current && !valid(state.current)) ||
         (state.history !== undefined && (!Array.isArray(state.history) || !state.history.every(valid)))) throw new Error('播放队列文件格式无效。');
+    if (state.pendingLeave != null) {
+      const pending = state.pendingLeave;
+      if (typeof pending !== 'object' || Array.isArray(pending) || !this.config.guilds.has(pending.guildId)
+        || typeof pending.channelId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(pending.channelId)
+        || !Number.isInteger(pending.attempts) || pending.attempts < 0 || pending.attempts > LEAVE_ATTEMPTS) throw new Error('待退出频道记录无效。');
+      this.pendingLeave = { guildId: pending.guildId, channelId: pending.channelId, attempts: pending.attempts };
+      this.recoveryError = LEAVE_PENDING;
+    }
     if (state.context && this.config.guilds.has(state.context.guildId)) {
       this.context = state.context;
       this.current = state.current || null;
@@ -71,13 +82,14 @@ export class Player {
       log('queue_restored', { tracks: this.queue.length });
       this.armIdle();
     }
+    this.scheduleLeave();
   }
   save() {
     this.ensureEntries();
     this.capturePosition();
     const state = structuredClone({ version: 2, context: this.context, current: this.current,
       queue: this.queue, history: this.history, volume: this.volume, mode: this.mode, stayConnected: this.stayConnected,
-      positionSeconds: this.position, intent: this.intent, hasStarted: this.hasStarted, savedAt: Date.now() });
+      positionSeconds: this.position, intent: this.intent, hasStarted: this.hasStarted, pendingLeave: this.pendingLeave, savedAt: Date.now() });
     // Network operations may hold the player lock; checkpoints use their own write order.
     const writing = this.persistTail.then(() => atomicJson(this.file, state));
     this.persistTail = writing.catch(() => {});
@@ -97,28 +109,38 @@ export class Player {
       mode: this.mode, stayConnected: this.stayConnected, connected: this.voiceJoined,
       status: this.stream ? (this.stream.paused ? 'paused' : 'playing') : this.current ? (this.intent === 'playing' ? 'recovering' : this.intent === 'paused' ? 'paused' : 'ready') : 'idle',
       seconds: this.capturePosition(), canResume: Boolean(this.current), recoveryError: this.recoveryError,
+      leaving: Boolean(this.pendingLeave),
       canPrevious: this.history.length > 0 && this.capacity() > 0, historyCount: this.history.length,
       capacity: this.capacity(), maxQueue: this.config.maxQueue };
   }
-  join(context, { authorize } = {}) {
-    if (!this.context || this.context.guildId !== context.guildId || this.context.voiceChannelId !== context.voiceChannelId) this.operationEpoch++;
+  join(context, { authorize, expectedEpoch } = {}) {
     return this.exclusive(async () => {
       const admission = authorize?.();
       if (admission && typeof admission.then === 'function') await admission;
       if (this.closed) throw new UserError('机器人正在关闭。');
+      if (expectedEpoch !== undefined && expectedEpoch !== this.operationEpoch) throw new UserError('播放状态已变化，请重新选择频道。');
       if (this.context && (this.context.guildId !== context.guildId || this.context.voiceChannelId !== context.voiceChannelId)) {
         throw new UserError('请先离开当前频道，再加入其他频道。');
       }
+      if (this.pendingLeave && !await this.finishLeave({ manual: true })) throw new UserError(LEAVE_PENDING);
+      if (this.closed || expectedEpoch !== undefined && expectedEpoch !== this.operationEpoch) throw new UserError('播放状态已变化，请重新选择频道。');
+      const previous = this.context;
+      if (!this.context) this.operationEpoch++;
       this.context = context;
-      await this.joinVoice();
+      try { await this.joinVoice(); }
+      catch (error) {
+        if (!this.voiceJoined) { this.context = previous; await this.save(); }
+        throw error;
+      }
       await this.save(); this.armIdle();
       this.emit({ kind: 'join', context: { ...context } });
     });
   }
   async joinVoice() {
     if (this.closed || !this.context) throw new UserError('没有可连接的语音频道。');
+    if (this.pendingLeave && !await this.finishLeave()) throw new UserError(LEAVE_PENDING);
     if (this.voiceJoined && this.voiceConnection && this.audio.connected !== false) return this.voiceConnection;
-    if (this.voiceJoined) await this.releaseVoice();
+    if (this.voiceJoined && !await this.releaseVoice()) throw new UserError(LEAVE_PENDING);
     const cooldown = 3000 - (Date.now() - (this.lastLeave || 0));
     if (cooldown > 0) await sleep(cooldown);
     const voice = await this.api.post('voice/join', {
@@ -304,6 +326,7 @@ export class Player {
     }, 45000);
   }
   async maintainVoice() {
+    if (this.pendingLeave && !this.closed) { await this.finishLeave(); return; }
     if (!this.context || this.closed) return;
     if (this.voiceJoined && this.audio.connected === false) {
       this.clearRetry(); await this.halt(); await this.releaseVoice(); await this.save();
@@ -349,31 +372,84 @@ export class Player {
     this.idleTimer = setTimeout(() => {
       void this.exclusive(async () => {
         if (this.closed || (this.current && this.intent === 'playing') || (this.stream && !this.stream.paused)) return;
-        await this.say('空闲超时，已清空队列并离开语音频道。');
-        await this.reset();
+        const channel = this.context?.textChannelId;
+        const left = await this.reset();
+        if (channel) { try { await this.notify(channel, left ? '空闲超时，已清空队列并离开语音频道。' : LEAVE_PENDING); } catch { log('notification_failed'); } }
       }).catch(() => log('idle_cleanup_failed'));
     }, this.config.idleMs);
     this.idleTimer.unref?.();
   }
-  async releaseVoice() {
+  scheduleLeave() {
+    clearTimeout(this.leaveTimer); this.leaveTimer = null;
+    const pending = this.pendingLeave;
+    if (!pending || this.closed || pending.attempts >= LEAVE_ATTEMPTS) return;
+    this.leaveTimer = setTimeout(() => {
+      this.leaveTimer = null;
+      void this.exclusive(async () => {
+        if (!this.closed && this.pendingLeave === pending) await this.finishLeave();
+      }).catch(() => log('voice_leave_retry_failed'));
+    }, 3000 * 3 ** pending.attempts);
+    this.leaveTimer.unref?.();
+  }
+  async finishLeave({ manual = false } = {}) {
+    const pending = this.pendingLeave;
+    if (!pending) return true;
+    clearTimeout(this.leaveTimer); this.leaveTimer = null;
+    if (!manual && pending.attempts >= LEAVE_ATTEMPTS) return false;
+    // A previous timeout may already have left remotely. Verify the old target
+    // before retrying; every caller holds the player lock, including timers.
+    let absent = false;
+    if (pending.attempts && typeof this.api.request === 'function') {
+      try {
+        const listed = await this.api.request('voice/list');
+        absent = Array.isArray(listed?.items) && !listed.items.some(item => String(item.id) === pending.channelId);
+      } catch { /* The bounded leave attempt below remains authoritative. */ }
+    }
+    pending.attempts = Math.min(LEAVE_ATTEMPTS, pending.attempts + 1);
+    try { await this.save(); }
+    catch (error) {
+      // Shutdown/removal still releases the remote allocation if its checkpoint
+      // cannot be written. A live player must preserve the cleanup intent first.
+      if (!this.closed) throw error;
+      log('voice_leave_checkpoint_failed');
+    }
+    try {
+      if (!absent) await this.api.post('voice/leave', { channel_id: pending.channelId });
+    } catch {
+      this.recoveryError = LEAVE_PENDING; this.scheduleLeave(); log('voice_leave_failed'); return false;
+    }
+    this.lastLeave = Date.now(); this.pendingLeave = null;
+    if (this.recoveryError === LEAVE_PENDING) this.recoveryError = '';
+    try { await this.save(); } catch (error) { if (!this.closed) throw error; log('voice_leave_checkpoint_failed'); }
+    return true;
+  }
+  async releaseVoice({ manual = false } = {}) {
     clearInterval(this.keepalive);
     await this.audio.disconnect?.();
-    if (this.voiceJoined && this.context) {
-      try { await this.api.post('voice/leave', { channel_id: this.context.voiceChannelId }); }
-      catch { log('voice_leave_failed'); }
-      this.lastLeave = Date.now();
-    }
+    if (this.voiceJoined && this.context && !this.pendingLeave) this.pendingLeave = {
+      channelId: this.context.voiceChannelId, guildId: this.context.guildId, attempts: 0,
+    };
     this.voiceJoined = false; this.voiceConnection = null;
+    return this.finishLeave({ manual });
   }
-  async reset() {
+  async reset({ retryLeave = false } = {}) {
     const previousContext = this.context ? { ...this.context } : null;
     this.operationEpoch++;
     this.features?.onControl('stop');
-    this.clearRetry(); clearTimeout(this.idleTimer); clearTimeout(this.advanceTimer); await this.halt(); await this.releaseVoice();
-    this.current = null; this.queue = []; this.history = []; this.context = null; this.mode = 'off';
-    this.position = 0; this.intent = 'idle'; this.hasStarted = false; this.recoveryError = ''; this.retryCount = 0;
+    this.clearRetry(); clearTimeout(this.idleTimer); clearTimeout(this.advanceTimer); await this.halt();
+    this.current = null; this.queue = []; this.history = []; this.mode = 'off';
+    this.position = 0; this.intent = 'idle'; this.hasStarted = false; this.retryCount = 0;
+    // The first cleanup checkpoint must already represent the user's Stop.
+    // Keep only the departure target; a restored resident context would rejoin.
+    if (this.voiceJoined && previousContext && !this.pendingLeave) this.pendingLeave = {
+      channelId: previousContext.voiceChannelId, guildId: previousContext.guildId, attempts: 0,
+    };
+    this.context = null;
+    const left = await this.releaseVoice({ manual: retryLeave });
+    this.recoveryError = left ? '' : LEAVE_PENDING;
     await this.save();
-    if (previousContext) this.emit({ kind: 'leave', context: previousContext });
+    if (previousContext) this.emit({ kind: left ? 'leave' : 'leave_pending', context: previousContext });
+    return left;
   }
   async restartCurrent(paused = false, offset = this.capturePosition()) {
     this.clearRetry(); await this.halt();
@@ -407,9 +483,9 @@ export class Player {
         }
         return this.stayConnected ? '已开启常驻频道。' : '已关闭常驻频道。';
       }
-      if (!this.context) throw new UserError('当前没有播放队列，请先点歌。');
+      if (!this.context && !(action === 'stop' && this.pendingLeave)) throw new UserError('当前没有播放队列，请先点歌。');
       switch (action) {
-        case 'stop': await this.reset(); return '已停止播放，清空队列并离开频道。';
+        case 'stop': return await this.reset({ retryLeave: true }) ? '已停止播放，清空队列并离开频道。' : LEAVE_PENDING;
         case 'skip':
           this.clearRetry(); await this.halt(); this.rememberCurrent();
           this.current = null; this.position = 0; this.hasStarted = false;
@@ -467,6 +543,13 @@ export class Player {
     this.closed = true;
     this.clearRetry(); clearInterval(this.checkpoint);
     clearTimeout(this.idleTimer); clearTimeout(this.advanceTimer); clearInterval(this.keepalive);
-    await this.exclusive(async () => { await this.save(); await this.halt(); await this.releaseVoice(); });
+    clearTimeout(this.leaveTimer); this.leaveTimer = null;
+    await this.exclusive(async () => {
+      let failure;
+      try { await this.save(); } catch (error) { failure = error; }
+      try { await this.halt(); } catch (error) { failure ||= error; }
+      try { await this.releaseVoice(); } catch (error) { failure ||= error; }
+      if (failure) throw failure;
+    });
   }
 }

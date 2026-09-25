@@ -4,6 +4,9 @@
 
 ## 功能
 
+- **统一控制台**：`/quota/` 同时提供额度和运维导航，原 `/ops/` 转入控制台。10 个页面支持直达链接及浏览器前进后退；登录表单同时验证两套服务，退出注销两端会话。默认运维数据仅管理员可见；启用访客管理模式时无需登录。已登录管理员切换页面无需再加 `?manage=1`。
+- **访客管理模式**：两套服务配置 `PUBLIC_MANAGEMENT=true` 时隐藏登录入口，访客可查看运维、重启允许的服务、设置维护模式和修改播报计划。生产已按站点所有者要求启用。匿名会话仍执行 CSRF/来源校验，重启保留确认与白名单；会话过期不会自动重放写请求。
+
 - **额度总览**：平台、套餐、只读调度状态、额度窗口、重置时间、重置卡次数与到期信息。
 - **Key 用量**：查询本站 API Key 的今日、近 7 天及累计请求数、Token 和实际扣费；可配置两个服务端快捷 Key。
 - **KOOK 对话查询**：私聊或在指定文字频道发送 API Key，回复其用量与额度。回复仅显示 Key 末四位。
@@ -54,6 +57,7 @@ sudo apt-get install fontconfig fonts-noto-cjk
 | `HOST` / `PORT` | 监听地址与端口，建议仅监听 `127.0.0.1` |
 | `PUBLIC_URL` | 对外看板 URL，包含 `/quota/` 路径 |
 | `PUBLIC_ACCESS` | `true` 允许公开查看；`false` 要求管理员登录 |
+| `PUBLIC_MANAGEMENT` | 默认 `false`；`true` 同时开放公开查看和播报计划修改，运维侧同名开关开放其管理操作 |
 | `DATA_DIR` | 快照、查询任务状态、播报计划和去重记录目录 |
 | `SUB2API_URL` | 必须为 `http://127.0.0.1:8080`，当前不支持远程实例或其他端口 |
 | `SUB2API_ADMIN_KEY` | Sub2API 管理员 API Key，仅保留在服务端 |
@@ -166,6 +170,8 @@ npm test
 `test/` 使用 Node.js 内置测试框架，外部服务通过模拟接口验证，不发送真实 KOOK 测试消息。
 
 `scripts/check-*-ui.cjs` 是额外的浏览器检查，需要单独安装 Playwright，并提供脚本指定的 Microsoft Edge 浏览器；可按本地环境调整启动选项。这些依赖不属于生产运行依赖。
+
+`scripts/check-console-ui.cjs` 启动两套真实 HTTP 服务和本地身份模拟，验证统一导航、双端登录/退出、失效会话、运维加载失败恢复及手机布局；不会连接生产服务或发送消息。统一发布流程见仓库根目录 `deploy/unified-console.py`，发布前校验旧源码摘要、运行 Linux 测试并备份，两端源码同时更新，失败时回滚源码并保留当前发送去重记录。
 
 ```bash
 node scripts/render-broadcast-image.mjs /path/to/sanitized-snapshot.json ./output/preview

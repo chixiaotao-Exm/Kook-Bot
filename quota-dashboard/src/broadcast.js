@@ -451,12 +451,14 @@ export class BroadcastScheduler {
     this.state = next;
   }
 
-  async configure(value) {
+  async configure(value, { authorize = () => {} } = {}) {
     return this.enqueue(async () => {
+      authorize();
       if (!this.initialized || this.closed) throw new Error('播报服务尚未启动或已经关闭');
       const config = normalizeConfig(value, this.state.config.timeZone);
       if (config.enabled && !this.send) throw new Error('请先配置 KOOK 机器人和文字频道，才能启用播报');
       const next = { ...this.state, config };
+      authorize();
       await this.persist(next);
       this.generation += 1;
       this.blockedSlot = clockParts(this.now(), config.timeZone).slot;

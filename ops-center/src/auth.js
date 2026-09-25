@@ -38,17 +38,18 @@ export class AdminAuth {
     const bucket = this.attempts.get(key) || { count: 0, until: now + 900000 };
     if (bucket.count >= 10) throw new OpsError('尝试过于频繁，请稍后重试。', 429);
     bucket.count++; this.attempts.set(key, bucket);
-    if (typeof data.email !== 'string' || data.email.length > 254 || typeof data.password !== 'string' || data.password.length > 200) throw new OpsError('请输入管理员邮箱和密码。');
+    if (data.token !== undefined ? typeof data.token !== 'string' || !data.token || data.token.length > 8192
+      : typeof data.email !== 'string' || data.email.length > 254 || typeof data.password !== 'string' || data.password.length > 200) throw new OpsError('请输入管理员邮箱和密码，或使用已有 Sub2API 登录。');
     this.inFlight++;
     try {
-      const result = await this.upstream('/api/v1/auth/login', { body: { email: data.email, password: data.password } });
-      const token = result?.access_token || result?.token;
+      const result = data.token ? null : await this.upstream('/api/v1/auth/login', { body: { email: data.email, password: data.password } });
+      const token = data.token || result?.access_token || result?.token;
       if (typeof token !== 'string' || token.length > 8192) throw new OpsError('请先在 Sub2API 完成验证码或双因素登录。', 401);
       await this.upstream('/api/v1/admin/accounts?page=1&page_size=1', { token });
       let claims = {}; try { claims = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString()); } catch {}
       const expires = Number.isFinite(claims.exp) ? Math.min(now + 8 * 3600000, claims.exp * 1000) : now + 3600000;
       if (expires <= now) throw new OpsError('登录已过期。', 401);
-      return { user: { email: data.email, role: 'admin' }, expires };
+      return { user: { email: String(data.email || claims.email || 'Sub2API 管理员').slice(0, 254), role: 'admin' }, expires };
     } finally { this.inFlight--; }
   }
 }

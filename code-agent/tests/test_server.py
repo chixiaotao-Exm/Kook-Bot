@@ -13,6 +13,7 @@ from unittest.mock import patch
 from broker.server import Broker, BrokerError, MAX_REQUEST, UnixRpcServer, decode_request, peer_allowed
 from broker.repository import REPOSITORY, RepositoryError
 from broker.workspace import Workspace
+from broker.projects import PROJECTS, CHECK_PROTOCOL
 
 
 class FakeRepository:
@@ -64,7 +65,9 @@ class FakeSandbox:
             return {"passed": not cancelled, "complete": not cancelled and not test_files,
                     "workHash": workspace.work_hash(), "exitCode": 0 if not cancelled else -9,
                     "summary": "测试通过。" if not cancelled else "测试已取消。", "output": self.output,
-                    "truncated": False, "project": project, **({"errorCode": "CANCELLED"} if cancelled else {})}
+                    "truncated": False, "project": project, 'checkProtocol': CHECK_PROTOCOL,
+                    'coveredProjects': list(PROJECTS if project == 'all' else (project,)) if not test_files else [],
+                    **({"errorCode": "CANCELLED"} if cancelled else {})}
         finally:
             self.active -= 1
 
@@ -231,6 +234,21 @@ class BrokerTests(unittest.TestCase):
         self.error("STALE_HASH", "publish", job, {"report": report})
         self.error("CHECKS_REQUIRED", "publish", job, {"report": self.report(job)})
         self.assertFalse(self.repository.published)
+
+    def test_legacy_or_partial_inventory_cannot_authorize_publication(self):
+        job = self.create()['jobId']
+        self.broker.dispatch('write_file', job, {'path': 'ops-center/new.js', 'content': '// change', 'expectedSha256': None})
+        work_hash = self.report(job)['workHash']
+        for evidence in [{}, {'checkProtocol': CHECK_PROTOCOL, 'coveredProjects': list(PROJECTS[:4])},
+                         {'checkProtocol': 'old-image', 'coveredProjects': list(PROJECTS)}]:
+            with patch.object(self.sandbox, 'run', return_value={'passed': True, 'complete': True, 'exitCode': 0,
+                              'workHash': work_hash, **evidence}):
+                checked = self.broker.dispatch('run_checks', job, {})
+                self.assertFalse(checked['complete'])
+            self.error('CHECKS_REQUIRED', 'publish', job, {'report': self.report(job)})
+        self.broker.dispatch('run_checks', job, {})
+        self.assertTrue(self.broker.dispatch('publish', job, {'report': self.report(job)})['published'])
+        self.assertIn('ops-center', self.repository.published[-1]['report']['checks'][0]['coveredProjects'])
 
     def test_partial_checks_never_authorize_publish_and_failed_latest_check_invalidates_pass(self):
         job = self.create()["jobId"]

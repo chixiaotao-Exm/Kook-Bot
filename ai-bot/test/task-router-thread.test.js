@@ -15,6 +15,18 @@ test('unbound migrated context retains the incoming message as its reply fallbac
   assert.deepEqual(input.threadContext, [{ role: 'user', content: '本话题最初的问题：原来的问题' }]);
 });
 
+test('continuing interrupted code work cannot silently replace its saved job after restart', async () => {
+  for (const status of ['interrupted', 'needs_input', 'stopped']) {
+    let starts = 0;
+    const router = new TaskRouter({ discussion: { snapshot: () => ({ active: false }) },
+      code: { snapshot: () => ({ active: false, jobId: 'saved-job', status }), start: async () => { starts++; } },
+      thread: { context: () => ({ mode: 'code' }) }, operatorIds: new Set(['12345678']) });
+    assert.deepEqual(await router.resume({ userId: '12345678', receiptId: id(1) }), { resumed: false, reason: 'RESTART_REQUIRED' });
+    assert.deepEqual(await router.resume({ userId: '87654321', receiptId: id(2) }), { resumed: false, reason: 'NOT_AUTHORIZED' });
+    assert.equal(starts, 0);
+  }
+});
+
 test('completed code follow-up stays in the same topic; only explicit newTopic changes mode and anchor', async t => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), 'kook-code-thread-'));
   t.after(() => rm(dataDir, { recursive: true, force: true }));

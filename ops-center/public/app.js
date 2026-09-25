@@ -1,9 +1,11 @@
 'use strict';
 
-(() => {
-  const $ = selector => document.querySelector(selector);
-  const $$ = selector => [...document.querySelectorAll(selector)];
-  const state = { authenticated: false, csrf: '', user: null, data: null, epoch: 0, view: 'overview',
+window.createOpsPanel = function(root = document, options = {}) {
+  const $ = selector => root.querySelector(selector);
+  const $$ = selector => [...root.querySelectorAll(selector)];
+  let active = true, navigationGeneration = 0;
+  const hidden = () => document.hidden || !active;
+  const state = { authenticated: false, canManage: false, publicManagement: false, csrf: '', user: null, data: null, epoch: 0, view: 'overview',
     loading: false, failed: false, poll: null, aging: null, snapshotController: null, controllers: new Set(),
     mutation: null, restart: null, uncertainRestarts: new Map(), toastTimer: null };
   const clock = { wall: Date.now(), tick: performance.now() };
@@ -52,6 +54,8 @@
     const parent = hostState(host, now);
     if (!parent.fresh || parent.state === 'unknown') return { state: 'unknown', label: '待确认', tone: '', fresh: false };
     if (bot.state === 'stopped') return { state: 'stopped', label: '计划停用', tone: '', fresh: true };
+    if (bot.state === 'online' && bot.health === 'degraded') return { state: 'degraded', label: '异常', tone: 'bad', fresh: true };
+    if (bot.state === 'online' && bot.health === 'unknown') return { state: 'unknown', label: '待确认', tone: '', fresh: true };
     if (bot.state === 'online') return { state: 'online', label: '在线', tone: 'good', fresh: true };
     if (bot.state === 'offline') return { state: 'offline', label: '离线', tone: 'bad', fresh: true };
     return { state: 'unknown', label: '待确认', tone: '', fresh: true };
@@ -97,19 +101,20 @@
     state.snapshotController?.abort(); state.snapshotController = null; state.loading = false;
   }
   function loseSession(message = '') {
-    state.epoch++; state.authenticated = false; state.csrf = ''; state.user = null; state.data = null; state.restart = null; state.mutation = null;
+    state.epoch++; state.authenticated = false; state.canManage = false; state.csrf = ''; state.user = null; state.data = null; state.restart = null; state.mutation = null;
     pausePolling(); for (const controller of state.controllers) controller.abort(); state.controllers.clear();
     if ($('#restart-dialog').open) $('#restart-dialog').close();
     $('#boot-view').hidden = true; $('#app-view').hidden = true; $('#login-view').hidden = false;
     $('#login-password').value = ''; $('#login-submit').disabled = false;
     $('#login-error').textContent = message; $('#login-error').hidden = !message;
+    options.onSession?.(false, null, { publicManagement: state.publicManagement });
   }
   async function api(route, { method = 'GET', body, signal, timeoutMs = 12000, csrf = state.csrf, epoch = state.epoch } = {}) {
     const controller = new AbortController(); state.controllers.add(controller);
     const abort = () => controller.abort(); if (signal?.aborted) abort(); else signal?.addEventListener('abort', abort, { once: true });
     const timeout = setTimeout(abort, timeoutMs);
     try {
-      const response = await fetch(`./api/${route}`, { method, credentials: 'same-origin', cache: 'no-store', signal: controller.signal,
+      const response = await fetch(`${options.apiBase || './api/'}${route}`, { method, credentials: 'same-origin', cache: 'no-store', signal: controller.signal,
         headers: { Accept: 'application/json', ...(method === 'POST' ? { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf } : {}) },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
       let data;
@@ -133,26 +138,27 @@
     } finally { clearTimeout(timeout); signal?.removeEventListener('abort', abort); state.controllers.delete(controller); }
   }
   function beginSession(result) {
-    if (result?.authenticated !== true || typeof result.csrf !== 'string' || !result.csrf) throw Error('登录状态无法确认，请重新登录。');
-    state.authenticated = true; state.csrf = result.csrf; state.user = result.user || null;
+    if (!(result?.authenticated === true || result?.publicManagement === true && result?.canManage === true) || typeof result.csrf !== 'string' || !result.csrf) throw Error('登录状态无法确认，请重新登录。');
+    state.authenticated = result.authenticated === true; state.publicManagement = result.publicManagement === true; state.canManage = true; state.csrf = result.csrf; state.user = result.user || null;
     $('#boot-view').hidden = true; $('#login-view').hidden = true; $('#app-view').hidden = false;
-    $('#user-name').textContent = text(result.user?.email || result.user?.name, '管理员', 254);
+    $('#user-name').textContent = state.publicManagement ? '访客模式' : text(result.user?.email || result.user?.name, '管理员', 254);
+    options.onSession?.(state.authenticated, result.user, { publicManagement: state.publicManagement });
     showView(state.view); void loadSnapshot();
   }
   function schedulePoll() {
     clearTimeout(state.poll); state.poll = null;
-    if (state.authenticated && !document.hidden) state.poll = setTimeout(() => void loadSnapshot(), 15000);
+    if (state.canManage && !hidden()) state.poll = setTimeout(() => void loadSnapshot(), 15000);
   }
   function scheduleAging() {
     clearTimeout(state.aging); state.aging = null;
-    if (!state.authenticated || document.hidden || !state.data) return;
+    if (!state.canManage || hidden() || !state.data) return;
     const now = currentTime(); let delay = 5000;
     for (const host of state.data.hosts) for (const observed of [host.observedAt, host.lastSeenAt]) { const expires = time(observed) + 120001; if (expires > now) delay = Math.min(delay, expires - now); }
     for (const monitor of state.data.monitors) { const expires = time(monitor.checkedAt) + 150001; if (expires > now) delay = Math.min(delay, expires - now); }
     state.aging = setTimeout(() => { render(); scheduleAging(); }, Math.max(1, delay));
   }
   async function loadSnapshot() {
-    if (!state.authenticated || document.hidden || state.loading) return;
+    if (!state.canManage || hidden() || state.loading) return;
     clearTimeout(state.poll); state.poll = null;
     const epoch = state.epoch, controller = new AbortController(); state.snapshotController = controller; state.loading = true;
     $('#refresh').disabled = true;
@@ -176,6 +182,7 @@
   }
   function showView(view) {
     if (!Object.hasOwn(views, view)) return;
+    navigationGeneration++;
     state.view = view; const [name, title, description] = views[view];
     $('#breadcrumb-name').textContent = name; $('#page-title').textContent = title; $('#page-description').textContent = description;
     $$('.view').forEach(node => { node.hidden = node.id !== `view-${view}`; });
@@ -193,7 +200,7 @@
   function canRestart(host, service) {
     const commands = list(state.data?.commands).filter(command => command.hostId === host.id && command.serviceId === service.id)
       .sort((a, b) => (time(b.createdAt) || 0) - (time(a.createdAt) || 0));
-    return state.authenticated && !state.mutation && service.restartAllowed === true && service.expected === 'running'
+    return state.canManage && !state.mutation && service.restartAllowed === true && service.expected === 'running'
       && ['up', 'down', 'maintenance'].includes(hostState(host).state)
       && !state.uncertainRestarts.has(`${host.id}:${service.id}`)
       && !commands.some(command => ['pending', 'dispatched'].includes(command.status)) && commands[0]?.status !== 'unknown';
@@ -217,7 +224,10 @@
   }
   function botHtml(bot, host) {
     const status = botState(bot, host);
-    return `<article class="glass bot-card"><div class="card-heading"><div class="bot-identity"><span class="bot-icon" aria-hidden="true">✦</span><div><h3>${escapeHtml(text(bot.name, bot.id))}</h3><p>${escapeHtml(text(bot.kind, '机器人'))}</p></div></div>${badge(status)}</div><dl class="bot-meta"><div><dt>所在服务器</dt><dd>${escapeHtml(text(host.name, host.id))}</dd></div><div><dt>频道</dt><dd>${escapeHtml(text(bot.channelName, '未提供'))}</dd></div><div><dt>播放状态</dt><dd>${!status.fresh ? '待确认' : bot.playing === true ? '♫ 正在播放' : bot.playing === false ? '当前未播放' : '未提供'}</dd></div><div><dt>最近观测</dt><dd>${escapeHtml(stamp(host.observedAt || host.lastSeenAt))}</dd></div></dl>${bot.lastError ? `<p class="bot-error">${escapeHtml(text(bot.lastError))}</p>` : ''}</article>`;
+    const playback = !status.fresh || status.state === 'unknown' ? '待确认' : status.state === 'degraded' ? '播放异常'
+      : bot.playing === true ? '♫ 正在播放' : bot.playing === false ? '当前未播放' : '未提供';
+    const transport = ['connected', 'disconnected'].includes(bot.transport) ? `<div><dt>语音连接</dt><dd>${!status.fresh ? '待确认' : bot.transport === 'connected' ? '已连接' : '已断开'}</dd></div>` : '';
+    return `<article class="glass bot-card"><div class="card-heading"><div class="bot-identity"><span class="bot-icon" aria-hidden="true">✦</span><div><h3>${escapeHtml(text(bot.name, bot.id))}</h3><p>${escapeHtml(text(bot.kind, '机器人'))}</p></div></div>${badge(status)}</div><dl class="bot-meta"><div><dt>所在服务器</dt><dd>${escapeHtml(text(host.name, host.id))}</dd></div><div><dt>频道</dt><dd>${escapeHtml(text(bot.channelName, '未提供'))}</dd></div><div><dt>播放状态</dt><dd>${playback}</dd></div>${transport}<div><dt>最近观测</dt><dd>${escapeHtml(stamp(host.observedAt || host.lastSeenAt))}</dd></div></dl>${bot.lastError ? `<p class="bot-error">${escapeHtml(text(bot.lastError))}</p>` : ''}</article>`;
   }
   function incidentHtml(item, compact = false) {
     const resolved = item.state === 'resolved';
@@ -248,7 +258,7 @@
     return `<div class="notification-row"><span>定时播报</span><strong>${enabled ? '每30分钟自动播报' : '未开启'}</strong></div>${enabled ? `<div class="notification-row"><span>下次播报</span><strong>${escapeHtml(next || '等待排期')}</strong></div>` : ''}<div class="notification-row"><span>最近播报</span><strong>${escapeHtml(last || '尚未播报')}</strong></div>${channels}${reports.lastError ? `<p class="notification-note" role="status">${escapeHtml(text(reports.lastError))}</p>` : uncertain ? '<p class="notification-note" role="status">部分频道送达未确认，请核对对应 KOOK 频道。</p>' : ''}`;
   }
   function render() {
-    if (!state.authenticated) return;
+    if (!state.canManage) return;
     const data = state.data;
     $('#connection-dot').classList.toggle('warning', state.failed || !data);
     $('#connection-label').textContent = state.failed ? '同步中断' : data ? '监控已连接' : '等待采样';
@@ -277,7 +287,7 @@
     $('#command-list').innerHTML = data.commands.slice().sort((a, b) => (time(b.createdAt) || 0) - (time(a.createdAt) || 0)).slice(0, 30).map(commandHtml).join('') || empty('尚无操作记录');
   }
   async function changeMaintenance(kind, id) {
-    if (!state.authenticated || state.mutation || !['host', 'monitor'].includes(kind)) return;
+    if (!state.canManage || state.mutation || !['host', 'monitor'].includes(kind)) return;
     const target = state.data?.[kind === 'host' ? 'hosts' : 'monitors'].find(item => item.id === id); if (!target) return;
     const epoch = state.epoch; state.mutation = `maintenance:${id}`; render();
     try { const result = await api('maintenance', { method: 'POST', body: { kind, id, enabled: !target.maintenance }, epoch });
@@ -297,10 +307,10 @@
     $('#restart-dialog').showModal();
   }
   async function submitRestart() {
-    const selected = state.restart; if (!selected || selected.pending || selected.submitted || !state.authenticated) return;
+    const selected = state.restart; if (!selected || selected.pending || selected.submitted || !state.canManage) return;
     const host = state.data?.hosts.find(item => item.id === selected.hostId), service = list(host?.services).find(item => item.id === selected.serviceId);
     if (!host || !service || !canRestart(host, service)) { $('#restart-error').textContent = '服务状态已变化，请关闭后刷新。'; $('#restart-error').hidden = false; return; }
-    const epoch = state.epoch; selected.pending = true; selected.submitted = true; state.mutation = `restart:${selected.hostId}:${selected.serviceId}`;
+    const epoch = state.epoch, navigation = navigationGeneration; selected.pending = true; selected.submitted = true; state.mutation = `restart:${selected.hostId}:${selected.serviceId}`;
     $('#restart-confirm').disabled = true; $('#restart-confirm').textContent = '正在提交…'; $('#restart-cancel').disabled = true; render();
     try {
       const result = await api('commands', { method: 'POST', body: { hostId: selected.hostId, serviceId: selected.serviceId, action: 'restart', requestId: selected.requestId }, epoch });
@@ -308,8 +318,11 @@
       if (!result?.command || !['pending', 'dispatched', 'succeeded', 'failed', 'unknown'].includes(result.command.status)) throw Error('未取得可确认的命令记录。');
       state.data.commands = [result.command, ...state.data.commands.filter(command => command.id !== result.command.id)];
       if (result.command.status === 'unknown') state.uncertainRestarts.set(`${selected.hostId}:${selected.serviceId}`, selected.requestId);
-      $('#restart-dialog').close(); state.restart = null; showView('events');
-      toast(result.command.status === 'succeeded' ? '服务重启成功。' : result.command.status === 'failed' ? '重启失败，请查看操作记录。' : '请求已记录，请查看执行结果。', result.command.status === 'failed');
+      $('#restart-dialog').close(); state.restart = null;
+      if (active && navigation === navigationGeneration) {
+        showView('events'); options.onView?.('events');
+        toast(result.command.status === 'succeeded' ? '服务重启成功。' : result.command.status === 'failed' ? '重启失败，请查看操作记录。' : '请求已记录，请查看执行结果。', result.command.status === 'failed');
+      }
       await loadSnapshot();
     } catch (error) {
       if (epoch !== state.epoch) return;
@@ -319,9 +332,9 @@
     } finally { if (epoch === state.epoch) { selected.pending = false; state.mutation = null; $('#restart-cancel').disabled = false; render(); } }
   }
 
-  document.addEventListener('click', event => {
+  root.addEventListener('click', event => {
     const button = event.target.closest('button'); if (!button || button.disabled) return;
-    if (button.dataset.view) showView(button.dataset.view);
+    if (button.dataset.view) { showView(button.dataset.view); options.onView?.(button.dataset.view); }
     if (button.dataset.maintenanceKind) void changeMaintenance(button.dataset.maintenanceKind, button.dataset.targetId);
     if (button.dataset.restartHost) openRestart(button.dataset.restartHost, button.dataset.restartService);
   });
@@ -345,12 +358,24 @@
   $('#restart-form').addEventListener('submit', event => { event.preventDefault(); void submitRestart(); });
   $('#restart-cancel').addEventListener('click', () => { if (!state.restart?.pending) { $('#restart-dialog').close(); state.restart = null; } });
   $('#restart-dialog').addEventListener('cancel', event => { if (state.restart?.pending) event.preventDefault(); else state.restart = null; });
-  document.addEventListener('visibilitychange', () => { if (document.hidden) pausePolling(); else if (state.authenticated) { render(); scheduleAging(); void loadSnapshot(); } });
+  document.addEventListener('visibilitychange', () => { if (hidden()) pausePolling(); else if (state.canManage) { render(); scheduleAging(); void loadSnapshot(); } });
   window.addEventListener('pagehide', () => { pausePolling(); for (const controller of state.controllers) controller.abort(); });
   const bootEpoch = state.epoch;
   api('session', { epoch: bootEpoch }).then(result => {
     if (bootEpoch !== state.epoch) return;
-    if (result.authenticated) beginSession(result);
+    if (result.authenticated || result.publicManagement && result.canManage) beginSession(result);
     else { loseSession(); state.csrf = typeof result.csrf === 'string' ? result.csrf : ''; }
   }).catch(error => { if (bootEpoch === state.epoch) loseSession(error.message || '无法连接运维中心，请稍后重试。'); });
-})();
+  return {
+    show(view) { active = true; showView(view); if (state.canManage) { render(); scheduleAging(); void loadSnapshot(); } },
+    hide() { active = false; navigationGeneration++; pausePolling(); if ($('#restart-dialog').open) $('#restart-dialog').close(); state.restart = null; },
+    clear() { loseSession(); },
+    async refreshSession() {
+      const epoch = state.epoch, result = await api('session', { epoch });
+      if (epoch !== state.epoch) return;
+      if (result.authenticated || result.publicManagement && result.canManage) beginSession(result);
+      else { loseSession(); state.csrf = result.csrf || ''; }
+    },
+  };
+};
+if (!window.__OPS_EMBED_ONLY__) window.createOpsPanel();

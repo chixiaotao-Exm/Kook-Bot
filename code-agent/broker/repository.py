@@ -17,6 +17,7 @@ import threading
 import time
 from urllib.parse import quote, urlencode
 import uuid
+from .projects import PROJECTS, CHECK_PROTOCOL
 
 
 REPOSITORY = "chixiaotao-Exm/Kook-Bot"
@@ -430,6 +431,12 @@ class RepositoryBackend:
                 raise RepositoryError("CHECKS_NOT_PASSED")
             safe = {"passed": True, "complete": True, "workHash": work_hash,
                     "name": _safe_text(check.get("name", check.get("profile", "Repository checks")), 100)}
+            coverage = check.get('coveredProjects')
+            if (check.get('checkProtocol') != CHECK_PROTOCOL or not isinstance(coverage, list)
+                    or any(not isinstance(name, str) or name not in PROJECTS for name in coverage)
+                    or not set(coverage) >= set(workspace.changed_projects() or PROJECTS)):
+                raise RepositoryError('CHECKS_NOT_PASSED')
+            safe.update(checkProtocol=CHECK_PROTOCOL, coveredProjects=[name for name in PROJECTS if name in coverage])
             if type(check.get("exitCode")) is int:
                 if check["exitCode"] != 0:
                     raise RepositoryError("CHECKS_NOT_PASSED")

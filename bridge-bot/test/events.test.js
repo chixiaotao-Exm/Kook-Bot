@@ -58,14 +58,18 @@ test('PR deduplication retains lifecycle actions and later updates, using delive
     normalizeGithubEvent('pull_request', pr({ updated_at: undefined }), { deliveryId: 'b'.repeat(36) }).key);
 });
 
-test('completed CI de-duplicates push and PR runs for the same workflow, commit, attempt and result', () => {
+test('completed CI de-duplicates only the same run and attempt, preserving independent dispatch and PR runs', () => {
   const one = normalizeGithubEvent('workflow_run', ci());
   const duplicate = normalizeGithubEvent('workflow_run', ci({ id: 99999, event: 'pull_request', head_branch: 'feature' }));
-  assert.equal(one.key, duplicate.key); assert.equal(one.url, `https://github.com/${repository}/actions/runs/12345`);
+  assert.notEqual(one.key, duplicate.key); assert.equal(one.url, `https://github.com/${repository}/actions/runs/12345`);
+  assert.equal(one.key, normalizeGithubEvent('workflow_run', ci(), { deliveryId: 'another-delivery' }).key);
+  assert.notEqual(one.key, normalizeGithubEvent('workflow_run', ci({ id: 22222, event: 'workflow_dispatch' })).key);
+  assert.notEqual(one.key, normalizeGithubEvent('workflow_run', ci({ id: 33333, event: 'schedule' })).key);
   assert.equal(one.theme, 'success'); assert.match(one.title, /Verify repository.*通过/);
-  for (const patch of [{ run_attempt: 2 }, { conclusion: 'failure' }, { workflow_id: 89 }, { head_sha: before }]) {
+  for (const patch of [{ run_attempt: 2 }, { id: 54321 }]) {
     assert.notEqual(one.key, normalizeGithubEvent('workflow_run', ci(patch)).key);
   }
+  assert.equal(one.key, normalizeGithubEvent('workflow_run', ci({ conclusion: 'failure' })).key);
   for (const conclusion of ['failure', 'neutral', 'cancelled', 'skipped', 'timed_out', 'action_required', 'startup_failure', 'stale']) {
     assert.ok(normalizeGithubEvent('workflow_run', ci({ conclusion })));
   }

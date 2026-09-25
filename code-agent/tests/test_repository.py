@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from broker.repository import (RepositoryBackend, RepositoryError, REMOTE, REPOSITORY, MAX_BYTES, _default_runner)
 from broker.workspace import Workspace
 from broker.server import Broker, BrokerError
+from broker.projects import PROJECTS, CHECK_PROTOCOL
 
 
 GIT = shutil.which("git")
@@ -86,7 +87,8 @@ class RepositoryTests(unittest.TestCase):
     def report(workspace):
         work_hash = workspace.work_hash()
         return {"approved": True, "checksPassed": True, "reviewPassed": True, "workHash": work_hash,
-                "checks": [{"name": "Node tests", "passed": True, "complete": True, "workHash": work_hash, "exitCode": 0}],
+                "checks": [{"name": "Node tests", "passed": True, "complete": True, "workHash": work_hash, "exitCode": 0,
+                            'coveredProjects': list(PROJECTS), 'checkProtocol': CHECK_PROTOCOL}],
                 "review": {"summary": "Reviewed the change", "findings": []}}
 
     def test_failed_broker_finalization_rolls_back_the_real_prepared_record(self):
@@ -246,7 +248,8 @@ class RepositoryTests(unittest.TestCase):
             report = copy.deepcopy(original)
             report[field] = False
             cases.append(report)
-        for patch in ({"passed": False}, {"complete": False}, {"workHash": "0" * 64}, {"exitCode": 1}):
+        for patch in ({"passed": False}, {"complete": False}, {"workHash": "0" * 64}, {"exitCode": 1},
+                      {'coveredProjects': []}, {'checkProtocol': 'legacy'}):
             report = copy.deepcopy(original)
             report["checks"][0].update(patch)
             cases.append(report)
