@@ -38,6 +38,7 @@ export function validateConfig(raw, env = process.env) {
   const token = env.KOOK_TOKEN?.trim() || '';
   requireValue(!token || /^\S{1,512}$/.test(token), 'Invalid KOOK token');
   return { host, port, publicUrl: publicUrl.href, sub2apiUrl: sub2apiUrl.href, hosts, monitors, token,
+    publicManagement: env.PUBLIC_MANAGEMENT === 'true',
     channelIds: { infra: '9000000000000101', web: '9000000000000102' },
     dataDir: path.resolve(env.DATA_DIR || './data'), queryEnabled: env.KOOK_QUERY_ENABLED !== 'false',
     intervalMs: 60000, hostStaleMs: 120000, monitorStaleMs: 150000 };

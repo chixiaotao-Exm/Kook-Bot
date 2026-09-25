@@ -1,0 +1,4 @@
+:host{display:block;color-scheme:dark;--bg:#0b1423;--panel:#142135b8;--text:#edf4ff;--muted:#9aacc3;--subtle:#72869f;--line:#9dc1e51c;--cyan:#80e1eb;--purple:#b7a6f5;--green:#7bdeb8;--amber:#f1c77f;--red:#f39dad;--radius:18px;font:14px/1.55 "Segoe UI","Microsoft YaHei",sans-serif;color:var(--text)}
+.sidebar,.topbar,.page-footer,.login-story,.login-card .brand,.login-footnote{display:none!important}
+main{margin:0!important;min-width:0}.page{padding:0!important}.app-shell{min-height:0}.boot{min-height:260px}.login-shell{min-height:360px;display:flex;justify-content:center;padding:25px;max-width:none}.login-card{width:100%;max-width:420px}.login-card>.button{margin-top:24px;width:100%}.login-card form[hidden]{display:none!important}
+@media(max-width:800px){.login-shell{padding:12px}.page-heading h1{font-size:25px}}
