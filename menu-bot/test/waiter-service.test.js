@@ -79,7 +79,7 @@ test('model failures never expose private errors; no key still supports determin
   assert.equal(service.status().lastError, 'ai_unavailable');
   const offline = createWaiterService({ items });
   assert.equal(offline.status().enabled, false);
-  assert.match(await offline.reply('春卷'), /\$4\.00/);
+  assert.match(await offline.reply('春卷1份'), /\$4\.00/);
 });
 
 test('invalid output, model price in notes, partial output and cancellation are bounded', async () => {
@@ -110,4 +110,19 @@ test('menu search bypasses AI and processing notice even when AI is unavailable'
   const offline = createWaiterService({ items });
   assert.match(await offline.reply('搜索春卷'), /LUMPIA/);
   assert.match(await offline.reply('春卷2份'), /合计：\$8\.00/);
+});
+
+test('bare Chinese dish lists reply with Spanish source names only without AI or prices', async () => {
+  const { service, calls } = setup({});
+  let thinking = 0;
+  const expected = 'ARROZ FRITO CON CERDO\nPAPAS FRITAS\nHELADO\nTORTA';
+  for (const text of ['猪肉炒饭 薯条 冰淇淋 蛋糕', '猪肉炒饭，薯条、冰淇淋\n蛋糕']) {
+    assert.equal(await service.reply(text, { onThinking: () => { thinking++; } }), expected);
+  }
+  assert.equal(calls.length, 0); assert.equal(thinking, 0);
+  assert.equal(await service.reply('蛋糕'), 'TORTA');
+  assert.match(await service.reply('蛋糕2份'), /合计：\$6\.00/);
+  assert.match(await service.reply('蛋糕多少钱'), /\$3\.00/);
+  assert.match(await service.reply('搜索蛋糕'), /菜单搜索/);
+  assert.equal(calls.length, 0);
 });
