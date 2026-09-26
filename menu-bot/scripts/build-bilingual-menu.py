@@ -317,7 +317,7 @@ def main():
     assert len(seen) == len(set(seen)), "Every source entry must appear exactly once"
     write_json(out / "menu.json", {"title": "Gran Furama 中文菜单 · 西班牙语对照", "pages": metadata, "currency": "USD", "languages": ["zh-CN", "es"], "layoutVersion": 1})
     write_json(out / "bilingual-layout.json", {"version": 1, "entryCount": len(seen), "pricedCount": 184, "unpricedCount": 88, "uncertainCount": 8, "pages": pages})
-    (out / "bilingual-menu.md").write_text("\n".join(markdown) + "\n", encoding="utf-8")
+    (out / "bilingual-menu.md").write_text("\n".join(markdown).rstrip() + "\n", encoding="utf-8")
     sheet = Image.new("RGB", (360 * 4, 600 * 2), "#e4ece7")
     for index, preview in enumerate(previews):
         sheet.paste(preview, ((index % 4) * 360, (index // 4) * 600))
