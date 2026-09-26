@@ -13,7 +13,7 @@ const SEEN_TTL = 86400000;
 const MAX_SEEN = 4096;
 const MAX_CONTEXT = 105000;
 const MAX_TOOL_RESULT = 20000;
-const CHECK_PROJECTS = ['ai-bot', 'quota-dashboard', 'music-bot', 'code-agent', 'bridge-bot', 'ops-center'];
+const CHECK_PROJECTS = ['ai-bot', 'quota-dashboard', 'music-bot', 'code-agent', 'bridge-bot', 'ops-center', 'menu-bot'];
 const RECOVERABLE_MODEL_ERRORS = new Set(['NETWORK', 'TIMEOUT', 'RATE_LIMIT', 'UPSTREAM_ERROR']);
 const RESULT_TRUNCATED = '\n... [output truncated] ...\n';
 const CREDENTIAL = /(?:\bsk-[a-z0-9_-]{12,}|\badmin-[a-f0-9]{16,}|\b\d{1,4}\/[a-z0-9+/=]{4,}\/[a-z0-9+/=]{10,}|\bauthorization\s*:\s*bearer\s+\S{12,})/gi;

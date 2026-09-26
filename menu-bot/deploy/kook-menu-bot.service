@@ -1,0 +1,25 @@
+[Unit]
+Description=KOOK Chinese menu image bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kook-menu
+Group=kook-menu
+WorkingDirectory=/opt/kook-menu-bot
+EnvironmentFile=/opt/kook-menu-bot/.env
+ExecStart=/usr/bin/node /opt/kook-menu-bot/src/index.js
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=25
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/kook-menu-bot/data
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

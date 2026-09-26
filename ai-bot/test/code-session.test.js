@@ -486,10 +486,10 @@ test('stop during a model retry delay cancels recovery without another request o
   assert.equal(f.calls.some(item => item.operation === 'publish'), false);
 });
 
-test('model test tools accept every trusted runner project, including bridge and ops', async t => {
+test('model test tools accept all seven trusted runner projects including menu-bot', async t => {
   const source = await readFile(new URL('../../code-agent/broker/projects.py', import.meta.url), 'utf8');
   const projects = [...source.match(/^PROJECTS = \((.*)\)$/m)[1].matchAll(/'([^']+)'/g)].map(match => match[1]);
-  assert.ok(projects.includes('bridge-bot') && projects.includes('ops-center'));
+  assert.deepEqual(projects, ['ai-bot', 'quota-dashboard', 'music-bot', 'code-agent', 'bridge-bot', 'ops-center', 'menu-bot']);
   for (const project of projects) {
     let step = 0;
     const f = await fixture(t, { coder: async () => ++step === 1
