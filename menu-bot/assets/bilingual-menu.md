@@ -909,3 +909,29 @@ FIDEO DE ARROZ CANTONES — $18
 
 ### m2:151 · 星洲米粉
 FIDEO DE ARROZ SINGAPUR — $18
+
+## 第 9 页 · 冰淇淋口味
+
+照片未标价，请询问餐厅。
+Precio no indicado. Consulte al restaurante.
+
+### ice:1 · 奥利奥冰淇淋
+Oreo — 未标价 / Sin precio
+
+### ice:2 · 奶油风味冰淇淋
+Mantecado — 未标价 / Sin precio
+
+### ice:3 · 巧克力奥利奥冰淇淋
+Choco Oreo — 未标价 / Sin precio
+
+### ice:4 · Toddy可可风味冰淇淋
+Toddy — 未标价 / Sin precio
+
+### ice:5 · 口味待确认
+Sabor por confirmar — 未标价 / Sin precio
+
+### ice:6 · 百香果冰淇淋
+Parchita — 未标价 / Sin precio
+
+### ice:7 · 瑞士蛋糕口味冰淇淋
+Torta Suiza — 未标价 / Sin precio

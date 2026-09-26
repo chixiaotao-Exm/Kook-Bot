@@ -6,56 +6,63 @@
       "title": "套餐",
       "width": 1800,
       "height": 3200,
-      "sha256": "15a1a34094d0265ca6209fd2127e3dae4ad1b56c0813b54dff1fb24355391527"
+      "sha256": "2753e577a0365c5bd330dc984c95dc15df1bfce8c29151cc1af7118c8e289eef"
     },
     {
       "file": "page-2.png",
       "title": "饮品与菜单一 1–20",
       "width": 1800,
       "height": 3200,
-      "sha256": "b92233c19faec62cd13c151cf1bad93d45a46436e45ca4fab65f391942ac3322"
+      "sha256": "2db86fd92f9be31b337578c2e41e123fa1f77a350ea37d4b64c0391fcce9b384"
     },
     {
       "file": "page-3.png",
       "title": "菜单一 21–64",
       "width": 1800,
       "height": 3200,
-      "sha256": "ca2e139becc1a29d86c54978c820d5e431b24f4c09602ab897be41d2ecda3d1e"
+      "sha256": "55fcf0dc178c40381d4d78c1562f2a952a8171a39500f96b7beb8a86e1444aa7"
     },
     {
       "file": "page-4.png",
       "title": "菜单一 65–89",
       "width": 1800,
       "height": 3200,
-      "sha256": "6b62f1ce094d5005bea7f46431c1e190631384823b51484267662725f74bf91d"
+      "sha256": "15e143ca50bc260724f4045e329ee29802d17f32d410a92bb5219b1859a0575e"
     },
     {
       "file": "page-5.png",
       "title": "菜单二 1–41",
       "width": 1800,
       "height": 3200,
-      "sha256": "2f6f9d929fcfb3e491b6c991a66904215965a9e9bbdb1bff3333f9bb2f1d27b5"
+      "sha256": "8b56ff8b57912d0171e4597f1ce2b06355739ef75d0ed32f4329015f10dd1c1d"
     },
     {
       "file": "page-6.png",
       "title": "菜单二 42–87",
       "width": 1800,
       "height": 3200,
-      "sha256": "032bfa520c8ba588fcdaec61e499782e0049c6db6fdb90f69fc2060b1d8359b1"
+      "sha256": "38961aa2db8c85eae049d5ee9df596d9e95a9d2cac8591503d05915f21394028"
     },
     {
       "file": "page-7.png",
       "title": "菜单二 88–116",
       "width": 1800,
       "height": 3200,
-      "sha256": "a6d5c37f02db40316626e22a6a7cb8084e527569f4ef03b4d804063e9a19c7cb"
+      "sha256": "efd374186d13e89e510b1791f3c20bc594da242d4009d5601e4921425dafcef6"
     },
     {
       "file": "page-8.png",
       "title": "菜单二 117–151",
       "width": 1800,
       "height": 3200,
-      "sha256": "abc72e89937b22192196fe4c404bee897bcc9c60f35b9e2a629504ec501691a9"
+      "sha256": "28822571c51d020fd98cbfc77f420120cb06010d8b1b229063738b6b9e397561"
+    },
+    {
+      "file": "page-9.png",
+      "title": "冰淇淋口味",
+      "width": 1800,
+      "height": 3200,
+      "sha256": "77c9fe36377feb28385945ae1eecb141df0a9cd68f58bf5a54053fd92f887453"
     }
   ],
   "currency": "USD",
