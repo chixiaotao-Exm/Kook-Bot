@@ -1,0 +1,61 @@
+{
+  "title": "Gran Furama 中文菜单",
+  "pages": [
+    {
+      "file": "page-1.png",
+      "title": "套餐",
+      "width": 1183,
+      "height": 1530,
+      "sha256": "bbe1f8b5b80f98bdffd9de8ee77895f732ebdaac2186a49dbfeb05ae56b4d98b"
+    },
+    {
+      "file": "page-2.png",
+      "title": "饮品与菜单一 1–20",
+      "width": 1183,
+      "height": 1530,
+      "sha256": "5df4faaeacd1152d9bfe0608fa76515af7e00fc757826b79d9550dad2c551a1a"
+    },
+    {
+      "file": "page-3.png",
+      "title": "菜单一 21–64",
+      "width": 1183,
+      "height": 1530,
+      "sha256": "ef91268038ac379c0d14227587336603af8d000f1fbc8c7aa448b7cbfd57c17e"
+    },
+    {
+      "file": "page-4.png",
+      "title": "菜单一 65–89",
+      "width": 1183,
+      "height": 1530,
+      "sha256": "b8664ae5ba20fdec471d9742b9c285dd79a035a26bc4b457b189390474d28143"
+    },
+    {
+      "file": "page-5.png",
+      "title": "菜单二 1–41",
+      "width": 1183,
+      "height": 1530,
+      "sha256": "e9ca166b239e14e56c484a042ea991459884a3da8968ba0b6d021b1e0454a103"
+    },
+    {
+      "file": "page-6.png",
+      "title": "菜单二 42–87",
+      "width": 1183,
+      "height": 1530,
+      "sha256": "de78657b7e502f269030e401239e681f549834befc784419e8b04e4211005b12"
+    },
+    {
+      "file": "page-7.png",
+      "title": "菜单二 88–116",
+      "width": 1183,
+      "height": 1530,
+      "sha256": "bf86b68064a4316ca0fddb9d62189b8d907d1624f16e19b38d7cde67f6a2914f"
+    },
+    {
+      "file": "page-8.png",
+      "title": "菜单二 117–151",
+      "width": 1183,
+      "height": 1530,
+      "sha256": "6bc520c59b3ded617d70bc25a532475e40a74ac503766cae1d4bc1570e8b9353"
+    }
+  ]
+}

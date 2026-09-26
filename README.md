@@ -1,6 +1,6 @@
 # Kook-Bot
 
-KOOK 多机器人项目合集，包含双音乐源播放机器人、Sub2API 额度看板和文字 AI 对话机器人。各项目分别安装、配置和运行，可部署在同一台或不同 Linux 服务器。
+KOOK 多机器人项目合集，包含双音乐源播放机器人、Sub2API 额度看板、文字 AI 对话和中文菜单图片机器人。各项目分别安装、配置和运行，可部署在同一台或不同 Linux 服务器。
 
 | 项目 | 功能 | 文档 |
 | --- | --- | --- |
@@ -10,6 +10,7 @@ KOOK 多机器人项目合集，包含双音乐源播放机器人、Sub2API 额�
 | `code-agent/` | 实际源码读写、隔离测试与草稿 PR，固定操作本仓库 | [仓库执行工具](code-agent/README.md) |
 | `bridge-bot/` | GitHub 提交、PR 和 CI 结果的 KOOK 通知桥 | [通知桥](bridge-bot/README.md) |
 | `ops-center/` | Linux 资源与服务、网站接口与证书、机器人总览、KOOK 告警和状态查询 | [运维中心](ops-center/README.md) |
+| `menu-bot/` | 在指定文字频道发送“菜单”，直接回复 Gran Furama 中文菜单图片 | [中文菜单机器人](menu-bot/README.md) |
 
 ## 快速开始
 
@@ -23,6 +24,7 @@ cd Kook-Bot
 - 音乐机器人：推荐 Node.js 24、Python 3.10+、FFmpeg；默认 Web 端口 `8787`。
 - 额度看板：Node.js 22+，图片播报需要中文字体；默认端口 `18998`。
 - AI 对话机器人：Node.js 22.16+；本机健康检查端口 `18999`。
+- 中文菜单机器人：Node.js 22+，仅使用标准库；使用独立 Token 和指定文字频道，菜单来源与页码见[菜单说明](menu-bot/assets/menu-source.md)。
 
 每个 KOOK Token 应只由一个正在运行的服务使用。完整 Token、平台 Cookie、账号密码、实际账号数据和部署记录不包含在仓库中。
 

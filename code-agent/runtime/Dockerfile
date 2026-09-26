@@ -11,7 +11,7 @@ COPY music-bot/qq/requirements.lock.txt /opt/deps/qq-requirements.txt
 RUN python3 -m venv /opt/python && /opt/python/bin/pip install --no-cache-dir -r /opt/deps/qq-requirements.txt
 COPY code-agent/runtime/run-checks.py /usr/local/bin/run-checks
 COPY code-agent/broker/projects.py /usr/local/bin/check-projects.py
-# bridge-bot and ops-center use Node/Python standard libraries only. Their
+# bridge-bot, ops-center and menu-bot use Node/Python standard libraries only. Their
 # suites run from /input; the three dependency-bearing projects are pinned above.
 RUN chmod 755 /usr/local/bin/run-checks
 ENV PATH="/opt/python/bin:${PATH}" HOME=/tmp
