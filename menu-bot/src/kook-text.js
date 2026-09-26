@@ -46,16 +46,17 @@ export function createTextSender({ token, channelIds, fetchImpl = globalThis.fet
   if (typeof fetchImpl !== 'function' || !Number.isInteger(requestTimeoutMs) || requestTimeoutMs < 1 || requestTimeoutMs > 10_000)
     throw new Error('KOOK 计算器请求配置不正确');
   const authorization = `Bot ${token.trim()}`;
-  return async function sendText({ channelId, replyMessageId, text } = {}, { signal } = {}) {
+  return async function sendText({ channelId, replyMessageId, text, title = '中文菜单 · 计算器' } = {}, { signal } = {}) {
     if (!allowed.has(channelId)) throw new KookTextDeliveryError('CHANNEL_NOT_ALLOWED');
     if (replyMessageId != null && (typeof replyMessageId !== 'string' || !MESSAGE_ID.test(replyMessageId)))
       throw new KookTextDeliveryError('INVALID_REPLY');
     if (typeof text !== 'string' || !text.trim() || text.length > 2000 || /[\u0000-\u0008\u000b-\u001f\u007f]/.test(text))
       throw new KookTextDeliveryError('INVALID_TEXT');
+    if (!['中文菜单 · 计算器', '中文菜单 · 点餐服务员'].includes(title)) throw new KookTextDeliveryError('INVALID_TITLE');
     if (signal?.aborted) throw new KookTextDeliveryError('SEND_CANCELLED');
     const payload = { type: 10, target_id: channelId, content: JSON.stringify([
       { type: 'card', theme: 'secondary', size: 'lg', modules: [
-        { type: 'header', text: { type: 'plain-text', content: '中文菜单 · 计算器' } },
+        { type: 'header', text: { type: 'plain-text', content: title } },
         { type: 'section', text: { type: 'plain-text', content: text } },
       ] },
     ]) };

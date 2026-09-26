@@ -1,0 +1,1471 @@
+{
+  "version": 1,
+  "currency": "USD",
+  "items": [
+    {
+      "key": "m1:1",
+      "group": "菜单一",
+      "code": "1",
+      "name": "春卷",
+      "spanish": "LUMPIA",
+      "priceCents": 400,
+      "aliases": [
+        "炸春卷"
+      ],
+      "source": "original-02",
+      "uncertain": false
+    },
+    {
+      "key": "m1:2",
+      "group": "菜单一",
+      "code": "2",
+      "name": "烤排骨",
+      "spanish": "COSTILLA ASADA",
+      "priceCents": 1100,
+      "aliases": [],
+      "source": "original-02",
+      "uncertain": false
+    },
+    {
+      "key": "m1:3",
+      "group": "菜单一",
+      "code": "3",
+      "name": "烤猪肉",
+      "spanish": "CERDO ASADO",
+      "priceCents": 1200,
+      "aliases": [],
+      "source": "original-02",
+      "uncertain": false
+    },
+    {
+      "key": "m1:4",
+      "group": "菜单一",
+      "code": "4",
+      "name": "鸡肉炸饼（Croqueta de pollo）",
+      "spanish": "CROQUETA DE POLLO",
+      "priceCents": null,
+      "aliases": [
+        "鸡肉炸饼"
+      ],
+      "source": "original-02",
+      "uncertain": false,
+      "note": "原图价格处标斜线，未标价。"
+    },
+    {
+      "key": "m1:5",
+      "group": "菜单一",
+      "code": "5",
+      "name": "虾肉炸饼（Croqueta de camarones）",
+      "spanish": "CROQUETA DE CAMARONES",
+      "priceCents": null,
+      "aliases": [
+        "虾肉炸饼"
+      ],
+      "source": "original-02",
+      "uncertain": false,
+      "note": "原图价格处标斜线，未标价。"
+    },
+    {
+      "key": "m1:6",
+      "group": "菜单一",
+      "code": "6",
+      "name": "炸云吞",
+      "spanish": "WANTON FRITO",
+      "priceCents": 1500,
+      "aliases": [],
+      "source": "original-02",
+      "uncertain": false
+    },
+    {
+      "key": "m1:7",
+      "group": "菜单一",
+      "code": "7",
+      "name": "炸 Ha Piw［品种待确认］",
+      "spanish": "HA PIW FRITO",
+      "priceCents": null,
+      "aliases": [
+        "炸Ha Piw",
+        "Ha Piw"
+      ],
+      "source": "original-02",
+      "uncertain": true,
+      "note": "原图为 HA PIW FRITO，具体品种需向店家确认；原图未标价。"
+    },
+    {
+      "key": "m1:8",
+      "group": "菜单一",
+      "code": "8",
+      "name": "炸虾",
+      "spanish": "CAMARONES FRITOS",
+      "priceCents": 1500,
+      "aliases": [],
+      "source": "original-02",
+      "uncertain": false
+    },
+    {
+      "key": "m1:9",
+      "group": "菜单一",
+      "code": "9",
+      "name": "炸鱿鱼",
+      "spanish": "CALAMARES FRITOS",
+      "priceCents": 1800,
+      "aliases": [],
+      "source": "original-02",
+      "uncertain": false
+    },
+    {
+      "key": "m1:10",
+      "group": "菜单一",
+      "code": "10",
+      "name": "鸡尾酒虾（冷盘）",
+      "spanish": "COCTEL DE CAMARONES",
+      "priceCents": 1700,
+      "aliases": [
+        "鸡尾酒虾"
+      ],
+      "source": "original-02",
+      "uncertain": false
+    },
+    {
+      "key": "m1:11",
+      "group": "菜单一",
+      "code": "11",
+      "name": "虾仁沙拉",
+      "spanish": "ENSALADA DE CAMARONES",
+      "priceCents": 1300,
+      "aliases": [],
+      "source": "original-02",
+      "uncertain": false
+    },
+    {
+      "key": "m1:12",
+      "group": "菜单一",
+      "code": "12",
+      "name": "鸡肉沙拉",
+      "spanish": "ENSALADA DE POLLO",
+      "priceCents": 1100,
+      "aliases": [],
+      "source": "original-02",
+      "uncertain": false
+    },
+    {
+      "key": "m1:13",
+      "group": "菜单一",
+      "code": "13",
+      "name": "火腿沙拉",
+      "spanish": "ENSALADA DE JAMON",
+      "priceCents": 1100,
+      "aliases": [],
+      "source": "original-02",
+      "uncertain": false
+    },
+    {
+      "key": "m1:14",
+      "group": "菜单一",
+      "code": "14",
+      "name": "蔬菜沙拉",
+      "spanish": "ENSALADA DE VEGETALES",
+      "priceCents": 600,
+      "aliases": [],
+      "source": "original-02",
+      "uncertain": false
+    },
+    {
+      "key": "m1:15",
+      "group": "菜单一",
+      "code": "15",
+      "name": "蛋花汤",
+      "spanish": "SOPA DE HUEVOS",
+      "priceCents": 500,
+      "aliases": [
+        "鸡蛋汤"
+      ],
+      "source": "original-02",
+      "uncertain": false
+    },
+    {
+      "key": "m1:16",
+      "group": "菜单一",
+      "code": "16",
+      "name": "鸡肉蔬菜汤",
+      "spanish": "SOPA DE POLLO CON VEGETALES",
+      "priceCents": 700,
+      "aliases": [],
+      "source": "original-02",
+      "uncertain": false
+    },
+    {
+      "key": "m1:17",
+      "group": "菜单一",
+      "code": "17",
+      "name": "鸡肉玉米浓汤",
+      "spanish": "CREMA DE MAIZ CON POLLO",
+      "priceCents": 700,
+      "aliases": [],
+      "source": "original-02",
+      "uncertain": false
+    },
+    {
+      "key": "m1:18",
+      "group": "菜单一",
+      "code": "18",
+      "name": "鸡肉蘑菇汤",
+      "spanish": "SOPA DE POLLO CON CHAMPIÑONES",
+      "priceCents": 700,
+      "aliases": [],
+      "source": "original-02",
+      "uncertain": false
+    },
+    {
+      "key": "m1:19",
+      "group": "菜单一",
+      "code": "19",
+      "name": "云吞汤",
+      "spanish": "SOPA DE WANTON",
+      "priceCents": 800,
+      "aliases": [
+        "馄饨汤"
+      ],
+      "source": "original-02",
+      "uncertain": false
+    },
+    {
+      "key": "m1:20",
+      "group": "菜单一",
+      "code": "20",
+      "name": "云吞汤面",
+      "spanish": "SOPA DE WANTON MEIN",
+      "priceCents": 1200,
+      "aliases": [
+        "馄饨汤面"
+      ],
+      "source": "original-02",
+      "uncertain": false
+    },
+    {
+      "key": "m1:21",
+      "group": "菜单一",
+      "code": "21",
+      "name": "Gran Furama 招牌炒饭",
+      "spanish": "ARROZ FRITO ESPECIAL (GRAN FURAMA)",
+      "priceCents": 800,
+      "aliases": [
+        "招牌炒饭"
+      ],
+      "source": "original-02",
+      "uncertain": false
+    },
+    {
+      "key": "m1:22",
+      "group": "菜单一",
+      "code": "22",
+      "name": "虾仁炒饭",
+      "spanish": "ARROZ FRITO CON CAMARONES",
+      "priceCents": 900,
+      "aliases": [],
+      "source": "original-02",
+      "uncertain": false
+    },
+    {
+      "key": "m1:23",
+      "group": "菜单一",
+      "code": "23",
+      "name": "鸡肉炒饭",
+      "spanish": "ARROZ FRITO CON POLLO",
+      "priceCents": 800,
+      "aliases": [],
+      "source": "original-02",
+      "uncertain": false
+    },
+    {
+      "key": "m1:24",
+      "group": "菜单一",
+      "code": "24",
+      "name": "鸡肉虾仁炒饭",
+      "spanish": "ARROZ FRITO CON POLLO Y CAMARONES",
+      "priceCents": 900,
+      "aliases": [],
+      "source": "original-02",
+      "uncertain": false
+    },
+    {
+      "key": "m1:25",
+      "group": "菜单一",
+      "code": "25",
+      "name": "猪肉炒饭",
+      "spanish": "ARROZ FRITO CON CERDO",
+      "priceCents": 900,
+      "aliases": [],
+      "source": "original-02",
+      "uncertain": false
+    },
+    {
+      "key": "m1:26",
+      "group": "菜单一",
+      "code": "26",
+      "name": "火腿炒饭",
+      "spanish": "ARROZ FRITO CON JAMON",
+      "priceCents": 800,
+      "aliases": [],
+      "source": "original-02",
+      "uncertain": false
+    },
+    {
+      "key": "m1:27",
+      "group": "菜单一",
+      "code": "27",
+      "name": "蔬菜炒饭",
+      "spanish": "ARROZ FRITO CON VEGETALES",
+      "priceCents": 700,
+      "aliases": [],
+      "source": "original-02",
+      "uncertain": false
+    },
+    {
+      "key": "m1:28",
+      "group": "菜单一",
+      "code": "28",
+      "name": "Gran Furama 招牌什锦炒杂菜",
+      "spanish": "CHOP SUEY ESPECIAL (GRAN FURAMA)",
+      "priceCents": 800,
+      "aliases": [
+        "招牌什锦炒杂菜"
+      ],
+      "source": "original-02",
+      "uncertain": false
+    },
+    {
+      "key": "m1:29",
+      "group": "菜单一",
+      "code": "29",
+      "name": "虾仁炒杂菜",
+      "spanish": "CHOP SUEY CON CAMARONES",
+      "priceCents": 900,
+      "aliases": [],
+      "source": "original-02",
+      "uncertain": false
+    },
+    {
+      "key": "m1:30",
+      "group": "菜单一",
+      "code": "30",
+      "name": "鸡肉炒杂菜",
+      "spanish": "CHOP SUEY CON POLLO",
+      "priceCents": 800,
+      "aliases": [],
+      "source": "original-02",
+      "uncertain": false
+    },
+    {
+      "key": "m1:31",
+      "group": "菜单一",
+      "code": "31",
+      "name": "鸡肉虾仁炒杂菜",
+      "spanish": "CHOP SUEY CON POLLO Y CAMARONES",
+      "priceCents": 900,
+      "aliases": [],
+      "source": "original-02",
+      "uncertain": false
+    },
+    {
+      "key": "m1:32",
+      "group": "菜单一",
+      "code": "32",
+      "name": "猪肉炒杂菜",
+      "spanish": "CHOP SUEY CON CERDO",
+      "priceCents": 900,
+      "aliases": [],
+      "source": "original-02",
+      "uncertain": false
+    },
+    {
+      "key": "m1:33",
+      "group": "菜单一",
+      "code": "33",
+      "name": "火腿炒杂菜",
+      "spanish": "CHOP SUEY CON JAMON",
+      "priceCents": 800,
+      "aliases": [],
+      "source": "original-02",
+      "uncertain": false
+    },
+    {
+      "key": "m1:34",
+      "group": "菜单一",
+      "code": "34",
+      "name": "素炒杂菜",
+      "spanish": "CHOP SUEY DE VEGETALES",
+      "priceCents": 700,
+      "aliases": [],
+      "source": "original-02",
+      "uncertain": false
+    },
+    {
+      "key": "m1:35",
+      "group": "菜单一",
+      "code": "35",
+      "name": "Gran Furama 招牌炒面",
+      "spanish": "CHOW MEIN ESPECIAL (GRAN FURAMA)",
+      "priceCents": 1000,
+      "aliases": [
+        "招牌炒面"
+      ],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:36",
+      "group": "菜单一",
+      "code": "36",
+      "name": "虾仁炒面",
+      "spanish": "CHOW MEIN DE CAMARONES",
+      "priceCents": 1100,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:37",
+      "group": "菜单一",
+      "code": "37",
+      "name": "鸡肉虾仁炒面",
+      "spanish": "CHOW MEIN DE POLLO Y CAMARONES",
+      "priceCents": 1100,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:38",
+      "group": "菜单一",
+      "code": "38",
+      "name": "鸡肉炒面",
+      "spanish": "CHOW MEIN DE POLLO",
+      "priceCents": 1000,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:39",
+      "group": "菜单一",
+      "code": "39",
+      "name": "猪肉炒面",
+      "spanish": "CHOW MEIN DE CERDO",
+      "priceCents": 1100,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:40",
+      "group": "菜单一",
+      "code": "40",
+      "name": "火腿炒面",
+      "spanish": "CHOW MEIN DE JAMON",
+      "priceCents": 1000,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:41",
+      "group": "菜单一",
+      "code": "41",
+      "name": "蔬菜炒面",
+      "spanish": "CHOW MEIN DE VEGETALES",
+      "priceCents": 900,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:42",
+      "group": "菜单一",
+      "code": "42",
+      "name": "Gran Furama 招牌捞面",
+      "spanish": "LO MEIN ESPECIAL (GRAN FURAMA)",
+      "priceCents": 1000,
+      "aliases": [
+        "招牌捞面"
+      ],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:43",
+      "group": "菜单一",
+      "code": "43",
+      "name": "虾仁捞面",
+      "spanish": "LO MEIN DE CAMARONES",
+      "priceCents": 1100,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:44",
+      "group": "菜单一",
+      "code": "44",
+      "name": "鸡肉虾仁捞面",
+      "spanish": "LO MEIN DE POLLO Y CAMARONES",
+      "priceCents": 1100,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:45",
+      "group": "菜单一",
+      "code": "45",
+      "name": "鸡肉捞面",
+      "spanish": "LO MEIN DE POLLO",
+      "priceCents": 1000,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:46",
+      "group": "菜单一",
+      "code": "46",
+      "name": "猪肉捞面",
+      "spanish": "LO MEIN DE CERDO",
+      "priceCents": 1100,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:47",
+      "group": "菜单一",
+      "code": "47",
+      "name": "火腿捞面",
+      "spanish": "LO MEIN DE JAMON",
+      "priceCents": 1000,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:48",
+      "group": "菜单一",
+      "code": "48",
+      "name": "蔬菜捞面",
+      "spanish": "LO MEIN DE VEGETALES",
+      "priceCents": 900,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:49",
+      "group": "菜单一",
+      "code": "49",
+      "name": "Gran Furama 招牌糖醋菜",
+      "spanish": "DULCE Y AGRIO ESPECIAL (GRAN FURAMA)",
+      "priceCents": 1500,
+      "aliases": [
+        "招牌糖醋菜"
+      ],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:50",
+      "group": "菜单一",
+      "code": "50",
+      "name": "糖醋鸡",
+      "spanish": "DULCE Y AGRIO DE POLLO",
+      "priceCents": 1200,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:51",
+      "group": "菜单一",
+      "code": "51",
+      "name": "糖醋虾",
+      "spanish": "DULCE Y AGRIO DE CAMARONES",
+      "priceCents": 1500,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:52",
+      "group": "菜单一",
+      "code": "52",
+      "name": "糖醋猪肉",
+      "spanish": "DULCE Y AGRIO DE CERDO",
+      "priceCents": 1300,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:53",
+      "group": "菜单一",
+      "code": "53",
+      "name": "糖醋牛肉",
+      "spanish": "DULCE Y AGRIO DE CARNE",
+      "priceCents": null,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false,
+      "note": "原图价格处标斜线，未标价。"
+    },
+    {
+      "key": "m1:54",
+      "group": "菜单一",
+      "code": "54",
+      "name": "糖醋鱼",
+      "spanish": "DULCE Y AGRIO DE PESCADO",
+      "priceCents": null,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false,
+      "note": "原图价格处标斜线，未标价。"
+    },
+    {
+      "key": "m1:55",
+      "group": "菜单一",
+      "code": "55",
+      "name": "Gran Furama 招牌芙蓉煎蛋",
+      "spanish": "FU YUNG ESPECIAL (GRAN FURAMA)",
+      "priceCents": 1200,
+      "aliases": [
+        "招牌芙蓉煎蛋"
+      ],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:56",
+      "group": "菜单一",
+      "code": "56",
+      "name": "鸡肉芙蓉煎蛋",
+      "spanish": "FU YUNG DE POLLO",
+      "priceCents": 1200,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:57",
+      "group": "菜单一",
+      "code": "57",
+      "name": "虾仁芙蓉煎蛋",
+      "spanish": "FU YUNG DE CAMARONES",
+      "priceCents": 1300,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:58",
+      "group": "菜单一",
+      "code": "58",
+      "name": "鸡肉虾仁芙蓉煎蛋",
+      "spanish": "FU YUNG DE POLLO Y CAMARONES",
+      "priceCents": 1300,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:59",
+      "group": "菜单一",
+      "code": "59",
+      "name": "火腿芙蓉煎蛋",
+      "spanish": "FU YUNG DE JAMON",
+      "priceCents": 1200,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:60",
+      "group": "菜单一",
+      "code": "60",
+      "name": "中式蔬菜鸡丁",
+      "spanish": "POLLO EN CUBITOS CON VEGETALES CHINOS",
+      "priceCents": 1200,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:61",
+      "group": "菜单一",
+      "code": "61",
+      "name": "蘑菇鸡丁",
+      "spanish": "POLLO EN CUBITOS CON CHAMPIÑONES",
+      "priceCents": 1300,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:62",
+      "group": "菜单一",
+      "code": "62",
+      "name": "蚝油鸡肉",
+      "spanish": "POLLO EN SALSA DE OSTRAS",
+      "priceCents": 1300,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:63",
+      "group": "菜单一",
+      "code": "63",
+      "name": "咖喱鸡丁",
+      "spanish": "POLLO EN CUBITOS CON SALSA DE CURRY",
+      "priceCents": 1200,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:64",
+      "group": "菜单一",
+      "code": "64",
+      "name": "香橙汁炸鸡丁",
+      "spanish": "POLLO FRITO EN CUBITOS CON SALSA DE NARANJA",
+      "priceCents": 1300,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:65",
+      "group": "菜单一",
+      "code": "65",
+      "name": "广式虾仁",
+      "spanish": "CAMARONES CANTONESA",
+      "priceCents": 1700,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:66",
+      "group": "菜单一",
+      "code": "66",
+      "name": "蝴蝶大虾",
+      "spanish": "LANGOSTINOS MARIPOSA",
+      "priceCents": null,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false,
+      "note": "原图价格处标斜线，未标价。"
+    },
+    {
+      "key": "m1:67",
+      "group": "菜单一",
+      "code": "67",
+      "name": "蘑菇蚝油虾仁",
+      "spanish": "CAMARONES CON HONGOS Y SALSA DE OSTRAS",
+      "priceCents": 1700,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:68",
+      "group": "菜单一",
+      "code": "68",
+      "name": "番茄汁虾仁",
+      "spanish": "CAMARONES CON SALSA DE TOMATE",
+      "priceCents": 1700,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:69",
+      "group": "菜单一",
+      "code": "69",
+      "name": "咖喱虾仁",
+      "spanish": "CAMARONES CON SALSA DE CURRY",
+      "priceCents": 1700,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:70",
+      "group": "菜单一",
+      "code": "70",
+      "name": "黑豆酱虾仁",
+      "spanish": "CAMARONES CON SALSA DE CARAOTAS",
+      "priceCents": 1700,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:71",
+      "group": "菜单一",
+      "code": "71",
+      "name": "腰果虾仁",
+      "spanish": "CAMARONES CON MEREY",
+      "priceCents": 1700,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:72",
+      "group": "菜单一",
+      "code": "72",
+      "name": "玉米笋虾仁",
+      "spanish": "CAMARONES CON JOJOTICOS CHINOS",
+      "priceCents": 1700,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:73",
+      "group": "菜单一",
+      "code": "73",
+      "name": "广式鱼",
+      "spanish": "PESCADO A LA CANTONESA",
+      "priceCents": null,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false,
+      "note": "原图价格处标斜线，未标价。"
+    },
+    {
+      "key": "m1:74",
+      "group": "菜单一",
+      "code": "74",
+      "name": "广式鱿鱼",
+      "spanish": "CALAMARES A LA CANTONESA",
+      "priceCents": 1800,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:75",
+      "group": "菜单一",
+      "code": "75",
+      "name": "Furama 招牌牛柳",
+      "spanish": "LOMITO ESPECIAL *FURAMA*",
+      "priceCents": null,
+      "aliases": [
+        "招牌牛柳"
+      ],
+      "source": "original-03",
+      "uncertain": false,
+      "note": "原图价格处标斜线，未标价。"
+    },
+    {
+      "key": "m1:76",
+      "group": "菜单一",
+      "code": "76",
+      "name": "蚝油牛肉",
+      "spanish": "CARNE CON SALSA DE OSTRAS",
+      "priceCents": 1400,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:77",
+      "group": "菜单一",
+      "code": "77",
+      "name": "蘑菇牛肉",
+      "spanish": "CARNE CON CHAMPIÑONES",
+      "priceCents": 1400,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:78",
+      "group": "菜单一",
+      "code": "78",
+      "name": "咖喱牛肉",
+      "spanish": "CARNE CON SALSA DE CURRY",
+      "priceCents": 1300,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:79",
+      "group": "菜单一",
+      "code": "79",
+      "name": "番茄汁牛肉",
+      "spanish": "CARNE CON SALSA DE TOMATE",
+      "priceCents": 1400,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:80",
+      "group": "菜单一",
+      "code": "80",
+      "name": "香辣中式蔬菜牛肉",
+      "spanish": "CARNE CON VEGETALES CHINOS Y PICANTES",
+      "priceCents": 1400,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:81",
+      "group": "菜单一",
+      "code": "81",
+      "name": "甜椒牛肉",
+      "spanish": "CARNE CON PIMENTONES",
+      "priceCents": 1300,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:82",
+      "group": "菜单一",
+      "code": "82",
+      "name": "豆芽牛肉［译名待确认］",
+      "spanish": "CARNE CON FRIJOLES CHINOS",
+      "priceCents": null,
+      "aliases": [
+        "豆芽牛肉"
+      ],
+      "source": "original-03",
+      "uncertain": true,
+      "note": "原文 Frijoles chinos 暂译豆芽，实际食材需向店家确认；原图未标价。"
+    },
+    {
+      "key": "m1:83",
+      "group": "菜单一",
+      "code": "83",
+      "name": "蘑菇烤猪肉",
+      "spanish": "CERDO ASADO CON CHAMPIÑONES",
+      "priceCents": 1400,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:84",
+      "group": "菜单一",
+      "code": "84",
+      "name": "杏仁烤猪肉丁",
+      "spanish": "CERDO ASADO PICADO CON ALMENDRAS",
+      "priceCents": null,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false,
+      "note": "原图价格处标斜线，未标价。"
+    },
+    {
+      "key": "m1:85",
+      "group": "菜单一",
+      "code": "85",
+      "name": "玉米笋烤猪肉",
+      "spanish": "CERDO ASADO CON JOJOTICOS CHINOS",
+      "priceCents": 1400,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:86",
+      "group": "菜单一",
+      "code": "86",
+      "name": "豆芽烤猪肉［译名待确认］",
+      "spanish": "CERDO ASADO CON FRIJOLES CHINOS",
+      "priceCents": null,
+      "aliases": [
+        "豆芽烤猪肉"
+      ],
+      "source": "original-03",
+      "uncertain": true,
+      "note": "原文 Frijoles chinos 暂译豆芽，实际食材需向店家确认；原图未标价。"
+    },
+    {
+      "key": "m1:87",
+      "group": "菜单一",
+      "code": "87",
+      "name": "黑豆酱猪排骨",
+      "spanish": "COSTILLA DE CERDO CON SALSA DE CARAOTAS",
+      "priceCents": 1300,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:88",
+      "group": "菜单一",
+      "code": "88",
+      "name": "蛋糕",
+      "spanish": "TORTA",
+      "priceCents": 300,
+      "aliases": [],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "m1:89",
+      "group": "菜单一",
+      "code": "89",
+      "name": "冰淇淋",
+      "spanish": "HELADO",
+      "priceCents": 150,
+      "aliases": [
+        "冰激凌"
+      ],
+      "source": "original-03",
+      "uncertain": false
+    },
+    {
+      "key": "drink:1",
+      "group": "饮品",
+      "code": "1",
+      "name": "矿泉水",
+      "spanish": "AGUA MINERAL",
+      "priceCents": 100,
+      "aliases": [
+        "瓶装矿泉水"
+      ],
+      "source": "original-02",
+      "uncertain": false,
+      "note": "饮品编号为应用内部编号；西语名称以原图分类和规格组合。"
+    },
+    {
+      "key": "drink:2",
+      "group": "饮品",
+      "code": "2",
+      "name": "瓶装汽水（可口可乐／Chinotto／Frescolita）",
+      "spanish": "REFRESCOS · BOTELLA (COCACOLA, CHINOTTO, FRESCOLITA)",
+      "priceCents": 100,
+      "aliases": [
+        "瓶装汽水",
+        "瓶装可乐",
+        "瓶装可口可乐",
+        "瓶装Chinotto",
+        "瓶装Frescolita"
+      ],
+      "source": "original-02",
+      "uncertain": false,
+      "note": "饮品编号为应用内部编号；西语名称以原图分类和规格组合。"
+    },
+    {
+      "key": "drink:3",
+      "group": "饮品",
+      "code": "3",
+      "name": "罐装汽水",
+      "spanish": "REFRESCOS · LATA",
+      "priceCents": 200,
+      "aliases": [
+        "罐装可乐",
+        "罐装可口可乐"
+      ],
+      "source": "original-02",
+      "uncertain": false,
+      "note": "饮品编号为应用内部编号；西语名称以原图分类和规格组合。"
+    },
+    {
+      "key": "drink:4",
+      "group": "饮品",
+      "code": "4",
+      "name": "汽水1升",
+      "spanish": "REFRESCOS · 1 LITRO",
+      "priceCents": 200,
+      "aliases": [
+        "1升汽水",
+        "汽水1L",
+        "1L汽水"
+      ],
+      "source": "original-02",
+      "uncertain": false,
+      "note": "饮品编号为应用内部编号；西语名称以原图分类和规格组合。"
+    },
+    {
+      "key": "drink:5",
+      "group": "饮品",
+      "code": "5",
+      "name": "汽水1.5升",
+      "spanish": "REFRESCOS · 1.5 LITROS",
+      "priceCents": 300,
+      "aliases": [
+        "1.5升汽水",
+        "汽水1.5L",
+        "1.5L汽水"
+      ],
+      "source": "original-02",
+      "uncertain": false,
+      "note": "饮品编号为应用内部编号；西语名称以原图分类和规格组合。"
+    },
+    {
+      "key": "drink:6",
+      "group": "饮品",
+      "code": "6",
+      "name": "汽水2升",
+      "spanish": "REFRESCOS · 2 LITROS",
+      "priceCents": null,
+      "aliases": [
+        "2升汽水",
+        "汽水2L",
+        "2L汽水"
+      ],
+      "source": "original-02",
+      "uncertain": false,
+      "note": "饮品编号为应用内部编号；西语名称以原图分类和规格组合。原图未标价。"
+    },
+    {
+      "key": "drink:7",
+      "group": "饮品",
+      "code": "7",
+      "name": "雀巢冰茶（Nestea），杯装",
+      "spanish": "NESTEA · VASO",
+      "priceCents": 100,
+      "aliases": [
+        "雀巢冰茶杯装",
+        "杯装雀巢冰茶",
+        "杯装冰茶",
+        "冰茶杯装",
+        "杯装Nestea"
+      ],
+      "source": "original-02",
+      "uncertain": false,
+      "note": "饮品编号为应用内部编号；西语名称以原图分类和规格组合。"
+    },
+    {
+      "key": "drink:8",
+      "group": "饮品",
+      "code": "8",
+      "name": "雀巢冰茶（Nestea），壶装",
+      "spanish": "NESTEA · JARRA NESTEA",
+      "priceCents": 500,
+      "aliases": [
+        "雀巢冰茶壶装",
+        "壶装雀巢冰茶",
+        "壶装冰茶",
+        "冰茶壶装",
+        "壶装Nestea"
+      ],
+      "source": "original-02",
+      "uncertain": false,
+      "note": "饮品编号为应用内部编号；西语名称以原图分类和规格组合。"
+    },
+    {
+      "key": "drink:9",
+      "group": "饮品",
+      "code": "9",
+      "name": "果汁，杯装",
+      "spanish": "JUGOS · VASO",
+      "priceCents": null,
+      "aliases": [
+        "杯装果汁",
+        "果汁杯装"
+      ],
+      "source": "original-02",
+      "uncertain": false,
+      "note": "饮品编号为应用内部编号；西语名称以原图分类和规格组合。原图未标价。"
+    },
+    {
+      "key": "drink:10",
+      "group": "饮品",
+      "code": "10",
+      "name": "果汁，壶装",
+      "spanish": "JUGOS · JARRA JUGO",
+      "priceCents": null,
+      "aliases": [
+        "壶装果汁",
+        "果汁壶装"
+      ],
+      "source": "original-02",
+      "uncertain": false,
+      "note": "饮品编号为应用内部编号；西语名称以原图分类和规格组合。原图未标价。"
+    },
+    {
+      "key": "drink:11",
+      "group": "饮品",
+      "code": "11",
+      "name": "本地啤酒",
+      "spanish": "CERVEZAS · NACIONAL",
+      "priceCents": null,
+      "aliases": [],
+      "source": "original-02",
+      "uncertain": false,
+      "note": "饮品编号为应用内部编号；西语名称以原图分类和规格组合。原图未标价。"
+    },
+    {
+      "key": "drink:12",
+      "group": "饮品",
+      "code": "12",
+      "name": "进口啤酒",
+      "spanish": "CERVEZAS · IMPORTADA",
+      "priceCents": null,
+      "aliases": [],
+      "source": "original-02",
+      "uncertain": false,
+      "note": "饮品编号为应用内部编号；西语名称以原图分类和规格组合。原图未标价。"
+    },
+    {
+      "key": "drink:13",
+      "group": "饮品",
+      "code": "13",
+      "name": "威士忌，杯装",
+      "spanish": "WHISKY · VASO",
+      "priceCents": null,
+      "aliases": [
+        "杯装威士忌",
+        "威士忌杯装"
+      ],
+      "source": "original-02",
+      "uncertain": false,
+      "note": "饮品编号为应用内部编号；西语名称以原图分类和规格组合。原图未标价。"
+    },
+    {
+      "key": "drink:14",
+      "group": "饮品",
+      "code": "14",
+      "name": "威士忌，瓶装",
+      "spanish": "WHISKY · BOTELLA",
+      "priceCents": null,
+      "aliases": [
+        "瓶装威士忌",
+        "威士忌瓶装"
+      ],
+      "source": "original-02",
+      "uncertain": false,
+      "note": "饮品编号为应用内部编号；西语名称以原图分类和规格组合。原图未标价。"
+    },
+    {
+      "key": "drink:15",
+      "group": "饮品",
+      "code": "15",
+      "name": "葡萄酒，杯装",
+      "spanish": "VINO · COPA",
+      "priceCents": null,
+      "aliases": [
+        "杯装葡萄酒",
+        "葡萄酒杯装"
+      ],
+      "source": "original-02",
+      "uncertain": false,
+      "note": "饮品编号为应用内部编号；西语名称以原图分类和规格组合。原图未标价。"
+    },
+    {
+      "key": "drink:16",
+      "group": "饮品",
+      "code": "16",
+      "name": "葡萄酒，瓶装",
+      "spanish": "VINO · BOTELLA",
+      "priceCents": null,
+      "aliases": [
+        "瓶装葡萄酒",
+        "葡萄酒瓶装"
+      ],
+      "source": "original-02",
+      "uncertain": false,
+      "note": "饮品编号为应用内部编号；西语名称以原图分类和规格组合。原图未标价。"
+    },
+    {
+      "key": "drink:17",
+      "group": "饮品",
+      "code": "17",
+      "name": "鸡尾酒（本地类，原文 Nacional）",
+      "spanish": "CÓCTELES · NACIONAL",
+      "priceCents": null,
+      "aliases": [
+        "本地鸡尾酒"
+      ],
+      "source": "original-02",
+      "uncertain": false,
+      "note": "饮品编号为应用内部编号；西语名称以原图分类和规格组合。原图未标价。"
+    },
+    {
+      "key": "drink:18",
+      "group": "饮品",
+      "code": "18",
+      "name": "鸡尾酒（进口类，原文 Importado）",
+      "spanish": "CÓCTELES · IMPORTADO",
+      "priceCents": null,
+      "aliases": [
+        "进口鸡尾酒"
+      ],
+      "source": "original-02",
+      "uncertain": false,
+      "note": "饮品编号为应用内部编号；西语名称以原图分类和规格组合。原图未标价。"
+    },
+    {
+      "key": "drink:19",
+      "group": "饮品",
+      "code": "19",
+      "name": "中国茶，壶装",
+      "spanish": "TÉ CHINO JARRA",
+      "priceCents": null,
+      "aliases": [
+        "中国茶壶装",
+        "壶装中国茶"
+      ],
+      "source": "original-02",
+      "uncertain": false,
+      "note": "饮品编号为应用内部编号；西语名称以原图分类和规格组合。原图未标价。"
+    },
+    {
+      "key": "combo:1",
+      "group": "套餐",
+      "code": "1",
+      "name": "Gran Furama 1号套餐",
+      "spanish": "GRAN FURAMA N°1",
+      "priceCents": 1200,
+      "aliases": [
+        "1号套餐",
+        "套餐1"
+      ],
+      "source": "original-01",
+      "uncertain": false,
+      "note": "招牌炒饭½份＋招牌什锦炒杂菜½份＋烤猪肉¼份；原菜单套餐价格含 IVA。"
+    },
+    {
+      "key": "combo:2",
+      "group": "套餐",
+      "code": "2",
+      "name": "Gran Furama 2号套餐",
+      "spanish": "GRAN FURAMA N°2",
+      "priceCents": 1200,
+      "aliases": [
+        "2号套餐",
+        "套餐2"
+      ],
+      "source": "original-01",
+      "uncertain": false,
+      "note": "招牌炒饭½份＋招牌什锦炒杂菜½份＋糖醋鸡½份；原菜单套餐价格含 IVA。"
+    },
+    {
+      "key": "combo:3",
+      "group": "套餐",
+      "code": "3",
+      "name": "Gran Furama 3号套餐",
+      "spanish": "GRAN FURAMA N°3",
+      "priceCents": 1400,
+      "aliases": [
+        "3号套餐",
+        "套餐3"
+      ],
+      "source": "original-01",
+      "uncertain": false,
+      "note": "招牌炒饭½份＋蔬菜牛肉½份＋春卷1个；原菜单套餐价格含 IVA。"
+    },
+    {
+      "key": "combo:4",
+      "group": "套餐",
+      "code": "4",
+      "name": "Gran Furama 4号套餐",
+      "spanish": "GRAN FURAMA N°4",
+      "priceCents": 1400,
+      "aliases": [
+        "4号套餐",
+        "套餐4"
+      ],
+      "source": "original-01",
+      "uncertain": false,
+      "note": "招牌炒饭½份＋蔬菜鸡肉½份＋春卷1个；原菜单套餐价格含 IVA。"
+    },
+    {
+      "key": "combo:5",
+      "group": "套餐",
+      "code": "5",
+      "name": "Gran Furama 5号套餐",
+      "spanish": "GRAN FURAMA N°5",
+      "priceCents": 1200,
+      "aliases": [
+        "5号套餐",
+        "套餐5"
+      ],
+      "source": "original-01",
+      "uncertain": false,
+      "note": "招牌炒饭½份＋切块排骨1件＋春卷1个；原菜单套餐价格含 IVA。"
+    },
+    {
+      "key": "combo:6",
+      "group": "套餐",
+      "code": "6",
+      "name": "Gran Furama 6号套餐",
+      "spanish": "GRAN FURAMA N°6",
+      "priceCents": 1200,
+      "aliases": [
+        "6号套餐",
+        "套餐6"
+      ],
+      "source": "original-01",
+      "uncertain": false,
+      "note": "招牌炒饭½份＋糖醋鸡½份＋烤猪肉¼份；原菜单套餐价格含 IVA。"
+    },
+    {
+      "key": "combo:7",
+      "group": "套餐",
+      "code": "7",
+      "name": "Gran Furama 7号套餐",
+      "spanish": "GRAN FURAMA N°7",
+      "priceCents": 1200,
+      "aliases": [
+        "7号套餐",
+        "套餐7"
+      ],
+      "source": "original-01",
+      "uncertain": false,
+      "note": "招牌炒饭½份＋招牌什锦炒杂菜½份＋春卷1个；原菜单套餐价格含 IVA。"
+    },
+    {
+      "key": "combo:8",
+      "group": "套餐",
+      "code": "8",
+      "name": "Gran Furama 8号套餐",
+      "spanish": "GRAN FURAMA N°8",
+      "priceCents": 1200,
+      "aliases": [
+        "8号套餐",
+        "套餐8"
+      ],
+      "source": "original-01",
+      "uncertain": false,
+      "note": "招牌炒饭½份＋糖醋鸡½份＋春卷1个；原菜单套餐价格含 IVA。"
+    },
+    {
+      "key": "combo:9",
+      "group": "套餐",
+      "code": "RICE",
+      "name": "Rice Cooling 套餐",
+      "spanish": "RICE COOLING",
+      "priceCents": 1000,
+      "aliases": [
+        "Rice Cooling",
+        "Rice套餐"
+      ],
+      "source": "original-01",
+      "uncertain": false,
+      "note": "招牌炒饭½份＋招牌什锦炒杂菜½份；原菜单套餐价格含 IVA。RICE/KIDS 为应用识别代码，原图无数字编号。"
+    },
+    {
+      "key": "combo:10",
+      "group": "套餐",
+      "code": "KIDS",
+      "name": "G-Furama 儿童套餐",
+      "spanish": "MENÚ KIDS G-FURAMA",
+      "priceCents": 1200,
+      "aliases": [
+        "儿童套餐",
+        "G-Furama儿童套餐"
+      ],
+      "source": "original-01",
+      "uncertain": false,
+      "note": "薯条½份＋糖醋鸡½份；原菜单套餐价格含 IVA。RICE/KIDS 为应用识别代码，原图无数字编号。"
+    }
+  ]
+}
