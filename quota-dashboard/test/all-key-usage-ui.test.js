@@ -27,37 +27,34 @@ function ui(data = fixture()) {
   };
   class Clock extends Date { constructor(...args) { super(...(args.length ? args : [now])); } static now() { return now; } }
   const context = vm.createContext({ Date: Clock, Intl, state: { publicAccess: true, view: 'overview', snapshot: { allKeyUsage: data } },
-    allKeyView: { query: '', expanded: false, timer: null }, accountCollator: new Intl.Collator('zh-CN', { numeric: true }),
+    allKeyView: { timer: null },
     document: { hidden: false }, $: get, canRead: () => context.state.publicAccess, formatTime: value => value,
     setTimeout: (callback, delay) => { const id = ++serial; timers.set(id, { callback, delay }); return id; }, clearTimeout: id => timers.delete(id) });
   vm.runInContext(`${slice('  const escapeHtml =', '  const platformKey =')}
 ${slice('  function beijingDay(', '  const trendKey =')}
 ${slice('  const compact =', '  function resetKeyQuery(')}
 globalThis.render = renderAllKeyUsage; globalThis.project = allKeyUsageProjection;
-globalThis.row = allKeyRowHtml; globalThis.format = allKeyNumber; globalThis.pause = pauseAllKeyUsage;`, context);
+globalThis.format = allKeyNumber; globalThis.pause = pauseAllKeyUsage;`, context);
   return { context, get, timers, render: () => context.render(), advance(value) { now = value; } };
 }
 
 test('the overview places all-key usage first, before account summaries', () => {
   const heading = html.indexOf('<h1>额度总览'), keys = html.indexOf('id="all-key-usage"'), accounts = html.indexOf('id="summary"');
   assert.ok(heading >= 0 && keys > heading && accounts > keys);
-  assert.match(html, /搜索 API Key 名称或 ID/);
 });
 
-test('uses all keys for aggregates while sorting, filtering and expanding actual rows', () => {
+test('renders only aggregate usage without individual key details or controls', () => {
   const screen = ui(); screen.render();
-  assert.equal(screen.get('#all-key-visible-count').textContent, '显示 8 / 12 个 Key');
-  assert.match(screen.get('#all-key-rows').innerHTML, /已启用/);
-  assert.ok(screen.get('#all-key-rows').innerHTML.indexOf('Key 12') < screen.get('#all-key-rows').innerHTML.indexOf('Key 11'));
-  assert.equal(screen.get('#all-key-expand').hidden, false);
-  screen.context.allKeyView.expanded = true; screen.render();
-  assert.equal((screen.get('#all-key-rows').innerHTML.match(/<tr>/g) || []).length, 12);
-  assert.equal(screen.get('#all-key-expand').attributes['aria-expanded'], 'true');
-  const originalTotals = screen.get('#all-key-summary').innerHTML;
-  screen.context.allKeyView.query = '12'; screen.render();
-  assert.equal(screen.get('#all-key-visible-count').textContent, '显示 1 / 1 个匹配 Key');
-  assert.equal(screen.get('#all-key-summary').innerHTML, originalTotals);
-  assert.equal(screen.get('#all-key-expand').hidden, true);
+  const summary = screen.get('#all-key-summary').innerHTML;
+  assert.equal((summary.match(/class="all-key-stat"/g) || []).length, 4);
+  assert.match(summary, /今日扣费<\/span><strong>\$15\.25/);
+  assert.match(summary, /今日请求<\/span><strong>720/);
+  assert.match(summary, /密钥数<\/span><strong>12/);
+  assert.match(summary, /近 30 天扣费<\/span><strong>\$224\.5/);
+  assert.doesNotMatch(summary, /Key 1|sk-…cafe|<tr>/);
+  assert.doesNotMatch(html, /id="all-key-(?:rows|search|expand|visible-count|count)"|搜索 API Key 名称或 ID/);
+  assert.equal(screen.get('#all-key-state').textContent, '已同步');
+  assert.match(screen.get('#all-key-updated').textContent, /每 10 分钟自动更新/);
 });
 
 test('unknown costs stay unknown while genuine zeros remain zero', () => {
@@ -69,20 +66,6 @@ test('unknown costs stay unknown while genuine zeros remain zero', () => {
   assert.equal(screen.context.format(0, true), '$0');
   assert.match(screen.get('#all-key-summary').innerHTML, /今日扣费<\/span><strong>—/);
   assert.match(screen.get('#all-key-summary').innerHTML, /近 30 天扣费<\/span><strong>\$0/);
-  assert.match(screen.get('#all-key-rows').innerHTML, /暂无 API Key/);
-});
-
-test('escapes display names and IDs, refuses unmasked hints, and never dumps raw records', () => {
-  const screen = ui();
-  const secret = `sk-${'a'.repeat(64)}`;
-  const rendered = screen.context.row({ id: '<99>', name: '<img src=x onerror=alert(1)>', keyHint: secret,
-    key: secret, email: 'private@example.com', ip: '192.0.2.7', today: { cost: 0 }, quota: { unlimited: true } }, true);
-  assert.doesNotMatch(rendered, /<img|private@example\.com|192\.0\.2\.7/);
-  assert.ok(!rendered.includes(secret)); assert.match(rendered, /&lt;img/); assert.match(rendered, /#&lt;99&gt;/);
-  assert.match(rendered, /不限额/); assert.doesNotMatch(rendered, /已隐藏|\$0[^<]*\/|\/ 不限额/);
-  const idOnly = screen.context.row({ id: '99', name: 'Key', keyHint: 'ID #99', quota: { unlimited: true, used: 0 } }, true);
-  assert.equal((idOnly.match(/#99/g) || []).length, 1);
-  assert.match(idOnly, /<span>不限额<\/span>/);
 });
 
 test('old date values disappear at Beijing midnight even with no new server response', () => {
@@ -96,20 +79,23 @@ test('old date values disappear at Beijing midnight even with no new server resp
   assert.match(screen.get('#all-key-summary').innerHTML, /今日请求<\/span><strong>—/);
   assert.match(screen.get('#all-key-summary').innerHTML, /近 30 天扣费<\/span><strong>\$224\.5/);
   assert.match(screen.get('#all-key-feedback').textContent, /旧日期/);
-  assert.match(screen.get('#all-key-rows').innerHTML, /今日请求 — · Token —/);
+  assert.match(screen.get('#all-key-summary').innerHTML, /密钥数<\/span><strong>12/);
   screen.context.state.snapshot.allKeyUsage = fixture({ day: '2026-09-27', updatedAt: new Date(beforeMidnight + 1001).toISOString() });
   screen.render();
   assert.match(screen.get('#all-key-summary').innerHTML, /今日扣费<\/span><strong>\$15\.25/);
 });
 
 test('failed refresh keeps previous values but marks stale, without exposing upstream errors', () => {
-  const screen = ui(fixture({ error: 'upstream secret diagnostic', stale: true })); screen.render();
+  const screen = ui(fixture({ error: 'upstream secret diagnostic', stale: true, rows: [] })); screen.render();
   assert.equal(screen.get('#all-key-state').textContent, '旧数据');
   assert.match(screen.get('#all-key-feedback').textContent, /保留上次结果/);
   assert.match(screen.get('#all-key-summary').innerHTML, /\$15\.25/);
   assert.doesNotMatch(screen.get('#all-key-feedback').textContent, /secret/);
   screen.context.state.snapshot.allKeyUsage = fixture({ complete: false }); screen.render();
   assert.equal(screen.get('#all-key-state').textContent, '部分数据');
+  screen.context.state.snapshot.allKeyUsage = fixture({ updatedAt: null, error: 'upstream secret diagnostic', totals: {} }); screen.render();
+  assert.match(screen.get('#all-key-feedback').textContent, /正在等待下次同步/);
+  assert.doesNotMatch(screen.get('#all-key-feedback').textContent, /保留上次结果|secret/);
 });
 
 test('loading, missing configuration and empty snapshots are safe', () => {
@@ -118,7 +104,8 @@ test('loading, missing configuration and empty snapshots are safe', () => {
   screen.context.state.snapshot = { allKeyUsage: { enabled: false } }; screen.render();
   assert.equal(screen.get('#all-key-state').textContent, '未配置');
   screen.context.state.snapshot = { allKeyUsage: { enabled: true, loading: true, rows: [], totals: {} } }; screen.render();
-  assert.match(screen.get('#all-key-rows').innerHTML, /正在汇总/);
+  assert.equal(screen.get('#all-key-state').textContent, '正在同步');
+  assert.equal((screen.get('#all-key-summary').innerHTML.match(/<strong>—<\/strong>/g) || []).length, 4);
 });
 
 test('render timer stays singular, stops outside overview, and ages stale records locally', () => {
