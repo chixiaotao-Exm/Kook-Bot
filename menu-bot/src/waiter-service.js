@@ -4,7 +4,7 @@ import { createWaiter } from './waiter.js';
 import { ModelResponsesClient } from './model-client.js';
 import { createMenuSearch } from './menu-search.js';
 
-export const WAITER_HELP = '直接发送中文菜名和数量，例如：春卷2份，矿泉水2瓶。\n我会核对西班牙语菜单并按美元（USD）计算。\n查菜品可发“搜索鱼”“搜索鸡肉”；翻页可发“搜索鱼 第2页”。\n同名菜请按回复选择菜单编号，例如 m1:1 2份。\n也可以问：两个人想吃鸡肉和炒饭，推荐一下。\n每条消息单独核算，不累计点单；报价不会提交给餐厅。';
+export const WAITER_HELP = '直接发送中文菜名和数量，例如：春卷2份，矿泉水2瓶。\n我会核对西班牙语菜单并按美元（USD）计算。\n查菜品可发“搜索鱼”“搜索鸡肉”，点击卡片按钮翻页。\n同名菜请按回复选择菜单编号，例如 m1:1 2份。\n也可以问：两个人想吃鸡肉和炒饭，推荐一下。\n每条消息单独核算，不累计点单；报价不会提交给餐厅。';
 const HELP = /^(?:服务员|点餐|点单|点餐帮助|帮助|你好)[！!。\s]*$/;
 const clean = value => typeof value === 'string' && value.trim() && value.length <= 800
   && !/[\u0000-\u0008\u000b-\u001f\u007f]/.test(value);
