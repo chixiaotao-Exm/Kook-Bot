@@ -6,9 +6,9 @@
   <meta name="color-scheme" content="dark">
   <meta name="theme-color" content="#0e1e32">
   <title>星港 · 统一控制台</title>
-  <link rel="stylesheet" href="./style.css?v=21">
+  <link rel="stylesheet" href="./style.css?v=22">
   <script src="./console.js?v=3" defer></script>
-  <script src="./app.js?v=24" defer></script>
+  <script src="./app.js?v=25" defer></script>
 </head>
 <body>
   <section id="login-view" class="login-shell" hidden>
@@ -55,6 +55,14 @@
       <section id="ops-view" class="view" hidden><p id="ops-feedback" class="notice" role="status"></p><button id="ops-retry" class="button secondary" type="button" hidden>重新连接</button><div id="ops-panel"></div></section>
       <section id="overview-view" class="view">
         <div class="page-heading"><div><h1>额度总览<span class="heading-dot"></span></h1></div><button id="refresh" class="button primary"><span class="refresh-icon">↻</span><span>刷新数据</span></button></div>
+        <section id="all-key-usage" class="panel all-key-panel" aria-labelledby="all-key-heading">
+          <div class="all-key-heading"><div><h2 id="all-key-heading">API Key 用量 <span id="all-key-count" class="count-label">—</span></h2><p class="subtle">全部现有 Key · 实际扣费 USD · 今日按北京时间，近 30 天为滚动统计</p></div><span id="all-key-state" class="pill neutral" role="status">正在同步</span></div>
+          <div id="all-key-summary" class="all-key-summary" aria-live="polite"></div>
+          <div class="all-key-controls"><label class="search-field"><span>⌕</span><input id="all-key-search" type="search" placeholder="搜索 Key 名称 / ID" aria-label="搜索 API Key 名称或 ID" autocomplete="off"></label><span id="all-key-updated" class="subtle">每 10 分钟自动更新</span></div>
+          <p id="all-key-feedback" class="all-key-feedback" role="status" hidden></p>
+          <div class="all-key-table-wrap"><table class="all-key-table"><caption class="sr-only">全部 API Key 的今日及近 30 天用量</caption><thead><tr><th scope="col">API Key</th><th scope="col">状态</th><th scope="col">今日扣费</th><th scope="col">近 30 天</th><th scope="col">额度已用 / 限额</th></tr></thead><tbody id="all-key-rows"></tbody></table></div>
+          <div class="all-key-footer"><span id="all-key-visible-count" class="subtle"></span><button id="all-key-expand" type="button" class="button text" aria-expanded="false" aria-controls="all-key-rows" hidden>展开全部</button></div>
+        </section>
         <div id="connection-error" class="notice danger" role="status" hidden></div>
         <div id="active-quota-status" class="active-quota-status" role="status" hidden></div>
         <div class="update-strip"><span><span id="update-dot" class="status-dot"></span><span id="refresh-state">正在读取数据</span> · <span id="refresh-interval">每10分钟自动刷新</span></span><span id="updated-at">等待首次同步</span></div>
