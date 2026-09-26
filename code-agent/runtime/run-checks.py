@@ -39,8 +39,8 @@ def valid_test_path(value, project):
     return not re.search(r'[\[\]{}()]', value) and name.endswith(('.test.js', '.test.cjs', '.test.mjs', '.spec.js', '.spec.cjs', '.spec.mjs'))
 
 def main():
-    # New brokers require this protocol. Old images reject the extra argument,
-    # so an obsolete four-project image cannot produce complete evidence.
+    # New brokers require this protocol. Old images reject a newer protocol,
+    # so obsolete four/six-project images cannot produce complete evidence.
     if len(sys.argv) > 1 and sys.argv[1].startswith('--protocol='):
         if sys.argv[1] != '--protocol=' + CHECK_PROTOCOL:
             return 2

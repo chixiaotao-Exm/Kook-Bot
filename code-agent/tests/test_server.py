@@ -238,8 +238,11 @@ class BrokerTests(unittest.TestCase):
     def test_legacy_or_partial_inventory_cannot_authorize_publication(self):
         job = self.create()['jobId']
         self.broker.dispatch('write_file', job, {'path': 'ops-center/new.js', 'content': '// change', 'expectedSha256': None})
+        self.broker.dispatch('write_file', job, {'path': 'menu-bot/new.js', 'content': '// change', 'expectedSha256': None})
         work_hash = self.report(job)['workHash']
         for evidence in [{}, {'checkProtocol': CHECK_PROTOCOL, 'coveredProjects': list(PROJECTS[:4])},
+                         {'checkProtocol': CHECK_PROTOCOL, 'coveredProjects': list(PROJECTS[:-1])},
+                         {'checkProtocol': 'kook-checks-v2-six-projects', 'coveredProjects': list(PROJECTS)},
                          {'checkProtocol': 'old-image', 'coveredProjects': list(PROJECTS)}]:
             with patch.object(self.sandbox, 'run', return_value={'passed': True, 'complete': True, 'exitCode': 0,
                               'workHash': work_hash, **evidence}):
@@ -249,6 +252,7 @@ class BrokerTests(unittest.TestCase):
         self.broker.dispatch('run_checks', job, {})
         self.assertTrue(self.broker.dispatch('publish', job, {'report': self.report(job)})['published'])
         self.assertIn('ops-center', self.repository.published[-1]['report']['checks'][0]['coveredProjects'])
+        self.assertIn('menu-bot', self.repository.published[-1]['report']['checks'][0]['coveredProjects'])
 
     def test_partial_checks_never_authorize_publish_and_failed_latest_check_invalidates_pass(self):
         job = self.create()["jobId"]

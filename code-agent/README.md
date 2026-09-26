@@ -55,9 +55,9 @@ Node 会将定向测试参数解释为 glob，故路径不能包含 `*?[]{}()`�
 
 ## 部署
 
-固定完整检查覆盖 `ai-bot`、`quota-dashboard`、`music-bot`、`code-agent`、`bridge-bot`、`ops-center` 六个项目，其中 ops-center 同时运行 Node 测试和 `agent/` 的 Python 测试。后两个项目当前仅使用标准库。可信注册表位于 `broker/projects.py`；模型工具支持范围由回归测试与它核对。
+固定完整检查覆盖 `ai-bot`、`quota-dashboard`、`music-bot`、`code-agent`、`bridge-bot`、`ops-center`、`menu-bot` 七个项目，其中 ops-center 同时运行 Node 测试和 `agent/` 的 Python 测试。后三个项目当前仅使用标准库。可信注册表位于 `broker/projects.py`；模型工具支持范围由回归测试与它核对。
 
-升级此版本必须同步 broker 并重建沙箱镜像。broker 使用新的检查协议参数，旧四项目镜像会拒绝请求，不再被误判为完整通过。检查记录写入协议版本及实际覆盖项目，升级前留下的旧检查记录必须重跑才能发布。
+升级此版本必须同步 broker 并重建沙箱镜像。broker 使用 `kook-checks-v3-seven-projects` 检查协议参数，旧四项目或六项目镜像会拒绝请求，不再被误判为完整通过。检查记录写入协议版本及实际覆盖项目，升级前留下的旧检查记录必须重跑才能发布。菜单机器人不增加镜像依赖，但仍需要重建以更新可信检查清单。
 
 Broker 代码放到 `/opt/kook-code-agent`，安装 Git、Python 3 和 Docker。在仓库根目录构建镜像：
 
