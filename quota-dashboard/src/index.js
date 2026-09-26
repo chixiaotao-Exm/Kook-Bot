@@ -17,6 +17,7 @@ import { ActiveQuotaSchedule } from './active-quota-schedule.js';
 import { InvitationClient } from './invitations.js';
 import { AccountLoad } from './account-load.js';
 import { UsageTrends } from './usage-trends.js';
+import { AllKeyUsage } from './all-key-usage.js';
 
 const config = {
   dataDir: path.resolve(process.env.DATA_DIR || './data'), sub2apiUrl: process.env.SUB2API_URL || 'http://127.0.0.1:8080',
@@ -63,6 +64,7 @@ const accountLoad = new AccountLoad({ baseUrl: config.sub2apiUrl, adminApiKey: c
   getAccountIds: () => dashboard.snapshot().accounts.map(account => account.id) });
 const usageTrends = new UsageTrends({ baseUrl: config.sub2apiUrl, adminApiKey: config.adminApiKey,
   getAccountIds: () => dashboard.snapshot().accounts.map(account => account.id) });
+const allKeyUsage = new AllKeyUsage({ baseUrl: config.sub2apiUrl, adminApiKey: config.adminApiKey, cacheMs: config.refreshMs });
 let queryGateway, queryBot;
 if (process.env.KOOK_TOKEN && process.env.KOOK_QUERY_ENABLED !== 'false') {
   queryBot = await new KookKeyQueryBot({ keyUsage, reply: createKookQueryReply({ token: process.env.KOOK_TOKEN }),
@@ -79,7 +81,7 @@ const web = new QuotaServer({ host: process.env.HOST || '127.0.0.1', port: Numbe
   publicAccess: process.env.PUBLIC_ACCESS !== 'false',
   publicManagement: process.env.PUBLIC_MANAGEMENT === 'true',
   invitations, publicInvites: process.env.PUBLIC_INVITES === 'true',
-  keyUsage, accountLoad, usageTrends,
+  keyUsage, accountLoad, usageTrends, allKeyUsage,
   queryBotStatus: () => queryBot ? { ...queryBot.snapshot(), ...queryGateway.snapshot(), queryLastError: queryBot.snapshot().lastError } : { enabled: false },
   activeQuotaStatus: () => activeQuota.snapshot(),
   keyPresets: [
@@ -90,6 +92,14 @@ const web = new QuotaServer({ host: process.env.HOST || '127.0.0.1', port: Numbe
 await web.start(); console.log(JSON.stringify({ event: 'started', port: Number(process.env.PORT || 18998) }));
 void queryGateway?.start();
 activeQuota.start(); scheduler.start();
-let closing = false;
-async function shutdown() { if (closing) return; closing = true; const deadline = setTimeout(() => process.exit(1), 20000); queryGateway?.close(); dashboard.close(); await Promise.all([web.close(), scheduler.close(), queryBot?.close(), activeQuota.close(), invitations?.close(), accountLoad.close(), usageTrends.close()]); clearTimeout(deadline); process.exit(0); }
+let closing = false, keyUsageTimer;
+async function updateAllKeyUsage() {
+  try { await allKeyUsage.get(); } catch { /* Safe error status is exposed by the collector snapshot. */ }
+  if (!closing) {
+    const now = Date.now(), nextDay = (Math.floor((now + 8 * 3600000) / 86400000) + 1) * 86400000 - 8 * 3600000;
+    keyUsageTimer = setTimeout(() => void updateAllKeyUsage(), Math.max(1000, Math.min(config.refreshMs, nextDay - now + 50)));
+  }
+}
+void updateAllKeyUsage();
+async function shutdown() { if (closing) return; closing = true; clearTimeout(keyUsageTimer); const deadline = setTimeout(() => process.exit(1), 20000); queryGateway?.close(); dashboard.close(); await Promise.all([web.close(), scheduler.close(), queryBot?.close(), activeQuota.close(), invitations?.close(), accountLoad.close(), usageTrends.close(), allKeyUsage.close()]); clearTimeout(deadline); process.exit(0); }
 process.once('SIGTERM', () => void shutdown()); process.once('SIGINT', () => void shutdown());
