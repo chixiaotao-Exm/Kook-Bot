@@ -208,8 +208,8 @@ export function createMenuSender({ token, channelIds, pages, fetchImpl = globalT
     const timeout = setTimeout(() => controller.abort('menu-deadline'), SEND_TIMEOUT_MS);
     try {
       const modules = [
-        { type: 'header', text: { type: 'plain-text', content: 'Gran Furama · 中文菜单' } },
-        { type: 'context', elements: [{ type: 'plain-text', content: '全部价格以美元（USD）结算。点击图片查看原图。' }] },
+        { type: 'header', text: { type: 'plain-text', content: 'Gran Furama · 中西双语菜单' } },
+        { type: 'context', elements: [{ type: 'plain-text', content: '同一张图片内对照中文与西班牙语原名。全部价格以美元（USD）结算；未标价需向餐厅确认。点击图片查看原图。' }] },
       ];
       for (const index of selected) {
         if (controller.signal.aborted) throw cancelled(controller.signal);

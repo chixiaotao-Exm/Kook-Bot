@@ -37,9 +37,10 @@ async function setup(t, overrides = {}) {
 }
 
 test('matches only exact Chinese menu requests and optional supported page', () => {
-  for (const value of ['菜单', ' 中文菜单 \n']) assert.deepEqual(parseMenuRequest(value), [0,1,2,3,4,5,6,7]);
+  for (const value of ['菜单', ' 中文菜单 \n', '双语菜单', '中西双语菜单']) assert.deepEqual(parseMenuRequest(value), [0,1,2,3,4,5,6,7]);
   for (const value of ['菜单1', '菜单 １', '中文菜单 一']) assert.deepEqual(parseMenuRequest(value), [0]);
   assert.deepEqual(parseMenuRequest('菜单 八'), [7]);
+  assert.deepEqual(parseMenuRequest('双语菜单 2'), [1]);
   for (const value of ['', '请发菜单', '菜单 9', '菜单 0', '菜单 1 2', '菜单\n然后', null, '(met)12345(met)菜单'])
     assert.equal(parseMenuRequest(value), null);
   assert.equal(parseMenuRequest('菜单 8', 4), null);

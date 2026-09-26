@@ -8,10 +8,10 @@ import { loadMenu } from '../src/menu-assets.js';
 import { loadConfig } from '../src/config.js';
 
 const assetDir = fileURLToPath(new URL('../assets/', import.meta.url));
-test('the eight reviewed Chinese menu pages match their declared hashes and sizes', async () => {
+test('the eight reviewed bilingual menu pages match their declared hashes and sizes', async () => {
   const menu = await loadMenu(assetDir);
   assert.equal(menu.pages.length, 8); assert.match(menu.title, /中文菜单/);
-  assert.ok(menu.pages.every(page => page.width === 1183 && page.height === 1530 && page.buffer.length < 4 * 1024 * 1024));
+  assert.ok(menu.pages.every(page => page.width >= 1600 && page.height >= 2400 && page.buffer.length < 4 * 1024 * 1024));
 });
 test('asset metadata cannot read paths outside its configured folder or accept corrupted bytes', async t => {
   const dir = await mkdtemp(path.join(tmpdir(), 'kook-menu-assets-')); t.after(() => rm(dir, { recursive: true, force: true }));
