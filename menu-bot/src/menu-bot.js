@@ -3,6 +3,7 @@ import path from 'node:path';
 import { KookGateway } from './kook-gateway.js';
 import { createAuthorResolver } from './kook-identity.js';
 import { atomicJson } from './storage.js';
+import { calculate, parseCalculationRequest, CalculatorError } from './calculator.js';
 
 const ID = /^\d{5,30}$/;
 const MESSAGE_ID = /^(?=.{16,100}$)[a-f0-9]+(?:-[a-f0-9]+)*$/i;
@@ -12,6 +13,18 @@ const MAX_RECEIPTS = 2000;
 const validId = value => typeof value === 'string' && ID.test(value);
 const validMessageId = value => typeof value === 'string' && MESSAGE_ID.test(value);
 const abortError = () => Object.assign(new Error('cancelled'), { code: 'cancelled' });
+const CALCULATOR_HELP = '发送“计算 12+14×2”即可计算。\n支持加减乘除、小数和括号。\n示例：计算 (12+18)÷3\n菜单价格均以美元（USD）结算；计算器不进行汇率换算。';
+
+function calculationText(request) {
+  if (request.kind === 'help') return CALCULATOR_HELP;
+  try {
+    const value = calculate(request.expression);
+    return `计算结果\n${value.expression.replace(/\s+/g, ' ')} ${value.approximate ? '≈' : '='} ${value.result}`;
+  } catch (error) {
+    const reason = error instanceof CalculatorError ? error.message : '请检查算式后重试。';
+    return `无法计算：${reason}\n仅支持数字、加减乘除和括号，不支持货币符号、汇率换算或文字。\n示例：计算 12+14×2`;
+  }
+}
 
 export function parseMenuRequest(content, pageCount = 8) {
   if (typeof content !== 'string' || content.length > 32) return null;
@@ -39,26 +52,27 @@ async function bounded(operation, { signal, timeoutMs, code }) {
   finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); }
 }
 
-/** An independent, fixed-image menu bot. Receipts contain no message text or profiles. */
+/** An independent menu and arithmetic bot. Receipts contain no message text or profiles. */
 export class MenuBot {
-  #sendMenu; #channelIds; #pageCount; #now; #writeState; #logger; #file; #resolveAuthor;
+  #sendMenu; #sendText; #channelIds; #pageCount; #now; #writeState; #logger; #file; #resolveAuthor;
   #gateway; #seen = new Map(); #channelTimes = new Map(); #userTimes = new Map();
   #queue = Promise.resolve(); #pending = 0; #active = 0; #ready = false; #closed = false;
   #controller = new AbortController(); #lastGlobalAt = null; #storageTimeoutMs; #sendTimeoutMs;
   #lastError = null; #lastReplyAt = null; #counts = { requests: 0, replies: 0, failures: 0, rejected: 0 };
 
-  constructor({ token, channelIds, pageCount = 8, sendMenu, logger = () => {}, dataDir,
+  constructor({ token, channelIds, pageCount = 8, sendMenu, sendText, logger = () => {}, dataDir,
     now = Date.now, Gateway = KookGateway, fetchImpl = fetch, resolveAuthor,
     writeState = atomicJson, storageTimeoutMs = 5000, sendTimeoutMs = 90_000 } = {}) {
     if (typeof token !== 'string' || !token.trim() || /[\r\n]/.test(token)
       || !Array.isArray(channelIds) || channelIds.length < 1 || channelIds.length > 20
       || !channelIds.every(validId) || typeof sendMenu !== 'function'
+      || (sendText !== undefined && typeof sendText !== 'function')
       || !Number.isInteger(pageCount) || pageCount < 1 || pageCount > 8
       || typeof dataDir !== 'string' || !dataDir || typeof now !== 'function'
       || typeof writeState !== 'function' || !Number.isInteger(storageTimeoutMs) || storageTimeoutMs < 1
       || storageTimeoutMs > 5000 || !Number.isInteger(sendTimeoutMs) || sendTimeoutMs < 1 || sendTimeoutMs > 90_000)
       throw new Error('Invalid menu bot configuration');
-    this.#sendMenu = sendMenu; this.#channelIds = new Set(channelIds); this.#pageCount = pageCount;
+    this.#sendMenu = sendMenu; this.#sendText = sendText; this.#channelIds = new Set(channelIds); this.#pageCount = pageCount;
     this.#logger = logger; this.#now = now; this.#writeState = writeState;
     this.#file = path.join(dataDir, 'menu-receipts.json');
     this.#storageTimeoutMs = storageTimeoutMs; this.#sendTimeoutMs = sendTimeoutMs;
@@ -115,10 +129,12 @@ export class MenuBot {
       || (author.bot !== false && author.bot !== undefined)
       || (author.id !== undefined && author.id !== event.author_id)) return Promise.resolve();
     const pageIndices = parseMenuRequest(event.content, this.#pageCount);
-    if (!pageIndices || !this.#validTime(event.msg_timestamp)) return Promise.resolve();
-    // Retain only fields necessary to route and validate; content never enters the queue or disk.
+    const calculation = !pageIndices && this.#sendText ? parseCalculationRequest(event.content) : null;
+    if ((!pageIndices && !calculation) || !this.#validTime(event.msg_timestamp)) return Promise.resolve();
+    // Raw input never enters the queue or disk; only a bounded, validated response remains in memory.
     const input = { channelId: event.target_id, userId: event.author_id, guildId: event.extra.guild_id,
-      messageId: event.msg_id, timestamp: event.msg_timestamp, verifyAuthor: author.bot === undefined, pageIndices };
+      messageId: event.msg_id, timestamp: event.msg_timestamp, verifyAuthor: author.bot === undefined,
+      kind: pageIndices ? 'menu' : 'calculator', pageIndices, calculationText: calculation ? calculationText(calculation) : undefined };
     this.#pending++;
     const operationSignal = signal ? AbortSignal.any([signal, this.#controller.signal]) : this.#controller.signal;
     const operation = this.#queue.then(() => this.#receive(input, operationSignal));
@@ -162,18 +178,24 @@ export class MenuBot {
     }
     if (this.#closed || signal.aborted || !this.#validTime(input.timestamp)) return;
     const time = this.#now();
+    const channelKey = `${input.kind}:${input.channelId}`, userKey = `${input.kind}:${input.userId}`;
+    const cooldown = input.kind === 'menu' ? 10_000 : 3000;
     if ((this.#lastGlobalAt !== null && time < this.#lastGlobalAt + 1000)
-      || (this.#channelTimes.has(input.channelId) && time < this.#channelTimes.get(input.channelId) + 10_000)
-      || (this.#userTimes.has(input.userId) && time < this.#userTimes.get(input.userId) + 10_000)) {
+      || (this.#channelTimes.has(channelKey) && time < this.#channelTimes.get(channelKey) + cooldown)
+      || (this.#userTimes.has(userKey) && time < this.#userTimes.get(userKey) + cooldown)) {
       this.#counts.rejected++; return;
     }
-    this.#lastGlobalAt = time; this.#channelTimes.set(input.channelId, time); this.#userTimes.set(input.userId, time);
+    this.#lastGlobalAt = time; this.#channelTimes.set(channelKey, time); this.#userTimes.set(userKey, time);
     this.#active++; this.#counts.requests++;
     const controller = new AbortController();
     const sendSignal = AbortSignal.any([signal, controller.signal]);
     try {
-      await bounded(() => this.#sendMenu({ channelId: input.channelId, replyMessageId: input.messageId,
-        pageIndices: input.pageIndices }, { signal: sendSignal }),
+      const send = input.kind === 'menu'
+        ? () => this.#sendMenu({ channelId: input.channelId, replyMessageId: input.messageId,
+          pageIndices: input.pageIndices }, { signal: sendSignal })
+        : () => this.#sendText({ channelId: input.channelId, replyMessageId: input.messageId,
+          text: input.calculationText }, { signal: sendSignal });
+      await bounded(send,
       { signal: sendSignal, timeoutMs: this.#sendTimeoutMs, code: 'send_timeout' });
       if (!signal.aborted && !this.#closed) { this.#counts.replies++; this.#lastReplyAt = this.#now(); this.#lastError = null; }
     } catch {

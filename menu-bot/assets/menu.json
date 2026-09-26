@@ -6,56 +6,57 @@
       "title": "套餐",
       "width": 1183,
       "height": 1530,
-      "sha256": "bbe1f8b5b80f98bdffd9de8ee77895f732ebdaac2186a49dbfeb05ae56b4d98b"
+      "sha256": "85ddc8364ae261823a2667415714992ebcf305c66dfd633a1c732163d4911a02"
     },
     {
       "file": "page-2.png",
       "title": "饮品与菜单一 1–20",
       "width": 1183,
       "height": 1530,
-      "sha256": "5df4faaeacd1152d9bfe0608fa76515af7e00fc757826b79d9550dad2c551a1a"
+      "sha256": "40668abed59b8ffdf56d880b4f94dc05dd6d260138576c15a8039dd2132c03c3"
     },
     {
       "file": "page-3.png",
       "title": "菜单一 21–64",
       "width": 1183,
       "height": 1530,
-      "sha256": "ef91268038ac379c0d14227587336603af8d000f1fbc8c7aa448b7cbfd57c17e"
+      "sha256": "28557bf755ebebfa9b57388e9ef7ecf154e34e6e7d067b335ceecccd04e183f9"
     },
     {
       "file": "page-4.png",
       "title": "菜单一 65–89",
       "width": 1183,
       "height": 1530,
-      "sha256": "b8664ae5ba20fdec471d9742b9c285dd79a035a26bc4b457b189390474d28143"
+      "sha256": "7ee643c9012475bfaa5c9157d9a630e7020d818aa1d3df03682364b83c19752d"
     },
     {
       "file": "page-5.png",
       "title": "菜单二 1–41",
       "width": 1183,
       "height": 1530,
-      "sha256": "e9ca166b239e14e56c484a042ea991459884a3da8968ba0b6d021b1e0454a103"
+      "sha256": "900b9f1a0e227a34d83e6e453301135208ba094d424034f7ac2edbe97adc5193"
     },
     {
       "file": "page-6.png",
       "title": "菜单二 42–87",
       "width": 1183,
       "height": 1530,
-      "sha256": "de78657b7e502f269030e401239e681f549834befc784419e8b04e4211005b12"
+      "sha256": "51b6e80863429a54708411c315daecbf82cd808920d906986571387999b73f58"
     },
     {
       "file": "page-7.png",
       "title": "菜单二 88–116",
       "width": 1183,
       "height": 1530,
-      "sha256": "bf86b68064a4316ca0fddb9d62189b8d907d1624f16e19b38d7cde67f6a2914f"
+      "sha256": "669a8304b24e53f8de792249792a88353e8c86047df49656457094670063a29b"
     },
     {
       "file": "page-8.png",
       "title": "菜单二 117–151",
       "width": 1183,
       "height": 1530,
-      "sha256": "6bc520c59b3ded617d70bc25a532475e40a74ac503766cae1d4bc1570e8b9353"
+      "sha256": "4a40398374c348e3e76e2325ce74b4f88c983b064ce2e6c1c06f2e3b1bcafa95"
     }
-  ]
+  ],
+  "currency": "USD"
 }

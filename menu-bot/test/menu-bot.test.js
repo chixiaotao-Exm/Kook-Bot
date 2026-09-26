@@ -223,3 +223,89 @@ test('closing during identity resolution cannot produce a late reply', async t =
   resolution.resolve({ id: userId, bot: false }); await request; await flush();
   assert.equal(h.sends.length, 0);
 });
+
+test('calculator replies with result without uploading menus; plain numbers and ordinary chat are ignored', async t => {
+  const texts = [];
+  const h = await setup(t, { sendText: async input => { texts.push(input); } });
+  for (const content of ['12+14*2', '今天吃什么', '我会用计算器']) await h.bot.handle(event(1, { content }));
+  assert.equal(texts.length, 0);
+  await h.bot.handle(event(2, { content: '计算 12+14×2' }));
+  assert.equal(texts.length, 1); assert.equal(h.sends.length, 0);
+  assert.equal(texts[0].channelId, channelId); assert.equal(texts[0].replyMessageId, messageId(2));
+  assert.match(texts[0].text, /计算结果/); assert.match(texts[0].text, /= 40\b/);
+});
+
+test('calculator help, arithmetic and errors use separate cooldown from menu with no raw-error echo', async t => {
+  const texts = [];
+  const h = await setup(t, { sendText: async input => { texts.push(input.text); } });
+  await h.bot.handle(event(1));
+  h.setNow(h.now() + 1000);
+  await h.bot.handle(event(2, { content: '计算器', msg_timestamp: h.now() }));
+  assert.match(texts[0], /美元/); assert.match(texts[0], /示例/);
+  h.setNow(h.now() + 3000);
+  await h.bot.handle(event(3, { content: '计算 1/0', msg_timestamp: h.now() }));
+  assert.match(texts[1], /无法计算/);
+  h.setNow(h.now() + 3000);
+  await h.bot.handle(event(4, { content: '计算 $50 + €1 (met)all(met)', msg_timestamp: h.now() }));
+  assert.match(texts[2], /无法计算/);
+  assert.ok(!texts[2].includes('€1')); assert.ok(!texts[2].includes('(met)'));
+  assert.equal(h.sends.length, 1);
+});
+
+test('calculator respects human and channel restrictions and shared receipts survive restart', async t => {
+  const texts = [];
+  const h = await setup(t, { sendText: async input => { texts.push(input.text); } });
+  for (const patch of [{ target_id: '999999999' }, { extra: { author: { bot: true } } },
+    { channel_type: 'PERSON' }, { author_id: botId }]) await h.bot.handle(event(1, { content: '计算 2+2', ...patch }));
+  assert.equal(texts.length, 0);
+  const calc = event(1, { content: '计算 123.456+7' });
+  await Promise.all([h.bot.handle(calc), h.bot.handle(calc)]);
+  assert.equal(texts.length, 1);
+  const ledger = await readFile(path.join(h.dataDir, 'menu-receipts.json'), 'utf8');
+  assert.ok(!ledger.includes('123.456')); assert.ok(!ledger.includes('计算'));
+  const again = await new MenuBot(h.config).init(); t.after(() => again.close());
+  h.setNow(h.now() + 20_000);
+  await again.handle({ ...calc, msg_timestamp: h.now() });
+  await again.handle(event(1, { msg_timestamp: h.now() }));
+  assert.equal(texts.length, 1); assert.equal(h.sends.length, 0);
+});
+
+test('calculator cooldown suppresses receipts permanently without a delayed second reply', async t => {
+  const texts = [];
+  const h = await setup(t, { sendText: async input => { texts.push(input.text); } });
+  await h.bot.handle(event(1, { content: '计算 1+1' }));
+  h.setNow(h.now() + 2000);
+  await h.bot.handle(event(2, { content: '计算 2+2', msg_timestamp: h.now() }));
+  h.setNow(h.now() + 1000);
+  await h.bot.handle(event(2, { content: '计算 2+2', msg_timestamp: h.now() }));
+  assert.equal(texts.length, 1);
+  await h.bot.handle(event(3, { content: '计算 3+3', msg_timestamp: h.now() }));
+  assert.equal(texts.length, 2);
+});
+
+test('calculator normalizes Windows multiline whitespace before card validation', async t => {
+  const texts = [];
+  const h = await setup(t, { sendText: async input => { texts.push(input.text); } });
+  await h.bot.handle(event(1, { content: '计算 12\r\n+3' }));
+  assert.equal(texts.length, 1); assert.match(texts[0], /= 15\b/); assert.ok(!texts[0].includes('\r'));
+});
+
+test('legacy menu-only integration ignores calculators without modifying receipts', async t => {
+  const h = await setup(t);
+  await h.bot.handle(event(1, { content: '计算 2+2' }));
+  await assert.rejects(readFile(path.join(h.dataDir, 'menu-receipts.json')), { code: 'ENOENT' });
+  await h.bot.handle(event()); assert.equal(h.sends.length, 1);
+});
+
+test('closing cancels calculator send, blocks queued replies and does not store expressions', async t => {
+  let entered, signal, calls = 0;
+  const started = new Promise(resolve => { entered = resolve; });
+  const h = await setup(t, { sendText: async (_, options) => {
+    calls++; signal = options.signal; entered(); await new Promise(() => {});
+  } });
+  const pending = h.bot.handle(event(1, { content: '计算 77+88' })); await started;
+  const queued = h.bot.handle(event(2, { content: '计算 2+2' }));
+  await h.bot.close(); await Promise.all([pending, queued]);
+  assert.equal(signal.aborted, true); assert.equal(calls, 1); assert.equal(h.sends.length, 0);
+  assert.ok(!(await readFile(path.join(h.dataDir, 'menu-receipts.json'), 'utf8')).includes('77+88'));
+});
