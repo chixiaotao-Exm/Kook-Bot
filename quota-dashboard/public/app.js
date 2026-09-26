@@ -32,7 +32,7 @@
   const healthClock = { wall: Date.now(), tick: performance.now() };
   let healthTimer = null, healthFingerprint = '';
   const keyQuery = { epoch: 0, controller: null, presets: [], presetsLoaded: false, loadingPresets: false, activePreset: null };
-  const allKeyView = { query: '', expanded: false, timer: null };
+  const allKeyView = { timer: null };
   const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
   const finite = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
   const number = (value, maximumFractionDigits = 2) => finite(value) ? Number(value).toLocaleString('zh-CN', { maximumFractionDigits }) : '未知';
@@ -537,29 +537,11 @@
   }
 
   function allKeyUsageProjection(data, now = Date.now()) {
-    const rows = Array.isArray(data?.rows) ? data.rows.filter(row => row && typeof row === 'object') : [];
     const currentDay = data?.day === beijingDay(now);
-    const value = row => currentDay && typeof row.today?.cost === 'number' && Number.isFinite(row.today.cost) ? row.today.cost : -1;
-    const rolling = row => typeof row.last30DaysCost === 'number' && Number.isFinite(row.last30DaysCost) ? row.last30DaysCost : -1;
-    const query = allKeyView.query.trim().toLocaleLowerCase('zh-CN');
-    const filtered = rows.filter(row => !query || `${row.name || ''} ${row.id || ''}`.toLocaleLowerCase('zh-CN').includes(query))
-      .sort((a, b) => value(b) - value(a) || rolling(b) - rolling(a) || accountCollator.compare(String(a.name || ''), String(b.name || '')) || accountCollator.compare(String(a.id || ''), String(b.id || '')));
     const updated = Date.parse(data?.updatedAt || '');
     const interval = Number.isFinite(data?.refreshIntervalMs) && data.refreshIntervalMs >= 1000 ? data.refreshIntervalMs : 600000;
     const stale = Boolean(data?.stale || data?.error || Number.isFinite(updated) && now - updated > interval + 60000);
-    return { rows, filtered, visible: allKeyView.expanded ? filtered : filtered.slice(0, 8), currentDay, stale };
-  }
-
-  function allKeyRowHtml(row, currentDay) {
-    const status = { active: ['已启用', 'good'], inactive: ['未启用', 'neutral'], disabled: ['已停用', 'neutral'], expired: ['已过期', 'warning'], quota_exhausted: ['额度用尽', 'warning'] }[row.status] || ['未知', 'neutral'];
-    const hint = /^sk-[….*•]+[A-Za-z0-9_-]{0,8}$/.test(row.keyHint || '') ? ` · ${row.keyHint}` : '';
-    const today = currentDay ? row.today || {} : {};
-    const quota = row.quota || {};
-    const quotaHtml = quota.unlimited === true ? '不限额' : `${escapeHtml(allKeyNumber(quota.used, true))} <span class="subtle">/ ${escapeHtml(allKeyNumber(quota.limit, true))}</span>`;
-    const detail = `今日请求 ${allKeyNumber(today.requests)} · Token ${allKeyNumber(today.tokens)}`;
-    const todayExact = typeof today.cost === 'number' && Number.isFinite(today.cost) ? `$${number(today.cost, 8)}` : '—';
-    const rollingExact = typeof row.last30DaysCost === 'number' && Number.isFinite(row.last30DaysCost) ? `$${number(row.last30DaysCost, 8)}` : '—';
-    return `<tr><th scope="row"><strong>${escapeHtml(row.name || `Key #${row.id || '—'}`)}</strong><span class="all-key-identity">#${escapeHtml(row.id || '—')}${escapeHtml(hint)}</span></th><td data-label="状态"><span class="pill ${status[1]}">${status[0]}</span></td><td data-label="今日扣费"><strong class="all-key-cost" title="${escapeHtml(todayExact)}">${escapeHtml(allKeyNumber(today.cost, true))}</strong><small class="all-key-request" title="${escapeHtml(detail)}">${escapeHtml(detail)}</small></td><td data-label="近 30 天"><strong title="${escapeHtml(rollingExact)}">${escapeHtml(allKeyNumber(row.last30DaysCost, true))}</strong></td><td data-label="额度已用 / 限额"><span>${quotaHtml}</span></td></tr>`;
+    return { currentDay, stale };
   }
 
   function pauseAllKeyUsage() {
@@ -584,25 +566,17 @@
     const stats = [ ['密钥数', totals.keys, false], ['今日扣费', view.currentDay ? totals.todayCost : null, true],
       ['近 30 天扣费', totals.last30DaysCost, true], ['今日请求', view.currentDay ? totals.todayRequests : null, false] ];
     $('#all-key-summary').innerHTML = stats.map(([label, value, money]) => `<div class="all-key-stat"><span>${label}</span><strong>${escapeHtml(allKeyNumber(value, money))}</strong></div>`).join('');
-    $('#all-key-count').textContent = allKeyNumber(totals.keys);
     const indicator = $('#all-key-state');
     indicator.textContent = !available ? '未配置' : waiting ? '正在同步' : data.loading ? '更新中' : view.stale ? '旧数据' : !view.currentDay ? '等待今日同步' : data.complete !== true ? '部分数据' : '已同步';
     indicator.className = `pill ${!available || waiting || data.loading ? 'neutral' : view.stale || !view.currentDay || data.complete !== true ? 'warning' : 'good'}`;
     const messages = [];
-    if (data?.error) messages.push(view.rows.length ? '更新暂不可用，保留上次结果。' : '用量暂不可用，正在等待下次同步。');
+    if (data?.error) messages.push(data.updatedAt ? '更新暂不可用，保留上次结果。' : '用量暂不可用，正在等待下次同步。');
     else if (view.stale) messages.push('当前为旧数据，等待同步。');
     if (data?.day && !view.currentDay) messages.push('今日用量待同步，旧日期的今日数值已隐藏。');
     if (data?.complete === false && !waiting && !data.loading && !data.error) messages.push('部分 Key 用量未完整读取，未知值显示 —。');
     $('#all-key-feedback').textContent = messages.join(' ');
     $('#all-key-feedback').hidden = messages.length === 0;
     $('#all-key-updated').textContent = `${data?.updatedAt ? `更新 ${formatTime(data.updatedAt)} · ` : ''}每 10 分钟自动更新`;
-    const emptyText = !available ? '尚未配置 API Key 用量' : waiting ? '正在汇总全部 API Key 用量…' : data?.error && !view.rows.length ? '暂时无法读取 API Key 用量' : view.rows.length ? '没有匹配的 Key' : '暂无 API Key';
-    $('#all-key-rows').innerHTML = view.visible.length ? view.visible.map(row => allKeyRowHtml(row, view.currentDay)).join('') : `<tr><td colspan="5" class="all-key-empty">${emptyText}</td></tr>`;
-    $('#all-key-visible-count').textContent = view.filtered.length ? `显示 ${view.visible.length} / ${view.filtered.length}${allKeyView.query.trim() ? ' 个匹配 Key' : ' 个 Key'}` : '';
-    const expand = $('#all-key-expand');
-    expand.hidden = view.filtered.length <= 8;
-    expand.textContent = allKeyView.expanded ? '收起' : `展开全部 ${view.filtered.length} 个`;
-    expand.setAttribute('aria-expanded', String(allKeyView.expanded));
     scheduleAllKeyUsage();
   }
 
@@ -1343,8 +1317,6 @@
   $('#trend-previous').addEventListener('click', () => stepTrendDay(-1));
   $('#trend-next').addEventListener('click', () => stepTrendDay(1));
   $('#health-search').addEventListener('input', event => { healthView.query = event.target.value; renderHealth(); });
-  $('#all-key-search').addEventListener('input', event => { allKeyView.query = event.target.value; allKeyView.expanded = false; renderAllKeyUsage(); });
-  $('#all-key-expand').addEventListener('click', () => { allKeyView.expanded = !allKeyView.expanded; renderAllKeyUsage(); });
   $('#health-filter').addEventListener('change', event => { healthView.filter = event.target.value; renderHealth(); });
   $('#health-refresh').addEventListener('click', requestRefresh);
   $('#health-list').addEventListener('click', event => { const button = event.target.closest('[data-quota-account]'); if (button) void showAccountQuota(button.dataset.quotaAccount); });
