@@ -51,42 +51,49 @@ class SandboxTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def test_all_checks_include_bridge_and_ops_node_and_python_and_track_coverage(self):
-        for project in ('quota-dashboard', 'music-bot', 'code-agent', 'bridge-bot', 'ops-center'):
+    def test_all_checks_cover_seven_projects_and_propagate_menu_and_ops_failures(self):
+        for project in ('quota-dashboard', 'music-bot', 'code-agent', 'bridge-bot', 'ops-center', 'menu-bot'):
             for directory in (self.work, self.baseline):
                 (directory / project).mkdir(exist_ok=True)
         self.workspace.write_file('ops-center/agent/test_added.py', 'raise RuntimeError("fixture failure")\n')
         self.workspace.write_file('bridge-bot/test/added.test.js', 'throw new Error("fixture failure");\n')
+        self.workspace.write_file('menu-bot/test/added.test.js', 'throw new Error("fixture failure");\n')
         result, popen, _ = self.run_mocked()
         self.assertEqual(set(result.get('coveredProjects', [])),
-                         {'ai-bot', 'quota-dashboard', 'music-bot', 'code-agent', 'bridge-bot', 'ops-center'})
-        self.assertEqual(set(self.workspace.changed_projects()), {'bridge-bot', 'ops-center'})
+                         {'ai-bot', 'quota-dashboard', 'music-bot', 'code-agent', 'bridge-bot', 'ops-center', 'menu-bot'})
+        self.assertEqual(set(self.workspace.changed_projects()), {'bridge-bot', 'ops-center', 'menu-bot'})
         entrypoint = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'runtime/run-checks.py'))['main']
         copied = Path(self.temp.name) / 'runtime'
         def mapped_path(value):
             return {'/input': self.work, '/work/repo': copied}.get(value, Path(value))
         argv = popen.call_args.args[0]
         image_args = argv[argv.index('/usr/local/bin/run-checks') + 1:]
-        invoked = []
-        def run(command, **options):
-            invoked.append((options['cwd'].name, command))
-            fail = options['cwd'].name == 'ops-center' and command[0] == '/usr/bin/python3'
-            return subprocess.CompletedProcess(command, 1 if fail else 0)
-        with patch.dict(entrypoint.__globals__, {'Path': mapped_path}), patch.object(sys, 'argv', ['run-checks', *image_args]), \
-                patch('os.getuid', return_value=1000, create=True), patch.object(Path, 'symlink_to'), \
-                patch.dict(os.environ), patch('subprocess.run', side_effect=run):
-            self.assertEqual(entrypoint(), 1)
-        self.assertIn(('bridge-bot', ['node', '--test', '--test-concurrency=1']), invoked)
-        self.assertIn(('ops-center', ['node', '--test', '--test-concurrency=1']), invoked)
-        self.assertIn(('ops-center', ['/usr/bin/python3', '-m', 'unittest', 'discover', '-s', 'agent', '-p', 'test_*.py', '-v']), invoked)
+        for failed_project, executable in [('menu-bot', 'node'), ('ops-center', '/usr/bin/python3')]:
+            invoked = []
+            def run(command, **options):
+                invoked.append((options['cwd'].name, command))
+                fail = options['cwd'].name == failed_project and command[0] == executable
+                return subprocess.CompletedProcess(command, 1 if fail else 0)
+            with self.subTest(failed_project=failed_project), \
+                    patch.dict(entrypoint.__globals__, {'Path': mapped_path}), \
+                    patch.object(sys, 'argv', ['run-checks', *image_args]), \
+                    patch('os.getuid', return_value=1000, create=True), patch.object(Path, 'symlink_to'), \
+                    patch.dict(os.environ), patch('subprocess.run', side_effect=run):
+                self.assertEqual(entrypoint(), 1)
+            self.assertIn(('bridge-bot', ['node', '--test', '--test-concurrency=1']), invoked)
+            self.assertIn(('ops-center', ['node', '--test', '--test-concurrency=1']), invoked)
+            self.assertIn(('ops-center', ['/usr/bin/python3', '-m', 'unittest', 'discover', '-s', 'agent', '-p', 'test_*.py', '-v']), invoked)
+            self.assertIn(('menu-bot', ['node', '--test', '--test-concurrency=1']), invoked)
 
     def test_runner_rejects_unknown_protocol_before_copying_or_executing(self):
         entrypoint = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'runtime/run-checks.py'))['main']
-        with patch.object(sys, 'argv', ['run-checks', '--protocol=unsupported-image', 'all']), \
-                patch('shutil.copytree') as copy, patch('subprocess.run') as run:
-            self.assertEqual(entrypoint(), 2)
-            copy.assert_not_called()
-            run.assert_not_called()
+        for protocol in ['unsupported-image', 'kook-checks-v2-six-projects']:
+            with self.subTest(protocol=protocol), \
+                    patch.object(sys, 'argv', ['run-checks', '--protocol=' + protocol, 'all']), \
+                    patch('shutil.copytree') as copy, patch('subprocess.run') as run:
+                self.assertEqual(entrypoint(), 2)
+                copy.assert_not_called()
+                run.assert_not_called()
 
     def run_mocked(self, process=None, **kwargs):
         process = process or FakeProcess()

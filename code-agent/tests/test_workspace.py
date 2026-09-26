@@ -189,7 +189,7 @@ class WorkspaceTests(unittest.TestCase):
         self.assertEqual(self.workspace.work_hash(), original)
         (self.root / "a.txt").rename(self.root / "b.txt")
         self.assertNotEqual(self.workspace.work_hash(), original)
-        self.assertEqual(set(self.workspace.changed_projects()), {"ai-bot", "music-bot", "quota-dashboard", "code-agent", "bridge-bot", "ops-center"})
+        self.assertEqual(set(self.workspace.changed_projects()), {"ai-bot", "music-bot", "quota-dashboard", "code-agent", "bridge-bot", "ops-center", "menu-bot"})
 
     def test_binary_diff_never_exposes_binary_bytes(self):
         self.put("asset.bin", b"\xffPRIVATE_BINARY_DATA")
