@@ -28,7 +28,7 @@ function calculationText(request) {
 
 export function parseMenuRequest(content, pageCount = 8) {
   if (typeof content !== 'string' || content.length > 32) return null;
-  const match = /^(?:中文)?菜单(?:\s*([1-8１-８一二三四五六七八]))?\s*$/.exec(content.trim());
+  const match = /^(?:中文|双语|中西双语)?菜单(?:\s*([1-8１-８一二三四五六七八]))?\s*$/.exec(content.trim());
   if (!match) return null;
   if (!match[1]) return Array.from({ length: pageCount }, (_, index) => index);
   const label = match[1].normalize('NFKC');

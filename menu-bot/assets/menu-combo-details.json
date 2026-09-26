@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "source": "original-01",
+  "note": "套餐组成按原西班牙语菜单逐项抄录；保留原缩写。 Precios con IVA incluido.",
+  "items": [
+    {"key":"combo:1","chinese":["招牌炒饭½份","招牌什锦炒杂菜½份","烤猪肉¼份"],"spanish":["1/2 ARROZ FRITO ESP.","1/2 CHOP SUEY ESP.","1/4 CERDO ASADO."]},
+    {"key":"combo:2","chinese":["招牌炒饭½份","招牌什锦炒杂菜½份","糖醋鸡½份"],"spanish":["1/2 ARROZ FRITO ESP.","1/2 CHOP SUEY ESP.","1/2 DULCE Y AGRIO DE POLLO"]},
+    {"key":"combo:3","chinese":["招牌炒饭½份","蔬菜牛肉½份","春卷1个"],"spanish":["1/2 ARROZ FRITO ESP.","1/2 CARNE CON VEG.","1PZ LUMPIA."]},
+    {"key":"combo:4","chinese":["招牌炒饭½份","蔬菜鸡肉½份","春卷1个"],"spanish":["1/2 ARROZ FRITO ESP.","1/2 POLLO CON VEG.","1PZ LUMPIA."]},
+    {"key":"combo:5","chinese":["招牌炒饭½份","切块排骨1件","春卷1个"],"spanish":["1/2 ARROZ FRITO ESP.","1PZ COSTILLA PICADA","1PZ LUMPIA."]},
+    {"key":"combo:6","chinese":["招牌炒饭½份","糖醋鸡½份","烤猪肉¼份"],"spanish":["1/2 ARROZ FRITO ESP.","1/2 DULCE Y AGRIO DE POLLO","1/4 CERDO ASADO."]},
+    {"key":"combo:7","chinese":["招牌炒饭½份","招牌什锦炒杂菜½份","春卷1个"],"spanish":["1/2 ARROZ FRITO ESP.","1/2 CHOP SUEY ESP.","1PZ LUMPIA."]},
+    {"key":"combo:8","chinese":["招牌炒饭½份","糖醋鸡½份","春卷1个"],"spanish":["1/2 ARROZ FRITO ESP.","1/2 DULCE Y AGRIO DE POLLO","1PZ LUMPIA."]},
+    {"key":"combo:9","chinese":["招牌炒饭½份","招牌什锦炒杂菜½份"],"spanish":["1/2 ARROZ FRITO ESP.","1/2 CHOP SUEY ESP."]},
+    {"key":"combo:10","chinese":["薯条½份","糖醋鸡½份"],"spanish":["1/2 PAPA FRITAS.","1/2 DULCE Y AGRIO DE POLLO"]}
+  ]
+}

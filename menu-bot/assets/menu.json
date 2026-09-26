@@ -1,62 +1,67 @@
 {
-  "title": "Gran Furama 中文菜单",
+  "title": "Gran Furama 中文菜单 · 西班牙语对照",
   "pages": [
     {
       "file": "page-1.png",
       "title": "套餐",
-      "width": 1183,
-      "height": 1530,
-      "sha256": "85ddc8364ae261823a2667415714992ebcf305c66dfd633a1c732163d4911a02"
+      "width": 1800,
+      "height": 3200,
+      "sha256": "15a1a34094d0265ca6209fd2127e3dae4ad1b56c0813b54dff1fb24355391527"
     },
     {
       "file": "page-2.png",
       "title": "饮品与菜单一 1–20",
-      "width": 1183,
-      "height": 1530,
-      "sha256": "40668abed59b8ffdf56d880b4f94dc05dd6d260138576c15a8039dd2132c03c3"
+      "width": 1800,
+      "height": 3200,
+      "sha256": "b92233c19faec62cd13c151cf1bad93d45a46436e45ca4fab65f391942ac3322"
     },
     {
       "file": "page-3.png",
       "title": "菜单一 21–64",
-      "width": 1183,
-      "height": 1530,
-      "sha256": "28557bf755ebebfa9b57388e9ef7ecf154e34e6e7d067b335ceecccd04e183f9"
+      "width": 1800,
+      "height": 3200,
+      "sha256": "ca2e139becc1a29d86c54978c820d5e431b24f4c09602ab897be41d2ecda3d1e"
     },
     {
       "file": "page-4.png",
       "title": "菜单一 65–89",
-      "width": 1183,
-      "height": 1530,
-      "sha256": "7ee643c9012475bfaa5c9157d9a630e7020d818aa1d3df03682364b83c19752d"
+      "width": 1800,
+      "height": 3200,
+      "sha256": "6b62f1ce094d5005bea7f46431c1e190631384823b51484267662725f74bf91d"
     },
     {
       "file": "page-5.png",
       "title": "菜单二 1–41",
-      "width": 1183,
-      "height": 1530,
-      "sha256": "900b9f1a0e227a34d83e6e453301135208ba094d424034f7ac2edbe97adc5193"
+      "width": 1800,
+      "height": 3200,
+      "sha256": "2f6f9d929fcfb3e491b6c991a66904215965a9e9bbdb1bff3333f9bb2f1d27b5"
     },
     {
       "file": "page-6.png",
       "title": "菜单二 42–87",
-      "width": 1183,
-      "height": 1530,
-      "sha256": "51b6e80863429a54708411c315daecbf82cd808920d906986571387999b73f58"
+      "width": 1800,
+      "height": 3200,
+      "sha256": "032bfa520c8ba588fcdaec61e499782e0049c6db6fdb90f69fc2060b1d8359b1"
     },
     {
       "file": "page-7.png",
       "title": "菜单二 88–116",
-      "width": 1183,
-      "height": 1530,
-      "sha256": "669a8304b24e53f8de792249792a88353e8c86047df49656457094670063a29b"
+      "width": 1800,
+      "height": 3200,
+      "sha256": "a6d5c37f02db40316626e22a6a7cb8084e527569f4ef03b4d804063e9a19c7cb"
     },
     {
       "file": "page-8.png",
       "title": "菜单二 117–151",
-      "width": 1183,
-      "height": 1530,
-      "sha256": "4a40398374c348e3e76e2325ce74b4f88c983b064ce2e6c1c06f2e3b1bcafa95"
+      "width": 1800,
+      "height": 3200,
+      "sha256": "abc72e89937b22192196fe4c404bee897bcc9c60f35b9e2a629504ec501691a9"
     }
   ],
-  "currency": "USD"
+  "currency": "USD",
+  "languages": [
+    "zh-CN",
+    "es"
+  ],
+  "layoutVersion": 1
 }

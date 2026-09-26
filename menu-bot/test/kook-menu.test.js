@@ -57,6 +57,8 @@ test('eight pages upload once each, then publish a single card with full-width p
   assert.ok(containers.every(container => container.elements.length === 1 && container.elements[0].type === 'image'));
   assert.match(payload.content, /8\/8/);
   assert.match(payload.content, /点击图片查看原图/);
+  assert.match(payload.content, /中西双语菜单/);
+  assert.match(payload.content, /西班牙语原名/);
   assert.ok(!payload.content.includes('image-group'));
 });
 
