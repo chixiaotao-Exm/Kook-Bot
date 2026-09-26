@@ -5,6 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { MenuBot, parseMenuRequest } from '../src/menu-bot.js';
 import { createWaiterService } from '../src/waiter-service.js';
+import { createMenuSearch } from '../src/menu-search.js';
+import { createSearchPages } from '../src/search-pages.js';
 
 const channelId = '1234567890123456', channel2 = '1234567890123457';
 const botId = '900000001', userId = '900000002', guildId = '900000003';
@@ -445,4 +447,138 @@ test('waiter retries and restart replay share durable deduplication with other b
   await again.handle(event(1, { content: '计算 2+2', msg_timestamp: h.now() }));
   await again.handle(event(1, { msg_timestamp: h.now() }));
   assert.equal(calls, 1); assert.equal(texts.length, 1); assert.equal(h.sends.length, 0);
+});
+
+const searchItems = Array.from({ length: 17 }, (_, index) => ({ key: `m2:${index + 1}`, group: '菜单二',
+  code: `${index + 1}`, name: `清蒸鱼${index + 1}`, spanish: `PESCADO ${index + 1}`, priceCents: 1200,
+  aliases: [], uncertain: false }));
+
+async function setupPages(t, { ttlMs, update, ...overrides } = {}) {
+  const texts = [], updates = [], cardId = messageId(9900);
+  let h, waiterCalls = 0;
+  const pages = createSearchPages({ search: createMenuSearch(searchItems),
+    now: () => h?.now() ?? 1_800_000_000_000, ...(ttlMs === undefined ? {} : { ttlMs }) });
+  const sendText = async (input, options) => { texts.push({ input, options }); return { messageId: cardId }; };
+  sendText.update = async (input, options) => {
+    updates.push({ input, options });
+    if (update) return update(input, options);
+    return { messageId: input.messageId };
+  };
+  h = await setup(t, { waiter: { accepts: text => typeof text === 'string',
+    reply: async () => { waiterCalls++; return 'unexpected AI fallback'; } }, sendText, searchPages: pages, ...overrides });
+  await h.bot.handle(event(1, { content: '搜索鱼' }));
+  assert.equal(texts.length, 1);
+  const button = texts[0].input.buttons.find(button => button.label === '下一页');
+  assert.ok(button);
+  const click = (number, body = {}, patch = {}) => ({ type: 255, channel_type: 'PERSON',
+    target_id: 'unrelated-envelope-target', author_id: 'system-author', content: '',
+    msg_id: messageId(number), msg_timestamp: h.now(), extra: { type: 'message_btn_click', body: {
+      target_id: channelId, msg_id: cardId, user_id: userId, value: button.value,
+      user_info: { id: userId, bot: false }, ...body,
+    } }, ...patch });
+  h.setNow(h.now() + 1000);
+  return { ...h, texts, updates, cardId, click, pages, waiterCalls: () => waiterCalls };
+}
+
+test('search cards still get buttons when a verified-human message omits guild metadata', async t => {
+  const texts = [], pages = createSearchPages({ search: createMenuSearch(searchItems) });
+  const sendText = async input => { texts.push(input); return { messageId: messageId(9900) }; };
+  sendText.update = async () => {};
+  const h = await setup(t, { searchPages: pages, sendText,
+    waiter: { accepts: () => true, reply: async () => { throw new Error('unexpected AI'); } } });
+  await h.bot.handle(event(1, { content: '搜索鱼', extra: { author: { id: userId, bot: false } } }));
+  assert.equal(texts.length, 1); assert.equal(texts[0].buttons[0].label, '下一页');
+  assert.deepEqual(pages.context(texts[0].buttons[0].value, { channelId, messageId: messageId(9900) }), { guildId: null });
+});
+
+test('search buttons update the bound card in place using body channel instead of the PERSON envelope', async t => {
+  const h = await setupPages(t);
+  assert.equal(h.texts[0].input.title, '中文菜单 · 菜品搜索');
+  assert.equal(h.texts[0].input.replyMessageId, messageId(1));
+  assert.match(h.texts[0].input.text, /第 1\/3 页/);
+  assert.doesNotMatch(h.texts[0].input.text, /查看下一页：/);
+  await h.bot.handle(h.click(2));
+  assert.equal(h.texts.length, 1); assert.equal(h.updates.length, 1);
+  const updated = h.updates[0].input;
+  assert.equal(updated.channelId, channelId); assert.equal(updated.messageId, h.cardId);
+  assert.equal(updated.title, '中文菜单 · 菜品搜索');
+  assert.match(updated.text, /第 2\/3 页/); assert.match(updated.text, /清蒸鱼9/);
+  assert.deepEqual(updated.buttons.map(button => button.label), ['上一页', '下一页']);
+  assert.equal(h.waiterCalls(), 0); assert.equal(h.sends.length, 0);
+});
+
+test('pagination callbacks cannot update another channel or card and reject malformed identity and timestamps', async t => {
+  let resolutionCalls = 0;
+  const h = await setupPages(t, { resolveButtonAuthor: async () => { resolutionCalls++; return null; } });
+  const bodyPatches = [{ target_id: channel2 }, { target_id: '999999999' }, { msg_id: messageId(9901) },
+    { user_info: { id: userId, bot: true } }, { user_info: { id: userId, bot: 'false' } },
+    { user_info: { id: '900000099', bot: false } }, { user_info: null }, { user_info: [] },
+    { user_id: botId, user_info: { id: botId, bot: false } }, { user_id: 'bad' },
+    { msg_id: 'bad' }, { value: 'https://example.test' }, { value: 'menu-page:invalid' }];
+  for (const [index, patch] of bodyPatches.entries()) {
+    await h.bot.handle(h.click(index + 2, patch)); h.setNow(h.now() + 1000);
+  }
+  for (const [index, patch] of [{ msg_id: 'invalid' }, { msg_timestamp: h.now() - 300_001 },
+    { msg_timestamp: h.now() + 60_001 }].entries()) await h.bot.handle(h.click(50 + index, {}, patch));
+  assert.equal(h.updates.length, 0); assert.equal(h.texts.length, 1);
+  assert.equal(resolutionCalls, 0); assert.equal(h.waiterCalls(), 0);
+});
+
+test('button clicks without user_info require a verified human from the original search guild', async t => {
+  const resolutions = [];
+  let author = { id: userId, bot: true };
+  const h = await setupPages(t, { resolveButtonAuthor: async input => { resolutions.push(input); return author; } });
+  await h.bot.handle(h.click(2, { user_info: undefined }));
+  assert.equal(h.updates.length, 0);
+  author = { id: userId, bot: false };
+  await h.bot.handle(h.click(3, { user_info: undefined }));
+  assert.equal(h.updates.length, 1); assert.equal(h.texts.length, 1); assert.equal(resolutions.length, 2);
+  for (const input of resolutions) {
+    assert.equal(input.userId, userId); assert.equal(input.guildId, guildId); assert.equal(input.channelId, channelId);
+    assert.ok(input.signal instanceof AbortSignal);
+  }
+  assert.equal(h.waiterCalls(), 0);
+});
+
+test('button events have durable deduplication and expired cards give one restart-search hint', async t => {
+  const h = await setupPages(t, { ttlMs: 2000 });
+  const clicked = h.click(2);
+  await Promise.all([h.bot.handle(clicked), h.bot.handle(clicked)]);
+  assert.equal(h.updates.length, 1);
+  h.setNow(h.now() + 2000);
+  const expired = h.click(3);
+  await h.bot.handle(expired); await h.bot.handle(expired);
+  assert.equal(h.updates.length, 1); assert.equal(h.texts.length, 2);
+  assert.match(h.texts[1].input.text, /已失效.*重新发送/);
+  assert.equal(h.texts[1].input.channelId, channelId);
+  const ledger = await readFile(path.join(h.dataDir, 'menu-receipts.json'), 'utf8');
+  assert.deepEqual(JSON.parse(ledger).receipts.map(receipt => receipt.id), [messageId(1), messageId(2), messageId(3)]);
+  for (const value of ['搜索鱼', clicked.extra.body.value, channelId, userId]) assert.equal(ledger.includes(value), false);
+  const restarted = await new MenuBot(h.config).init(); t.after(() => restarted.close());
+  await restarted.handle({ ...clicked, msg_timestamp: h.now() });
+  await restarted.handle({ ...expired, msg_timestamp: h.now() });
+  assert.equal(h.updates.length, 1); assert.equal(h.texts.length, 2); assert.equal(h.waiterCalls(), 0);
+});
+
+test('failed page updates never retry on event replay and do not generate a second search message', async t => {
+  const h = await setupPages(t, { update: async () => { throw new Error('private-token network failure'); } });
+  await h.bot.handle(h.click(2));
+  h.setNow(h.now() + 2000); await h.bot.handle(h.click(2));
+  assert.equal(h.updates.length, 1); assert.equal(h.texts.length, 1);
+  assert.equal(h.bot.status().failures, 1); assert.equal(h.waiterCalls(), 0);
+  assert.equal(JSON.stringify(h.logs).includes('private'), false);
+});
+
+test('closing aborts an in-flight page update and suppresses queued clicks', async t => {
+  const entered = defer(); let signal;
+  const h = await setupPages(t, { update: async (_, options) => {
+    signal = options.signal; entered.resolve(); await new Promise(() => {});
+  } });
+  const pending = h.bot.handle(h.click(2)); await entered.promise;
+  h.setNow(h.now() + 1000);
+  const queued = h.bot.handle(h.click(3));
+  await h.bot.close(); await Promise.all([pending, queued]);
+  await h.bot.handle(h.click(4));
+  assert.equal(signal.aborted, true); assert.equal(h.updates.length, 1); assert.equal(h.texts.length, 1);
+  assert.equal(h.bot.status().active, 0); assert.equal(h.bot.status().pending, 0); assert.equal(h.waiterCalls(), 0);
 });

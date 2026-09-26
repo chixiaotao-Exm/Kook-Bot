@@ -1,7 +1,7 @@
 import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { KookGateway } from './kook-gateway.js';
-import { createAuthorResolver } from './kook-identity.js';
+import { createAuthorResolver, createButtonAuthorResolver } from './kook-identity.js';
 import { atomicJson } from './storage.js';
 import { calculate, parseCalculationRequest, CalculatorError } from './calculator.js';
 
@@ -54,13 +54,13 @@ async function bounded(operation, { signal, timeoutMs, code }) {
 
 /** An independent menu and arithmetic bot. Receipts contain no message text or profiles. */
 export class MenuBot {
-  #sendMenu; #sendText; #waiter; #channelIds; #pageCount; #now; #writeState; #logger; #file; #resolveAuthor;
+  #sendMenu; #sendText; #waiter; #searchPages; #resolveButtonAuthor; #channelIds; #pageCount; #now; #writeState; #logger; #file; #resolveAuthor;
   #gateway; #seen = new Map(); #channelTimes = new Map(); #userTimes = new Map();
   #queue = Promise.resolve(); #pending = 0; #active = 0; #ready = false; #closed = false;
   #controller = new AbortController(); #lastGlobalAt = null; #storageTimeoutMs; #sendTimeoutMs;
-  #lastError = null; #lastReplyAt = null; #counts = { requests: 0, replies: 0, failures: 0, rejected: 0 };
+  #lastError = null; #lastReplyAt = null; #counts = { requests: 0, replies: 0, failures: 0, rejected: 0, pageUpdates: 0 };
 
-  constructor({ token, channelIds, pageCount = 8, sendMenu, sendText, waiter, logger = () => {}, dataDir,
+  constructor({ token, channelIds, pageCount = 8, sendMenu, sendText, waiter, searchPages, resolveButtonAuthor, logger = () => {}, dataDir,
     now = Date.now, Gateway = KookGateway, fetchImpl = fetch, resolveAuthor,
     writeState = atomicJson, storageTimeoutMs = 5000, sendTimeoutMs = 90_000 } = {}) {
     if (typeof token !== 'string' || !token.trim() || /[\r\n]/.test(token)
@@ -68,16 +68,21 @@ export class MenuBot {
       || !channelIds.every(validId) || typeof sendMenu !== 'function'
       || (sendText !== undefined && typeof sendText !== 'function')
       || (waiter !== undefined && (typeof waiter?.accepts !== 'function' || typeof waiter?.reply !== 'function' || typeof sendText !== 'function'))
+      || (searchPages !== undefined && (typeof searchPages?.create !== 'function' || typeof searchPages?.bind !== 'function'
+        || typeof searchPages?.resolve !== 'function' || typeof searchPages?.context !== 'function' || typeof sendText?.update !== 'function'))
+      || (resolveButtonAuthor !== undefined && typeof resolveButtonAuthor !== 'function')
       || !Number.isInteger(pageCount) || pageCount < 1 || pageCount > 8
       || typeof dataDir !== 'string' || !dataDir || typeof now !== 'function'
       || typeof writeState !== 'function' || !Number.isInteger(storageTimeoutMs) || storageTimeoutMs < 1
       || storageTimeoutMs > 5000 || !Number.isInteger(sendTimeoutMs) || sendTimeoutMs < 1 || sendTimeoutMs > 90_000)
       throw new Error('Invalid menu bot configuration');
     this.#sendMenu = sendMenu; this.#sendText = sendText; this.#waiter = waiter; this.#channelIds = new Set(channelIds); this.#pageCount = pageCount;
+    this.#searchPages = searchPages;
     this.#logger = logger; this.#now = now; this.#writeState = writeState;
     this.#file = path.join(dataDir, 'menu-receipts.json');
     this.#storageTimeoutMs = storageTimeoutMs; this.#sendTimeoutMs = sendTimeoutMs;
     this.#resolveAuthor = resolveAuthor ?? createAuthorResolver({ token, fetchImpl, now });
+    this.#resolveButtonAuthor = resolveButtonAuthor ?? createButtonAuthorResolver({ token, channelIds, fetchImpl, now });
     this.#gateway = new Gateway({ token, fetchImpl, logger, now, eventTimeoutMs: 120_000,
       onEvent: (event, options) => this.handle(event, options) });
   }
@@ -123,6 +128,21 @@ export class MenuBot {
 
   handle(event, { signal, botId = this.#gateway.snapshot().botId } = {}) {
     if (!this.#ready || this.#closed || signal?.aborted || this.#pending >= 8) return Promise.resolve();
+    if (event?.type === 255 && event.extra?.type === 'message_btn_click') {
+      const body = event.extra.body, info = body?.user_info;
+      if (!this.#searchPages || !body || !this.#channelIds.has(body.target_id) || !validId(body.user_id)
+        || !validId(botId) || body.user_id === botId || !validMessageId(body.msg_id) || !validMessageId(event.msg_id)
+        || !this.#validTime(event.msg_timestamp) || typeof body.value !== 'string'
+        || !/^menu-page:[A-Za-z0-9:_-]{1,246}$/.test(body.value)
+        || (info !== undefined && (!info || typeof info !== 'object' || Array.isArray(info)
+          || (info.id !== undefined && info.id !== body.user_id) || (info.bot !== undefined && info.bot !== false)))) return Promise.resolve();
+      const destination = this.#searchPages.resolve(body.value, { channelId: body.target_id, messageId: body.msg_id });
+      if (!destination || destination.error === 'invalid') return Promise.resolve();
+      const context = this.#searchPages.context(body.value, { channelId: body.target_id, messageId: body.msg_id });
+      return this.#enqueue({ kind: 'page', channelId: body.target_id, userId: body.user_id, guildId: context?.guildId,
+        messageId: event.msg_id, timestamp: event.msg_timestamp, verifyAuthor: info?.bot !== false,
+        cardMessageId: body.msg_id, buttonValue: body.value }, signal);
+    }
     const author = event?.extra?.author;
     if (!event || event.channel_type !== 'GROUP' || ![1, 9].includes(event.type)
       || !this.#channelIds.has(event.target_id) || !validId(event.author_id) || !validId(botId)
@@ -139,6 +159,10 @@ export class MenuBot {
       messageId: event.msg_id, timestamp: event.msg_timestamp, verifyAuthor: author.bot === undefined,
       kind: pageIndices ? 'menu' : calculation ? 'calculator' : 'waiter', pageIndices,
       waiterText: waiterRequest ? event.content : undefined, calculationText: calculation ? calculationText(calculation) : undefined };
+    return this.#enqueue(input, signal);
+  }
+
+  #enqueue(input, signal) {
     this.#pending++;
     const operationSignal = signal ? AbortSignal.any([signal, this.#controller.signal]) : this.#controller.signal;
     const operation = this.#queue.then(() => this.#receive(input, operationSignal));
@@ -162,10 +186,12 @@ export class MenuBot {
     if (this.#seen.has(input.messageId)) return;
     if (this.#seen.size >= MAX_RECEIPTS) { this.#lastError = 'receipt_capacity'; this.#counts.rejected++; return; }
     if (input.verifyAuthor) {
-      if (!validId(input.guildId)) return;
+      if (input.kind !== 'page' && !validId(input.guildId)) return;
       let author;
-      try { author = await bounded(() => this.#resolveAuthor({ userId: input.userId, guildId: input.guildId }),
-        { signal, timeoutMs: 5500, code: 'identity_timeout' }); }
+      try { author = await bounded(() => input.kind === 'page'
+        ? this.#resolveButtonAuthor({ userId: input.userId, guildId: input.guildId, channelId: input.channelId, signal })
+        : this.#resolveAuthor({ userId: input.userId, guildId: input.guildId }),
+        { signal, timeoutMs: input.kind === 'page' ? 8000 : 5500, code: 'identity_timeout' }); }
       catch { return; }
       if (!author || author.id !== input.userId || author.bot !== false || signal.aborted || this.#closed
         || !this.#validTime(input.timestamp)) return;
@@ -183,7 +209,7 @@ export class MenuBot {
     if (this.#closed || signal.aborted || !this.#validTime(input.timestamp)) return;
     const time = this.#now();
     const channelKey = `${input.kind}:${input.channelId}`, userKey = `${input.kind}:${input.userId}`;
-    const cooldown = input.kind === 'menu' ? 10_000 : 3000;
+    const cooldown = input.kind === 'menu' ? 10_000 : input.kind === 'page' ? 1000 : 3000;
     if ((this.#lastGlobalAt !== null && time < this.#lastGlobalAt + 1000)
       || (this.#channelTimes.has(channelKey) && time < this.#channelTimes.get(channelKey) + cooldown)
       || (this.#userTimes.has(userKey) && time < this.#userTimes.get(userKey) + cooldown)) {
@@ -194,10 +220,29 @@ export class MenuBot {
     const controller = new AbortController();
     const sendSignal = AbortSignal.any([signal, controller.signal]);
     try {
-      const send = input.kind === 'menu'
+      const send = input.kind === 'page'
+        ? async () => {
+          const page = this.#searchPages.resolve(input.buttonValue, { channelId: input.channelId, messageId: input.cardMessageId });
+          if (!page || page.error === 'invalid') return;
+          if (page.error === 'expired') return this.#sendText({ channelId: input.channelId,
+            title: '中文菜单 · 菜品搜索', text: '这张搜索卡片的按钮已失效，请重新发送“搜索鱼”或原搜索词获取新卡片。' }, { signal: sendSignal });
+          const updated = await this.#sendText.update({ channelId: input.channelId, messageId: input.cardMessageId,
+            title: page.title, text: page.text, buttons: page.buttons }, { signal: sendSignal });
+          if (!sendSignal.aborted) this.#counts.pageUpdates++;
+          return updated;
+        }
+        : input.kind === 'menu'
         ? () => this.#sendMenu({ channelId: input.channelId, replyMessageId: input.messageId,
           pageIndices: input.pageIndices }, { signal: sendSignal })
         : async () => {
+          const search = input.kind === 'waiter' ? this.#searchPages?.create(input.waiterText,
+            { channelId: input.channelId, guildId: input.guildId }) : null;
+          if (search) {
+            const sent = await this.#sendText({ channelId: input.channelId, replyMessageId: input.messageId,
+              title: search.title, text: search.text, buttons: search.buttons }, { signal: sendSignal });
+            if (search.sessionId && !sendSignal.aborted) this.#searchPages.bind(search.sessionId, sent?.messageId);
+            return sent;
+          }
           const title = input.kind === 'waiter' ? '中文菜单 · 点餐服务员' : '中文菜单 · 计算器';
           const text = input.kind === 'waiter' ? await this.#waiter.reply(input.waiterText, { signal: sendSignal,
             onThinking: async () => { await this.#sendText({ channelId: input.channelId, replyMessageId: input.messageId,
