@@ -54,25 +54,26 @@ async function bounded(operation, { signal, timeoutMs, code }) {
 
 /** An independent menu and arithmetic bot. Receipts contain no message text or profiles. */
 export class MenuBot {
-  #sendMenu; #sendText; #channelIds; #pageCount; #now; #writeState; #logger; #file; #resolveAuthor;
+  #sendMenu; #sendText; #waiter; #channelIds; #pageCount; #now; #writeState; #logger; #file; #resolveAuthor;
   #gateway; #seen = new Map(); #channelTimes = new Map(); #userTimes = new Map();
   #queue = Promise.resolve(); #pending = 0; #active = 0; #ready = false; #closed = false;
   #controller = new AbortController(); #lastGlobalAt = null; #storageTimeoutMs; #sendTimeoutMs;
   #lastError = null; #lastReplyAt = null; #counts = { requests: 0, replies: 0, failures: 0, rejected: 0 };
 
-  constructor({ token, channelIds, pageCount = 8, sendMenu, sendText, logger = () => {}, dataDir,
+  constructor({ token, channelIds, pageCount = 8, sendMenu, sendText, waiter, logger = () => {}, dataDir,
     now = Date.now, Gateway = KookGateway, fetchImpl = fetch, resolveAuthor,
     writeState = atomicJson, storageTimeoutMs = 5000, sendTimeoutMs = 90_000 } = {}) {
     if (typeof token !== 'string' || !token.trim() || /[\r\n]/.test(token)
       || !Array.isArray(channelIds) || channelIds.length < 1 || channelIds.length > 20
       || !channelIds.every(validId) || typeof sendMenu !== 'function'
       || (sendText !== undefined && typeof sendText !== 'function')
+      || (waiter !== undefined && (typeof waiter?.accepts !== 'function' || typeof waiter?.reply !== 'function' || typeof sendText !== 'function'))
       || !Number.isInteger(pageCount) || pageCount < 1 || pageCount > 8
       || typeof dataDir !== 'string' || !dataDir || typeof now !== 'function'
       || typeof writeState !== 'function' || !Number.isInteger(storageTimeoutMs) || storageTimeoutMs < 1
       || storageTimeoutMs > 5000 || !Number.isInteger(sendTimeoutMs) || sendTimeoutMs < 1 || sendTimeoutMs > 90_000)
       throw new Error('Invalid menu bot configuration');
-    this.#sendMenu = sendMenu; this.#sendText = sendText; this.#channelIds = new Set(channelIds); this.#pageCount = pageCount;
+    this.#sendMenu = sendMenu; this.#sendText = sendText; this.#waiter = waiter; this.#channelIds = new Set(channelIds); this.#pageCount = pageCount;
     this.#logger = logger; this.#now = now; this.#writeState = writeState;
     this.#file = path.join(dataDir, 'menu-receipts.json');
     this.#storageTimeoutMs = storageTimeoutMs; this.#sendTimeoutMs = sendTimeoutMs;
@@ -116,6 +117,7 @@ export class MenuBot {
     return { enabled: this.#ready && !this.#closed, channelIds: [...this.#channelIds],
       pageCount: this.#pageCount, pending: this.#pending, active: this.#active,
       ...this.#counts, lastReplyAt: this.#lastReplyAt, lastError: this.#lastError,
+      waiter: this.#waiter?.status?.() ?? { enabled: false },
       gateway: this.#gateway.snapshot() };
   }
 
@@ -130,11 +132,13 @@ export class MenuBot {
       || (author.id !== undefined && author.id !== event.author_id)) return Promise.resolve();
     const pageIndices = parseMenuRequest(event.content, this.#pageCount);
     const calculation = !pageIndices && this.#sendText ? parseCalculationRequest(event.content) : null;
-    if ((!pageIndices && !calculation) || !this.#validTime(event.msg_timestamp)) return Promise.resolve();
-    // Raw input never enters the queue or disk; only a bounded, validated response remains in memory.
+    const waiterRequest = !pageIndices && !calculation && this.#waiter?.accepts(event.content);
+    if ((!pageIndices && !calculation && !waiterRequest) || !this.#validTime(event.msg_timestamp)) return Promise.resolve();
+    // Waiter input is bounded and remains in memory only; receipts never contain message text.
     const input = { channelId: event.target_id, userId: event.author_id, guildId: event.extra.guild_id,
       messageId: event.msg_id, timestamp: event.msg_timestamp, verifyAuthor: author.bot === undefined,
-      kind: pageIndices ? 'menu' : 'calculator', pageIndices, calculationText: calculation ? calculationText(calculation) : undefined };
+      kind: pageIndices ? 'menu' : calculation ? 'calculator' : 'waiter', pageIndices,
+      waiterText: waiterRequest ? event.content : undefined, calculationText: calculation ? calculationText(calculation) : undefined };
     this.#pending++;
     const operationSignal = signal ? AbortSignal.any([signal, this.#controller.signal]) : this.#controller.signal;
     const operation = this.#queue.then(() => this.#receive(input, operationSignal));
@@ -193,8 +197,15 @@ export class MenuBot {
       const send = input.kind === 'menu'
         ? () => this.#sendMenu({ channelId: input.channelId, replyMessageId: input.messageId,
           pageIndices: input.pageIndices }, { signal: sendSignal })
-        : () => this.#sendText({ channelId: input.channelId, replyMessageId: input.messageId,
-          text: input.calculationText }, { signal: sendSignal });
+        : async () => {
+          const title = input.kind === 'waiter' ? '中文菜单 · 点餐服务员' : '中文菜单 · 计算器';
+          const text = input.kind === 'waiter' ? await this.#waiter.reply(input.waiterText, { signal: sendSignal,
+            onThinking: async () => { await this.#sendText({ channelId: input.channelId, replyMessageId: input.messageId,
+              title, text: '正在用 gpt-6-astra 理解你的点餐需求，随后核对原菜单并计算美元金额。' }, { signal: sendSignal }); } }) : input.calculationText;
+          sendSignal.throwIfAborted();
+          return this.#sendText({ channelId: input.channelId, replyMessageId: input.messageId,
+            text, ...(input.kind === 'waiter' ? { title } : {}) }, { signal: sendSignal });
+        };
       await bounded(send,
       { signal: sendSignal, timeoutMs: this.#sendTimeoutMs, code: 'send_timeout' });
       if (!signal.aborted && !this.#closed) { this.#counts.replies++; this.#lastReplyAt = this.#now(); this.#lastError = null; }

@@ -4,6 +4,7 @@ import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { MenuBot, parseMenuRequest } from '../src/menu-bot.js';
+import { createWaiterService } from '../src/waiter-service.js';
 
 const channelId = '1234567890123456', channel2 = '1234567890123457';
 const botId = '900000001', userId = '900000002', guildId = '900000003';
@@ -308,4 +309,140 @@ test('closing cancels calculator send, blocks queued replies and does not store 
   await h.bot.close(); await Promise.all([pending, queued]);
   assert.equal(signal.aborted, true); assert.equal(calls, 1); assert.equal(h.sends.length, 0);
   assert.ok(!(await readFile(path.join(h.dataDir, 'menu-receipts.json'), 'utf8')).includes('77+88'));
+});
+
+const waiterItems = [{ key: 'm1:1', group: '菜单一', code: '1', name: '春卷',
+  spanish: 'LUMPIA', priceCents: 400, aliases: [], uncertain: false }];
+const suggestion = { text: JSON.stringify({ action: 'suggest',
+  items: [{ key: 'm1:1', quantity: 2 }], note: '' }), incomplete: false };
+
+test('waiter help and direct Chinese dishes use waiter header while menu and calculator retain routing', async t => {
+  const texts = []; let modelCalls = 0;
+  const waiter = createWaiterService({ items: waiterItems, client: { generate: async () => { modelCalls++; return suggestion; } } });
+  const h = await setup(t, { waiter, sendText: async input => { texts.push(input); } });
+  await h.bot.handle(event(1, { content: '服务员' }));
+  assert.equal(texts[0].title, '中文菜单 · 点餐服务员');
+  assert.equal(texts[0].channelId, channelId); assert.equal(texts[0].replyMessageId, messageId(1));
+  assert.match(texts[0].text, /中文菜名和数量/);
+  h.setNow(h.now() + 3000);
+  await h.bot.handle(event(2, { content: '春卷2份', msg_timestamp: h.now() }));
+  assert.equal(texts[1].title, '中文菜单 · 点餐服务员');
+  assert.match(texts[1].text, /LUMPIA/); assert.match(texts[1].text, /合计：\$8\.00/);
+  h.setNow(h.now() + 1000);
+  await h.bot.handle(event(3, { content: '计算 4*2', msg_timestamp: h.now() }));
+  assert.match(texts[2].text, /计算结果/); assert.notEqual(texts[2].title, '中文菜单 · 点餐服务员');
+  h.setNow(h.now() + 1000);
+  await h.bot.handle(event(4, { msg_timestamp: h.now() }));
+  assert.equal(h.sends.length, 1); assert.equal(modelCalls, 0);
+});
+
+test('waiter does not call AI or write receipts for unauthorized channels or non-human authors', async t => {
+  let modelCalls = 0;
+  const texts = [];
+  const waiter = createWaiterService({ items: waiterItems, client: { generate: async () => { modelCalls++; return suggestion; } } });
+  const h = await setup(t, { waiter, resolveAuthor: async () => null, sendText: async input => { texts.push(input); } });
+  const patches = [
+    { target_id: '999999999' }, { channel_type: 'PERSON' }, { type: 255 }, { author_id: botId },
+    { author_id: 'bad' }, { msg_id: 'bad' }, { extra: {} },
+    { extra: { author: { bot: true } } }, { extra: { author: { bot: 'false' } } },
+    { extra: { author: { id: botId, bot: false } } },
+    { extra: { guild_id: guildId, author: {} } }, { extra: { author: {} } },
+    { msg_timestamp: h.now() - 300_001 }, { msg_timestamp: h.now() + 60_001 },
+  ];
+  for (const [index, patch] of patches.entries()) await h.bot.handle(event(index + 1, { content: '两个人吃，推荐一下', ...patch }));
+  assert.equal(modelCalls, 0); assert.equal(texts.length, 0); assert.equal(h.sends.length, 0);
+  await assert.rejects(readFile(path.join(h.dataDir, 'menu-receipts.json')), { code: 'ENOENT' });
+});
+
+test('waiter receipt exists before AI and progress or final replies; input and model content remain out of storage', async t => {
+  const input = '两个人吃，推荐一下，private-diet-context';
+  let file, modelCalls = 0;
+  const texts = [];
+  const checkReceipt = async () => assert.deepEqual(JSON.parse(await readFile(file, 'utf8')),
+    { version: 1, receipts: [{ id: messageId(1), at: 1_800_000_000_000 }] });
+  const waiter = createWaiterService({ items: waiterItems, client: { generate: async messages => {
+    await checkReceipt(); modelCalls++;
+    assert.equal(messages[0].content, input);
+    return { ...suggestion, text: JSON.stringify({ ...JSON.parse(suggestion.text), note: 'private-model-output' }) };
+  } } });
+  const h = await setup(t, { waiter, sendText: async payload => { await checkReceipt(); texts.push(payload); } });
+  file = path.join(h.dataDir, 'menu-receipts.json');
+  await h.bot.handle(event(1, { content: input }));
+  assert.equal(modelCalls, 1); assert.equal(texts.length, 2);
+  assert.match(texts[0].text, /gpt-6-astra/); assert.match(texts[1].text, /合计：\$8\.00/);
+  assert.ok(texts.every(payload => payload.title === '中文菜单 · 点餐服务员' && payload.replyMessageId === messageId(1)));
+  const ledger = await readFile(file, 'utf8');
+  for (const privateValue of [input, 'private-diet-context', 'private-model-output', '春卷', 'LUMPIA', 'gpt-6-astra', userId, guildId, channelId])
+    assert.equal(ledger.includes(privateValue), false, privateValue);
+  assert.equal(h.bot.status().replies, 1);
+});
+
+test('waiter never starts when durable receipt write fails', async t => {
+  let calls = 0;
+  const h = await setup(t, {
+    waiter: { accepts: () => true, reply: async () => { calls++; return 'unexpected'; } },
+    sendText: async () => { calls++; }, writeState: async () => { throw new Error('private-write-error'); },
+  });
+  await h.bot.handle(event(1, { content: '春卷2份' }));
+  assert.equal(calls, 0); assert.equal(h.bot.status().enabled, false);
+  assert.equal(h.bot.status().lastError, 'storage_failed');
+});
+
+test('closing aborts waiter generation and suppresses late answers and queued menu sends', async t => {
+  const generation = defer(), entered = defer();
+  const texts = []; let signal;
+  const h = await setup(t, {
+    waiter: { accepts: () => true, reply: async (_, options) => {
+      signal = options.signal; entered.resolve(); return generation.promise;
+    } }, sendText: async input => { texts.push(input); },
+  });
+  const first = h.bot.handle(event(1, { content: '两个人吃，推荐一下' }));
+  await entered.promise;
+  const queued = h.bot.handle(event(2));
+  await h.bot.close(); await Promise.all([first, queued]);
+  assert.equal(signal.aborted, true); assert.equal(h.bot.status().active, 0);
+  generation.resolve('private-late-ai-reply'); await flush();
+  assert.equal(texts.length, 0); assert.equal(h.sends.length, 0);
+  const ledger = await readFile(path.join(h.dataDir, 'menu-receipts.json'), 'utf8');
+  assert.ok(!ledger.includes('private-late-ai-reply')); assert.ok(!ledger.includes('推荐'));
+});
+
+test('bounded waiter timeout frees a queued menu and suppresses an eventual late AI reply', { timeout: 3000 }, async t => {
+  const generation = defer(), entered = defer();
+  const texts = []; let signal, calls = 0;
+  const h = await setup(t, { sendTimeoutMs: 25,
+    waiter: { accepts: () => true, reply: async (_, options) => {
+      calls++; signal = options.signal; entered.resolve(); return generation.promise;
+    } }, sendText: async input => { texts.push(input); },
+  });
+  const first = h.bot.handle(event(1, { content: '帮我推荐' }));
+  await entered.promise;
+  h.setNow(h.now() + 1000);
+  const menu = h.bot.handle(event(2, { msg_timestamp: h.now() }));
+  await Promise.all([first, menu]);
+  assert.equal(signal.aborted, true); assert.equal(h.bot.status().active, 0); assert.equal(h.bot.status().pending, 0);
+  assert.equal(h.sends.length, 1); assert.equal(h.sends[0].input.replyMessageId, messageId(2));
+  assert.equal(h.bot.status().failures, 1); assert.equal(h.bot.status().replies, 1);
+  generation.resolve('late-reply-after-timeout'); await flush();
+  assert.equal(texts.length, 0);
+  await h.bot.handle(event(1, { content: '帮我推荐', msg_timestamp: h.now() }));
+  assert.equal(calls, 1);
+});
+
+test('waiter retries and restart replay share durable deduplication with other bot features', async t => {
+  let calls = 0;
+  const texts = [];
+  const h = await setup(t, {
+    waiter: { accepts: () => true, reply: async () => { calls++; return '点餐确认'; } },
+    sendText: async input => { texts.push(input); },
+  });
+  const order = event(1, { content: '春卷2份' });
+  await Promise.all([h.bot.handle(order), h.bot.handle(order)]);
+  assert.equal(calls, 1); assert.equal(texts.length, 1);
+  const again = await new MenuBot(h.config).init(); t.after(() => again.close());
+  h.setNow(h.now() + 20_000);
+  await again.handle({ ...order, msg_timestamp: h.now() });
+  await again.handle(event(1, { content: '计算 2+2', msg_timestamp: h.now() }));
+  await again.handle(event(1, { msg_timestamp: h.now() }));
+  assert.equal(calls, 1); assert.equal(texts.length, 1); assert.equal(h.sends.length, 0);
 });
