@@ -2,7 +2,7 @@ const MAX_INPUT = 1200;
 const MAX_ITEMS = 12;
 const MAX_QUANTITY = 99;
 const MAX_REPLY = 1900;
-const GROUPS = new Set(['菜单一', '菜单二', '饮品', '套餐']);
+const GROUPS = new Set(['菜单一', '菜单二', '饮品', '套餐', '冰淇淋']);
 const COUNT = '[+-]?(?:\\d+(?:[./]\\d+)?|[零〇一二两三四五六七八九十百半]+)';
 const UNIT = '(?:份|个|盘|碗|瓶|杯|听|罐|套)';
 const AFTER_COUNT = new RegExp(`^(.*?)(?:[x×*]\\s*)?(${COUNT})\\s*(${UNIT})?$`, 'iu');
@@ -59,7 +59,7 @@ export function createWaiter(catalog) {
   const byName = new Map();
   for (const original of catalog) {
     if (!original || typeof original !== 'object' || typeof original.key !== 'string'
-      || !/^(?:m[12]|drink|combo):[1-9]\d{0,2}[a-c]?$/iu.test(original.key)
+      || !/^(?:m[12]|drink|combo|ice):[1-9]\d{0,2}[a-c]?$/iu.test(original.key)
       || byKey.has(original.key) || !GROUPS.has(original.group)
       || typeof original.code !== 'string' || !/^(?:[1-9]\d{0,2}[a-c]?|[a-z][a-z0-9_-]{0,15})$/iu.test(original.code)
       || typeof original.name !== 'string' || !original.name.trim() || original.name.length > 120
@@ -190,7 +190,7 @@ export function createWaiter(catalog) {
     if (!input) return null;
     const requests = segmentInput(input);
     if (requests.length > MAX_ITEMS) return invalidResult(`每次最多核对 ${MAX_ITEMS} 项，请分批发送。`);
-    if (!hasOrderPrefix && !requests.some(request => request.candidates.length) && !/^(?:m[12]:|drink:|combo:|菜单[一二]|饮品\d|套餐\d)/iu.test(input)) return null;
+    if (!hasOrderPrefix && !requests.some(request => request.candidates.length) && !/^(?:m[12]:|drink:|combo:|ice:|菜单[一二]|饮品\d|套餐\d)/iu.test(input)) return null;
     return finish(requests);
   }
 

@@ -27,12 +27,15 @@ function calculationText(request) {
 }
 
 export function parseMenuRequest(content, pageCount = 8) {
-  if (typeof content !== 'string' || content.length > 32) return null;
-  const match = /^(?:中文|双语|中西双语)?菜单(?:\s*([1-8１-８一二三四五六七八]))?\s*$/.exec(content.trim());
+  if (typeof content !== 'string' || content.length > 32
+    || !Number.isInteger(pageCount) || pageCount < 1 || pageCount > 9) return null;
+  const text = content.trim();
+  if (pageCount >= 9 && /^(?:冰淇淋菜单|冰激凌菜单|冰淇淋口味|冰淇淋有哪些口味)$/.test(text)) return [8];
+  const match = /^(?:中文|双语|中西双语)?菜单(?:\s*([1-9１-９一二三四五六七八九]))?\s*$/.exec(text);
   if (!match) return null;
   if (!match[1]) return Array.from({ length: pageCount }, (_, index) => index);
   const label = match[1].normalize('NFKC');
-  const page = /^[1-8]$/.test(label) ? Number(label) : '一二三四五六七八'.indexOf(label) + 1;
+  const page = /^[1-9]$/.test(label) ? Number(label) : '一二三四五六七八九'.indexOf(label) + 1;
   return page > 0 && page <= pageCount ? [page - 1] : null;
 }
 
@@ -71,7 +74,7 @@ export class MenuBot {
       || (searchPages !== undefined && (typeof searchPages?.create !== 'function' || typeof searchPages?.bind !== 'function'
         || typeof searchPages?.resolve !== 'function' || typeof searchPages?.context !== 'function' || typeof sendText?.update !== 'function'))
       || (resolveButtonAuthor !== undefined && typeof resolveButtonAuthor !== 'function')
-      || !Number.isInteger(pageCount) || pageCount < 1 || pageCount > 8
+      || !Number.isInteger(pageCount) || pageCount < 1 || pageCount > 9
       || typeof dataDir !== 'string' || !dataDir || typeof now !== 'function'
       || typeof writeState !== 'function' || !Number.isInteger(storageTimeoutMs) || storageTimeoutMs < 1
       || storageTimeoutMs > 5000 || !Number.isInteger(sendTimeoutMs) || sendTimeoutMs < 1 || sendTimeoutMs > 90_000)

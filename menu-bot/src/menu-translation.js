@@ -1,7 +1,7 @@
 const MAX_INPUT = 800;
 const MAX_ITEMS = 12;
 const MAX_REPLY = 1900;
-const NON_NAME_INTENT = /搜索|查找|查询|推荐|建议|多少钱|多少美元|价格|价钱|怎么卖|怎么选|有哪些|有什么|适合|过敏|辣不辣|计算|合计|总共|一共|[?？]|(?:m[12]|drink|combo):\s*\d/iu;
+const NON_NAME_INTENT = /搜索|查找|查询|推荐|建议|多少钱|多少美元|价格|价钱|怎么卖|怎么选|有哪些|有什么|适合|过敏|辣不辣|计算|合计|总共|一共|[?？]|(?:m[12]|drink|combo|ice):\s*\d/iu;
 const ORDER_INTENT = /^(?:请(?:给我|帮我|来)?|帮我|帮我们|给我|给我们|我想|我们想|我要|我们要|点餐|点菜|来|要)/u;
 const QUANTITY = /\d|[零〇一二两三四五六七八九十百半]+\s*(?:份|个|盘|碗|瓶|杯|听|罐|套)|[x×*＋+−-]/iu;
 const normalize = value => value.normalize('NFKC').toLowerCase().replace(/\s+/gu, '');
