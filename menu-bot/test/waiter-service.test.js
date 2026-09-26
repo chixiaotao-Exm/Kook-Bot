@@ -97,3 +97,17 @@ test('configuration permits optional AI and pins requested model', () => {
   assert.equal(loadConfig({ ...base, OPENAI_API_KEY: 'private-test-key' }).ai.apiKey, 'private-test-key');
   assert.throws(() => loadConfig({ ...base, OPENAI_MODEL: 'other' }));
 });
+
+test('menu search bypasses AI and processing notice even when AI is unavailable', async () => {
+  const { service, calls } = setup({});
+  let thinking = 0;
+  for (const text of ['搜索鱼', '搜索鱼 第2页', '有哪些鱼', '搜索火星料理', '搜索']) {
+    const result = await service.reply(text, { onThinking: () => { thinking++; } });
+    assert.ok(result.length <= 2000);
+    assert.doesNotMatch(result, /请补充明确的菜名和数量|AI 理解暂时不可用/);
+  }
+  assert.equal(calls.length, 0); assert.equal(thinking, 0);
+  const offline = createWaiterService({ items });
+  assert.match(await offline.reply('搜索春卷'), /LUMPIA/);
+  assert.match(await offline.reply('春卷2份'), /合计：\$8\.00/);
+});
