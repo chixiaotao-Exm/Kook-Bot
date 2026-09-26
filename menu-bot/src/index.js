@@ -5,13 +5,17 @@ import { MenuBot } from './menu-bot.js';
 import { createMenuSender } from './kook-menu.js';
 import { createTextSender } from './kook-text.js';
 import { createWaiterService, loadCatalog } from './waiter-service.js';
+import { createMenuSearch } from './menu-search.js';
+import { createSearchPages } from './search-pages.js';
 
 const config = loadConfig(), menu = await loadMenu(config.assetDir);
 const sendMenu = createMenuSender({ token: config.token, channelIds: config.channelIds, pages: menu.pages });
 const sendText = createTextSender({ token: config.token, channelIds: config.channelIds });
-const waiter = createWaiterService({ items: await loadCatalog(config.assetDir), ai: config.ai });
+const items = await loadCatalog(config.assetDir);
+const waiter = createWaiterService({ items, ai: config.ai });
+const searchPages = createSearchPages({ search: createMenuSearch(items) });
 const bot = await new MenuBot({ token: config.token, channelIds: config.channelIds, pageCount: menu.pages.length,
-  sendMenu, sendText, waiter, dataDir: config.dataDir, logger: entry => console.log(JSON.stringify(entry)) }).init();
+  sendMenu, sendText, waiter, searchPages, dataDir: config.dataDir, logger: entry => console.log(JSON.stringify(entry)) }).init();
 const server = http.createServer((request, response) => {
   if (request.method !== 'GET' || request.url !== '/health') { response.writeHead(404); response.end(); return; }
   const value = bot.status(), connected = value.connected === true || value.gateway?.connected === true;

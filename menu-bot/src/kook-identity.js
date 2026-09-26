@@ -7,6 +7,32 @@ const FAILURE_TTL = 10_000;
 const MAX_CONCURRENT = 2;
 const MAX_PER_MINUTE = 30;
 
+/** Button events can omit user_info and the guild; derive the guild from the allowlisted channel. */
+export function createButtonAuthorResolver({ token, channelIds, fetchImpl = fetch, now = Date.now } = {}) {
+  const author = createAuthorResolver({ token, fetchImpl, now, timeoutMs: 3500 });
+  const allowed = new Set(channelIds), channels = new Map();
+  return async ({ channelId, userId, guildId, signal } = {}) => {
+    if (!allowed.has(channelId) || !ID.test(userId || '') || signal?.aborted) return null;
+    let guild = ID.test(guildId || '') ? guildId : channels.get(channelId);
+    if (!guild) {
+      const controller = new AbortController();
+      const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+      const timer = setTimeout(() => controller.abort(), 3500);
+      try {
+        const response = await fetchImpl('https://www.kookapp.cn/api/v3/channel/view?target_id=' + channelId,
+          { headers: { Authorization: `Bot ${token.trim()}` }, redirect: 'error', signal: combined });
+        if (!response.ok || response.redirected) { cancelBody(response.body); return null; }
+        const data = await readJson(response, combined);
+        if (data?.code !== 0 || data.data?.id !== channelId || !ID.test(data.data?.guild_id || '')) return null;
+        guild = data.data.guild_id; channels.set(channelId, guild);
+      } catch { return null; }
+      finally { clearTimeout(timer); controller.abort(); }
+    }
+    if (signal?.aborted) return null;
+    return author({ userId, guildId: guild });
+  };
+}
+
 function cancelBody(body) {
   try { Promise.resolve(body?.cancel()).catch(() => {}); } catch { /* Closed body. */ }
 }
