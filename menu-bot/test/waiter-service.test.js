@@ -13,9 +13,9 @@ function setup(result) {
   return { service: createWaiterService({ items, client }), calls };
 }
 
-test('all 272 bilingual source entries load, have unique keys and bounded replies', async () => {
-  assert.equal(items.length, 272);
-  assert.equal(new Set(items.map(item => item.key)).size, 272);
+test('all 279 bilingual source entries including ice-cream flavors load with unique keys and bounded replies', async () => {
+  assert.equal(items.length, 279);
+  assert.equal(new Set(items.map(item => item.key)).size, 279);
   const service = createWaiterService({ items });
   for (const item of items) {
     const reply = await service.reply(item.key);

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render the eight bilingual PNG menus from the audited application catalog.
+"""Render eight bilingual PNG menus and the optional ice-cream appendix.
 
 Requires Python 3.10+ and Pillow. Prices/names are never inferred. Run from any
 directory. On Linux pass --cjk-font, --cjk-bold, --latin-font and --latin-bold.
@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import re
 from pathlib import Path
@@ -175,7 +176,7 @@ class Renderer:
             height += layouts[item["key"]]["height"]
         return height
 
-    def render(self, number, spec, rows, details, out):
+    def render(self, number, spec, rows, details, out, total_pages=8):
         image = Image.new("RGB", (WIDTH, HEIGHT), BG)
         draw = ImageDraw.Draw(image)
         records, entry_records = [], []
@@ -254,7 +255,7 @@ class Renderer:
         self.text(draw, footer[0], MARGIN, footer_y, "small", MUTED, records)
         self.text(draw, footer[1], MARGIN, footer_y + 36, "latin_small", MUTED, records)
         self.text(draw, "全部价格以美元 USD 结算 · Precios en USD", MARGIN, HEIGHT - 81, "small", GREEN, records)
-        self.text(draw, f"{number} / 8", WIDTH - MARGIN, HEIGHT - 80, "code", MUTED, records, "right")
+        self.text(draw, f"{number} / {total_pages}", WIDTH - MARGIN, HEIGHT - 80, "code", MUTED, records, "right")
         for text in records:
             left, top, right, bottom = text["bbox"]
             assert 0 <= left <= right <= WIDTH and 0 <= top <= bottom <= HEIGHT, text
@@ -289,6 +290,15 @@ def main():
     assert sum(bool(item.get("uncertain")) for item in items) == 8
     details = {item["key"]: item for item in read_json(args.assets / "menu-combo-details.json")["items"]}
     assert set(details) == {f"combo:{i}" for i in range(1, 11)}
+    # Render the appendix independently; its seven entries must never be mixed
+    # into the original 272-entry layout audit.
+    appendix = None
+    if (args.assets / "catalog-icecream.json").is_file():
+        module_spec = importlib.util.spec_from_file_location("icecream_menu", Path(__file__).with_name("build-icecream-menu.py"))
+        appendix_module = importlib.util.module_from_spec(module_spec)
+        module_spec.loader.exec_module(appendix_module)
+        appendix = appendix_module.render(args, update_manifest=False)
+    total_pages = len(PAGE_SPECS) + (1 if appendix else 0)
     renderer = Renderer(args)
     metadata, pages, seen, previews = [], [], [], []
     markdown = ["# Gran Furama 中文菜单 · 西班牙语对照", "", "全部价格以美元 USD 结算。未标价不推算；待确认原文请询问餐厅。", "", "Precios en USD. Consulte al restaurante los precios omitidos y textos por confirmar.", ""]
@@ -296,7 +306,7 @@ def main():
         rows = [item for item in items if group_num(item)[0] == spec[3] and spec[4] <= group_num(item)[1] <= spec[5]]
         if number == 2:
             rows = [item for item in items if group_num(item)[0] == "drink"] + rows
-        image, meta, page = renderer.render(number, spec, rows, details, out)
+        image, meta, page = renderer.render(number, spec, rows, details, out, total_pages)
         metadata.append(meta)
         pages.append(page)
         seen.extend(item["key"] for item in rows)
@@ -315,17 +325,24 @@ def main():
                 markdown.extend([f"原文待确认 / Texto por confirmar：{item.get('note', '')}", ""])
     assert len(seen) == 272 and set(seen) == {item["key"] for item in items}
     assert len(seen) == len(set(seen)), "Every source entry must appear exactly once"
+    if appendix:
+        appendix_image, appendix_meta, appendix_layout = appendix
+        metadata.append(appendix_meta)
+        markdown.extend(appendix_module.appendix_markdown(appendix_layout))
+        preview = appendix_image.copy()
+        preview.thumbnail((360, 600), Image.Resampling.LANCZOS)
+        previews.append(preview)
     write_json(out / "menu.json", {"title": "Gran Furama 中文菜单 · 西班牙语对照", "pages": metadata, "currency": "USD", "languages": ["zh-CN", "es"], "layoutVersion": 1})
     write_json(out / "bilingual-layout.json", {"version": 1, "entryCount": len(seen), "pricedCount": 184, "unpricedCount": 88, "uncertainCount": 8, "pages": pages})
     (out / "bilingual-menu.md").write_text("\n".join(markdown).rstrip() + "\n", encoding="utf-8")
-    sheet = Image.new("RGB", (360 * 4, 600 * 2), "#e4ece7")
+    sheet = Image.new("RGB", (360 * 4, 600 * ((len(previews) + 3) // 4)), "#e4ece7")
     for index, preview in enumerate(previews):
         sheet.paste(preview, ((index % 4) * 360, (index // 4) * 600))
     args.preview.parent.mkdir(parents=True, exist_ok=True)
     sheet.save(args.preview, "PNG", optimize=True)
     total_bytes = sum((out / page["file"]).stat().st_size for page in metadata)
     assert total_bytes < 32 * 1024 * 1024
-    print(json.dumps({"pages": len(pages), "entries": len(seen), "totalBytes": total_bytes, "preview": str(args.preview)}, ensure_ascii=False))
+    print(json.dumps({"pages": len(metadata), "baseEntries": len(seen), "appendixEntries": appendix[2]["entryCount"] if appendix else 0, "totalBytes": total_bytes, "preview": str(args.preview)}, ensure_ascii=False))
 
 
 if __name__ == "__main__":

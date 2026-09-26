@@ -1,0 +1,477 @@
+{
+  "version": 1,
+  "file": "page-9.png",
+  "size": [
+    1800,
+    3200
+  ],
+  "pageNumber": 9,
+  "entryCount": 7,
+  "pricedCount": 0,
+  "unpricedCount": 7,
+  "uncertainCount": 1,
+  "catalogSha256": "aa8e1a43a6bcd7cffd01c92442229ee7784b1f30fc1958e5f5ee5451d57b74fa",
+  "contentBounds": [
+    84,
+    460,
+    1716,
+    2714
+  ],
+  "entries": [
+    {
+      "key": "ice:1",
+      "rect": [
+        84,
+        460,
+        1716,
+        754
+      ],
+      "chinese": "奥利奥冰淇淋",
+      "spanish": "Oreo",
+      "priceCents": null,
+      "uncertain": false,
+      "source": "icecream-photo-01",
+      "text": [
+        {
+          "text": "ice:1",
+          "font": "code",
+          "fontSize": 31,
+          "bbox": [
+            107,
+            513,
+            177,
+            535
+          ]
+        },
+        {
+          "text": "奥利奥冰淇淋",
+          "font": "zh",
+          "fontSize": 56,
+          "bbox": [
+            310,
+            493,
+            646,
+            548
+          ]
+        },
+        {
+          "text": "Oreo",
+          "font": "es",
+          "fontSize": 48,
+          "bbox": [
+            310,
+            582,
+            417,
+            617
+          ]
+        }
+      ]
+    },
+    {
+      "key": "ice:2",
+      "rect": [
+        84,
+        782,
+        1716,
+        1076
+      ],
+      "chinese": "奶油风味冰淇淋",
+      "spanish": "Mantecado",
+      "priceCents": null,
+      "uncertain": false,
+      "source": "icecream-photo-01",
+      "text": [
+        {
+          "text": "ice:2",
+          "font": "code",
+          "fontSize": 31,
+          "bbox": [
+            107,
+            835,
+            177,
+            857
+          ]
+        },
+        {
+          "text": "奶油风味冰淇淋",
+          "font": "zh",
+          "fontSize": 56,
+          "bbox": [
+            310,
+            815,
+            702,
+            870
+          ]
+        },
+        {
+          "text": "Mantecado",
+          "font": "es",
+          "fontSize": 48,
+          "bbox": [
+            310,
+            904,
+            549,
+            939
+          ]
+        }
+      ]
+    },
+    {
+      "key": "ice:3",
+      "rect": [
+        84,
+        1104,
+        1716,
+        1398
+      ],
+      "chinese": "巧克力奥利奥冰淇淋",
+      "spanish": "Choco Oreo",
+      "priceCents": null,
+      "uncertain": false,
+      "source": "icecream-photo-01",
+      "text": [
+        {
+          "text": "ice:3",
+          "font": "code",
+          "fontSize": 31,
+          "bbox": [
+            107,
+            1157,
+            177,
+            1179
+          ]
+        },
+        {
+          "text": "巧克力奥利奥冰淇淋",
+          "font": "zh",
+          "fontSize": 56,
+          "bbox": [
+            310,
+            1137,
+            814,
+            1192
+          ]
+        },
+        {
+          "text": "Choco Oreo",
+          "font": "es",
+          "fontSize": 48,
+          "bbox": [
+            310,
+            1226,
+            570,
+            1261
+          ]
+        }
+      ]
+    },
+    {
+      "key": "ice:4",
+      "rect": [
+        84,
+        1426,
+        1716,
+        1720
+      ],
+      "chinese": "Toddy可可风味冰淇淋",
+      "spanish": "Toddy",
+      "priceCents": null,
+      "uncertain": false,
+      "source": "icecream-photo-01",
+      "text": [
+        {
+          "text": "ice:4",
+          "font": "code",
+          "fontSize": 31,
+          "bbox": [
+            107,
+            1479,
+            177,
+            1501
+          ]
+        },
+        {
+          "text": "Toddy可可风味冰淇淋",
+          "font": "zh",
+          "fontSize": 56,
+          "bbox": [
+            310,
+            1459,
+            880,
+            1520
+          ]
+        },
+        {
+          "text": "Toddy",
+          "font": "es",
+          "fontSize": 48,
+          "bbox": [
+            310,
+            1548,
+            444,
+            1593
+          ]
+        }
+      ]
+    },
+    {
+      "key": "ice:5",
+      "rect": [
+        84,
+        1748,
+        1716,
+        2042
+      ],
+      "chinese": "口味待确认",
+      "spanish": "Sabor por confirmar",
+      "priceCents": null,
+      "uncertain": true,
+      "source": "icecream-photo-01",
+      "text": [
+        {
+          "text": "ice:5",
+          "font": "code",
+          "fontSize": 31,
+          "bbox": [
+            107,
+            1801,
+            177,
+            1823
+          ]
+        },
+        {
+          "text": "口味待确认",
+          "font": "zh",
+          "fontSize": 56,
+          "bbox": [
+            310,
+            1781,
+            590,
+            1836
+          ]
+        },
+        {
+          "text": "Sabor por confirmar",
+          "font": "es",
+          "fontSize": 48,
+          "bbox": [
+            310,
+            1870,
+            737,
+            1915
+          ]
+        },
+        {
+          "text": "右上方桶盖字样不清，请询问餐厅。",
+          "font": "small",
+          "fontSize": 28,
+          "bbox": [
+            310,
+            1950,
+            758,
+            1980
+          ]
+        }
+      ]
+    },
+    {
+      "key": "ice:6",
+      "rect": [
+        84,
+        2070,
+        1716,
+        2364
+      ],
+      "chinese": "百香果冰淇淋",
+      "spanish": "Parchita",
+      "priceCents": null,
+      "uncertain": false,
+      "source": "icecream-photo-01",
+      "text": [
+        {
+          "text": "ice:6",
+          "font": "code",
+          "fontSize": 31,
+          "bbox": [
+            107,
+            2123,
+            177,
+            2145
+          ]
+        },
+        {
+          "text": "百香果冰淇淋",
+          "font": "zh",
+          "fontSize": 56,
+          "bbox": [
+            310,
+            2103,
+            646,
+            2158
+          ]
+        },
+        {
+          "text": "Parchita",
+          "font": "es",
+          "fontSize": 48,
+          "bbox": [
+            310,
+            2192,
+            487,
+            2227
+          ]
+        }
+      ]
+    },
+    {
+      "key": "ice:7",
+      "rect": [
+        84,
+        2392,
+        1716,
+        2686
+      ],
+      "chinese": "瑞士蛋糕口味冰淇淋",
+      "spanish": "Torta Suiza",
+      "priceCents": null,
+      "uncertain": false,
+      "source": "icecream-photo-01",
+      "text": [
+        {
+          "text": "ice:7",
+          "font": "code",
+          "fontSize": 31,
+          "bbox": [
+            107,
+            2445,
+            177,
+            2467
+          ]
+        },
+        {
+          "text": "瑞士蛋糕口味冰淇淋",
+          "font": "zh",
+          "fontSize": 56,
+          "bbox": [
+            310,
+            2425,
+            814,
+            2480
+          ]
+        },
+        {
+          "text": "Torta Suiza",
+          "font": "es",
+          "fontSize": 48,
+          "bbox": [
+            310,
+            2514,
+            556,
+            2549
+          ]
+        }
+      ]
+    }
+  ],
+  "pageText": [
+    {
+      "text": "GRAN FURAMA",
+      "font": "brand",
+      "fontSize": 31,
+      "bbox": [
+        84,
+        65,
+        317,
+        87
+      ]
+    },
+    {
+      "text": "双语菜单 / Menú bilingüe",
+      "font": "section",
+      "fontSize": 29,
+      "bbox": [
+        1354,
+        65,
+        1716,
+        96
+      ]
+    },
+    {
+      "text": "冰淇淋口味",
+      "font": "title",
+      "fontSize": 72,
+      "bbox": [
+        84,
+        158,
+        444,
+        228
+      ]
+    },
+    {
+      "text": "SABORES DE HELADO",
+      "font": "subtitle",
+      "fontSize": 38,
+      "bbox": [
+        84,
+        263,
+        495,
+        290
+      ]
+    },
+    {
+      "text": "按桶盖标签整理 · 西班牙语原名对照",
+      "font": "small",
+      "fontSize": 28,
+      "bbox": [
+        84,
+        383,
+        527,
+        411
+      ]
+    },
+    {
+      "text": "价格请询问餐厅",
+      "font": "small",
+      "fontSize": 28,
+      "bbox": [
+        84,
+        2860,
+        280,
+        2888
+      ]
+    },
+    {
+      "text": "Precio no indicado. Consulte al restaurante.",
+      "font": "latin_small",
+      "fontSize": 29,
+      "bbox": [
+        84,
+        2911,
+        644,
+        2932
+      ]
+    },
+    {
+      "text": "编号用于查询和选口味 · Códigos para elegir el sabor",
+      "font": "small",
+      "fontSize": 28,
+      "bbox": [
+        84,
+        3119,
+        762,
+        3150
+      ]
+    },
+    {
+      "text": "9 / 9",
+      "font": "page",
+      "fontSize": 24,
+      "bbox": [
+        1669,
+        3120,
+        1716,
+        3137
+      ]
+    }
+  ]
+}

@@ -5,7 +5,7 @@ import { ModelResponsesClient } from './model-client.js';
 import { createMenuSearch } from './menu-search.js';
 import { createMenuTranslation } from './menu-translation.js';
 
-export const WAITER_HELP = '只发中文菜名，例如“猪肉炒饭 薯条 冰淇淋 蛋糕”，直接返回西班牙语原名。\n发送中文菜名和数量，例如“春卷2份，矿泉水2瓶”，按美元（USD）核算。\n查菜品可发“搜索鱼”“搜索鸡肉”，点击卡片按钮翻页。\n同名菜请按回复选择菜单编号，例如 m1:1 2份。\n也可以问：两个人想吃鸡肉和炒饭，推荐一下。\n每条消息单独核算，不累计点单；报价不会提交给餐厅。';
+export const WAITER_HELP = '只发中文菜名，例如“猪肉炒饭 薯条 冰淇淋 蛋糕”，直接返回西班牙语原名。\n发送中文菜名和数量，例如“春卷2份，矿泉水2瓶”，按美元（USD）核算。\n查菜品可发“搜索鱼”“搜索鸡肉”，点击卡片按钮翻页。\n发“冰淇淋菜单”查看口味图片；“奥利奥 百香果”可直接返回对应西语。\n同名菜请按回复选择菜单编号，例如 m1:1 2份。\n也可以问：两个人想吃鸡肉和炒饭，推荐一下。\n每条消息单独核算，不累计点单；报价不会提交给餐厅。';
 const HELP = /^(?:服务员|点餐|点单|点餐帮助|帮助|你好)[！!。\s]*$/;
 const clean = value => typeof value === 'string' && value.trim() && value.length <= 800
   && !/[\u0000-\u0008\u000b-\u001f\u007f]/.test(value);
@@ -24,7 +24,7 @@ function evidenceFragments(input, entries) {
 }
 
 export async function loadCatalog(assetDir) {
-  const catalogs = await Promise.all(['catalog-basic.json', 'catalog-extended.json'].map(async name => {
+  const catalogs = await Promise.all(['catalog-basic.json', 'catalog-extended.json', 'catalog-icecream.json'].map(async name => {
     const data = JSON.parse(await readFile(path.join(assetDir, name), 'utf8'));
     if (data?.version !== 1 || data.currency !== 'USD' || !Array.isArray(data.items)) throw new Error('Invalid catalog');
     return data.items;

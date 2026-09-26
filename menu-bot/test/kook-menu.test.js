@@ -75,6 +75,34 @@ test('selected pages retain original numbering; repeated sends use cached upload
   assert.equal(payload.reply_msg_id, undefined);
 });
 
+test('nine pages stay full width in one bounded card and the ice cream page can be selected alone', async () => {
+  const { calls, fetchImpl } = mockFetch();
+  const send = sender({ pages: Array.from({ length: 9 }, (_, index) => page(index)), fetchImpl });
+  await send({ channelId: CHANNEL });
+  assert.equal(calls.filter(call => call.url.endsWith('asset/create')).length, 9);
+  const payload = JSON.parse(calls.at(-1).options.body);
+  assert.ok(payload.content.length <= 8000);
+  const containers = JSON.parse(payload.content)[0].modules.filter(module => module.type === 'container');
+  assert.equal(containers.length, 9);
+  assert.ok(containers.every(container => container.elements.length === 1 && container.elements[0].type === 'image'));
+  assert.match(payload.content, /9\/9/);
+  await send({ channelId: CHANNEL, pageIndices: [8] });
+  const selected = JSON.parse(calls.at(-1).options.body);
+  assert.equal(JSON.parse(selected.content)[0].modules.filter(module => module.type === 'container').length, 1);
+  assert.match(selected.content, /菜单分类 9 · 9\/9/);
+  assert.equal(calls.filter(call => call.url.endsWith('asset/create')).length, 9);
+});
+
+test('nine individually bounded PNGs cannot exceed the total image byte budget', () => {
+  const pages = Array.from({ length: 9 }, (_, index) => {
+    const value = page(index);
+    const buffer = Buffer.alloc(4 * 1024 * 1024 - 1);
+    value.buffer.copy(buffer);
+    return { ...value, buffer };
+  });
+  assert.throws(() => sender({ pages }), { code: 'INVALID_PAGES' });
+});
+
 test('upload cache expires after one hour and does not survive a backwards clock', async () => {
   const { calls, fetchImpl } = mockFetch();
   let clock = 100;
@@ -270,7 +298,7 @@ test('invalid PNG signatures, dimensions, huge files and page counts fail config
   const wrongDimensions = page(); wrongDimensions.width += 1;
   const oversizedDimensions = page(); oversizedDimensions.width = 20000; oversizedDimensions.buffer.writeUInt32BE(20000, 16);
   const huge = page(); huge.buffer = Buffer.alloc(4 * 1024 * 1024);
-  for (const pages of [[], Array.from({ length: 9 }, () => page()), [wrongMagic], [wrongIhdr], [wrongDimensions],
+  for (const pages of [[], Array.from({ length: 10 }, () => page()), [wrongMagic], [wrongIhdr], [wrongDimensions],
     [oversizedDimensions], [huge], [{ ...page(), title: 'bad\nlabel' }], [{ ...page(), buffer: 'data' }]]) {
     assert.throws(() => sender({ pages }), { code: 'INVALID_PAGES' });
   }
