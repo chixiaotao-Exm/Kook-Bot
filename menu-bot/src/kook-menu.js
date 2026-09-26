@@ -209,7 +209,7 @@ export function createMenuSender({ token, channelIds, pages, fetchImpl = globalT
     try {
       const modules = [
         { type: 'header', text: { type: 'plain-text', content: 'Gran Furama · 中文菜单' } },
-        { type: 'context', elements: [{ type: 'plain-text', content: '点击图片查看原图。' }] },
+        { type: 'context', elements: [{ type: 'plain-text', content: '全部价格以美元（USD）结算。点击图片查看原图。' }] },
       ];
       for (const index of selected) {
         if (controller.signal.aborted) throw cancelled(controller.signal);
