@@ -8,8 +8,8 @@ import { UsageTrendsError } from './usage-trends.js';
 
 const staticRoot = fileURLToPath(new URL('../public/', import.meta.url));
 export class QuotaServer {
-  #keyPresets; #keyUsage; #keyQueryTimes = []; #invitations; #accountLoad; #usageTrends;
-  constructor({ host = '127.0.0.1', port = 18998, publicUrl, sub2apiUrl, dashboard, scheduler, reporter = {}, auth, preview = false, publicAccess = false, publicManagement = false, keyUsage, keyPresets = [], queryBotStatus, activeQuotaStatus, invitations, publicInvites = false, accountLoad, usageTrends }) {
+  #keyPresets; #keyUsage; #keyQueryTimes = []; #invitations; #accountLoad; #usageTrends; #allKeyUsage;
+  constructor({ host = '127.0.0.1', port = 18998, publicUrl, sub2apiUrl, dashboard, scheduler, reporter = {}, auth, preview = false, publicAccess = false, publicManagement = false, keyUsage, keyPresets = [], queryBotStatus, activeQuotaStatus, invitations, publicInvites = false, accountLoad, usageTrends, allKeyUsage }) {
     Object.assign(this, { host, port, dashboard, scheduler, reporter, preview, publicAccess });
     this.publicManagement = publicManagement === true;
     this.publicAccess ||= this.publicManagement;
@@ -19,6 +19,7 @@ export class QuotaServer {
     this.#invitations = invitations;
     this.#accountLoad = accountLoad;
     this.#usageTrends = usageTrends;
+    this.#allKeyUsage = allKeyUsage;
     this.publicInvites = publicInvites === true;
     this.#keyPresets = keyPresets.filter(preset => preset.key).map(({ id, label, key }) => ({ id, label, key: validateUsageKey(key) }));
     this.publicUrl = new URL(publicUrl); this.basePath = this.publicUrl.pathname.replace(/\/$/, '');
@@ -27,7 +28,8 @@ export class QuotaServer {
   }
   json(res, status, body) { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(body)); }
   cookie(res, session) { res.setHeader('Set-Cookie', `quota_session=${session?.id || ''}; HttpOnly; SameSite=Strict; Path=${this.basePath || ''}/; Max-Age=${session ? Math.max(1, Math.floor((session.expires - Date.now()) / 1000)) : 0}${this.publicUrl.protocol === 'https:' ? '; Secure' : ''}`); }
-  status() { return { ...this.dashboard.snapshot(), reporter: this.reportConfig(), preview: this.preview, ...(this.activeQuotaStatus ? { activeQuota: this.activeQuotaStatus() } : {}) }; }
+  status() { return { ...this.dashboard.snapshot(), reporter: this.reportConfig(), preview: this.preview,
+    ...(this.#allKeyUsage ? { allKeyUsage: this.#allKeyUsage.snapshot() } : {}), ...(this.activeQuotaStatus ? { activeQuota: this.activeQuotaStatus() } : {}) }; }
   reportConfig() { return { ...this.scheduler.snapshot(), configured: this.scheduler.snapshot().available, ...this.reporter }; }
   invitationCapabilities(session) {
     const enabled = Boolean(this.#invitations);
