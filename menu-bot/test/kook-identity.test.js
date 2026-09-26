@@ -1,11 +1,42 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createAuthorResolver } from '../src/kook-identity.js';
+import { createAuthorResolver, createButtonAuthorResolver } from '../src/kook-identity.js';
 
 const userId = '123456789', guildId = '987654321';
 const input = { userId, guildId };
 const success = (id = userId, bot = false) => Response.json({ code: 0, data: { id, bot } });
 const defer = () => { let resolve; const promise = new Promise(yes => { resolve = yes; }); return { promise, resolve }; };
+
+test('button actor missing guild is verified through its allowlisted channel and user endpoint', async () => {
+  const channelId = '1234567890123456', calls = [];
+  const resolve = createButtonAuthorResolver({ token: 'private-fixture-token', channelIds: [channelId], fetchImpl: async (url, options) => {
+    calls.push({ url, options });
+    if (url.includes('/channel/view')) return Response.json({ code: 0, data: { id: channelId, guild_id: guildId } });
+    return success();
+  } });
+  assert.deepEqual(await resolve({ channelId, userId }), { id: userId, bot: false });
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].url, 'https://www.kookapp.cn/api/v3/channel/view?target_id=' + channelId);
+  assert.equal(calls[0].options.redirect, 'error');
+  assert.deepEqual(await resolve({ channelId, userId }), { id: userId, bot: false });
+  assert.equal(calls.length, 2);
+  assert.equal(await resolve({ channelId: '99999999', userId }), null);
+});
+
+test('button actor rejects wrong channel metadata, failed lookup and aborted lookup', async () => {
+  const channelId = '1234567890123456';
+  for (const response of [Response.json({ code: 0, data: { id: '11111111', guild_id: guildId } }),
+    Response.json({ code: 0, data: { id: channelId } }), new Response('private-error', { status: 403 }),
+    Response.json({ code: 1, message: 'private-error' }), new Response('x'.repeat(33000))]) {
+    let calls = 0;
+    const resolve = createButtonAuthorResolver({ token: 'private-fixture-token', channelIds: [channelId], fetchImpl: async () => { calls++; return response; } });
+    assert.equal(await resolve({ channelId, userId }), null); assert.equal(calls, 1);
+  }
+  let calls = 0;
+  const controller = new AbortController(); controller.abort();
+  const resolve = createButtonAuthorResolver({ token: 'private-fixture-token', channelIds: [channelId], fetchImpl: async () => { calls++; } });
+  assert.equal(await resolve({ channelId, userId, signal: controller.signal }), null); assert.equal(calls, 0);
+});
 
 test('queries only the fixed identity endpoint and strips unneeded profile details', async () => {
   const calls = [];
