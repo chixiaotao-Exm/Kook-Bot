@@ -25,7 +25,7 @@ function invalidPages() {
 }
 
 function checkedPages(pages) {
-  if (!Array.isArray(pages) || pages.length < 1 || pages.length > 8) throw invalidPages();
+  if (!Array.isArray(pages) || pages.length < 1 || pages.length > 9) throw invalidPages();
   let total = 0;
   return pages.map((page, index) => {
     if (!(page?.buffer instanceof Uint8Array)) throw invalidPages();
@@ -116,7 +116,7 @@ export function createMenuSender({ token, channelIds, pages, fetchImpl = globalT
   }
   const files = checkedPages(pages);
   const authorization = `Bot ${token.trim()}`;
-  // At most one entry per configured page hash (maximum eight), not per user/channel.
+  // At most one entry per configured page hash (maximum nine), not per user/channel.
   const cache = new Map();
   const uploading = new Map();
 

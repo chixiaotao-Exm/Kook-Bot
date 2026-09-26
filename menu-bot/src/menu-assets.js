@@ -13,10 +13,10 @@ async function boundedFile(file, max) {
 export async function loadMenu(assetDir) {
   const manifest = JSON.parse((await boundedFile(path.join(assetDir, 'menu.json'), 16384)).toString('utf8'));
   if (typeof manifest.title !== 'string' || !manifest.title.trim() || manifest.title.length > 100
-    || !Array.isArray(manifest.pages) || manifest.pages.length < 1 || manifest.pages.length > 8) throw new Error('Invalid menu manifest');
+    || !Array.isArray(manifest.pages) || manifest.pages.length < 1 || manifest.pages.length > 9) throw new Error('Invalid menu manifest');
   const pages = [], seen = new Set();
   for (const page of manifest.pages) {
-    if (!page || typeof page.file !== 'string' || !/^page-[1-8]\.png$/.test(page.file) || seen.has(page.file)
+    if (!page || typeof page.file !== 'string' || !/^page-[1-9]\.png$/.test(page.file) || seen.has(page.file)
       || typeof page.title !== 'string' || !page.title.trim() || page.title.length > 100
       || typeof page.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(page.sha256)) throw new Error('Invalid menu page');
     seen.add(page.file);

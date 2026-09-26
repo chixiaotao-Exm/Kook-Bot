@@ -1,0 +1,94 @@
+{
+  "version": 1,
+  "currency": "USD",
+  "items": [
+    {
+      "key": "ice:1",
+      "group": "冰淇淋",
+      "code": "1",
+      "name": "奥利奥冰淇淋",
+      "spanish": "HELADO DE OREO",
+      "originalLabel": "Oreo",
+      "priceCents": null,
+      "aliases": ["奥利奥", "奥利奥口味", "奥利奥口味冰淇淋", "Oreo", "Oreo冰淇淋"],
+      "source": "icecream-photo-01",
+      "uncertain": false
+    },
+    {
+      "key": "ice:2",
+      "group": "冰淇淋",
+      "code": "2",
+      "name": "奶油风味冰淇淋",
+      "spanish": "HELADO DE MANTECADO",
+      "originalLabel": "Mantecado",
+      "priceCents": null,
+      "aliases": ["奶油", "奶油风味", "奶油口味", "奶油冰淇淋", "Mantecado", "Mantecado冰淇淋"],
+      "source": "icecream-photo-01",
+      "uncertain": false,
+      "note": "按桶盖 Mantecado 译为奶油风味；照片不提供具体成分。"
+    },
+    {
+      "key": "ice:3",
+      "group": "冰淇淋",
+      "code": "3",
+      "name": "巧克力奥利奥冰淇淋",
+      "spanish": "HELADO DE CHOCO OREO",
+      "originalLabel": "Choco Oreo",
+      "priceCents": null,
+      "aliases": ["巧克力奥利奥", "巧克力奥利奥口味", "巧克力奥利奥口味冰淇淋", "Choco Oreo", "ChocoOreo", "Choco Oreo冰淇淋"],
+      "source": "icecream-photo-01",
+      "uncertain": false
+    },
+    {
+      "key": "ice:4",
+      "group": "冰淇淋",
+      "code": "4",
+      "name": "Toddy可可风味冰淇淋",
+      "spanish": "HELADO DE TODDY",
+      "originalLabel": "Toddy",
+      "priceCents": null,
+      "aliases": ["Toddy", "Toddy冰淇淋", "Toddy可可", "Toddy可可风味", "Toddy巧克力", "Toddy巧克力冰淇淋", "托迪", "托迪冰淇淋"],
+      "source": "icecream-photo-01",
+      "uncertain": false,
+      "note": "Toddy 为桶盖上的品牌口味名称；照片不提供具体成分。"
+    },
+    {
+      "key": "ice:5",
+      "group": "冰淇淋",
+      "code": "5",
+      "name": "口味待确认冰淇淋",
+      "spanish": "HELADO — SABOR POR CONFIRMAR",
+      "originalLabel": null,
+      "priceCents": null,
+      "aliases": ["口味待确认", "待确认口味", "右上角冰淇淋"],
+      "source": "icecream-photo-01",
+      "uncertain": true,
+      "note": "照片右上桶盖文字无法确认，用户要求先标为口味待确认；不猜测名称或配方。"
+    },
+    {
+      "key": "ice:6",
+      "group": "冰淇淋",
+      "code": "6",
+      "name": "百香果冰淇淋",
+      "spanish": "HELADO DE PARCHITA",
+      "originalLabel": "Parchita",
+      "priceCents": null,
+      "aliases": ["百香果", "百香果口味", "百香果口味冰淇淋", "西番莲", "西番莲冰淇淋", "Parchita", "Parchita冰淇淋"],
+      "source": "icecream-photo-01",
+      "uncertain": false
+    },
+    {
+      "key": "ice:7",
+      "group": "冰淇淋",
+      "code": "7",
+      "name": "瑞士蛋糕口味冰淇淋",
+      "spanish": "HELADO DE TORTA SUIZA",
+      "originalLabel": "Torta Suiza",
+      "priceCents": null,
+      "aliases": ["瑞士蛋糕", "瑞士蛋糕口味", "瑞士蛋糕冰淇淋", "Torta Suiza", "TortaSuiza", "Torta Suiza冰淇淋"],
+      "source": "icecream-photo-01",
+      "uncertain": false,
+      "note": "按桶盖 Torta Suiza 译为瑞士蛋糕口味；照片不提供具体配方。"
+    }
+  ]
+}

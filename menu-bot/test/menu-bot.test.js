@@ -46,6 +46,17 @@ test('matches only exact Chinese menu requests and optional supported page', () 
   assert.equal(parseMenuRequest('菜单 8', 4), null);
 });
 
+test('ninth page and exact ice cream menu commands require the configured ninth page', () => {
+  assert.deepEqual(parseMenuRequest('菜单', 9), [0,1,2,3,4,5,6,7,8]);
+  for (const value of ['菜单9', '菜单 ９', '中文菜单 九', '双语菜单 9', '冰淇淋菜单', '冰激凌菜单', '冰淇淋口味', ' 冰淇淋有哪些口味 ']) {
+    assert.deepEqual(parseMenuRequest(value, 9), [8], value);
+    assert.equal(parseMenuRequest(value, 8), null, value);
+  }
+  for (const value of ['冰淇淋', '冰激凌', '我要冰淇淋菜单', '冰淇淋菜单 1', '菜单10', '菜单十'])
+    assert.equal(parseMenuRequest(value, 9), null, value);
+  for (const pageCount of [0, 10, 1.5, Infinity, '9']) assert.equal(parseMenuRequest('菜单', pageCount), null);
+});
+
 test('starts without sending; gateway handler uses fixed channel and sends all pages', async t => {
   const h = await setup(t);
   await h.bot.start(); assert.equal(h.sends.length, 0);
@@ -59,6 +70,25 @@ test('single page uses zero-based index and accepts kmarkdown', async t => {
   const h = await setup(t);
   await h.bot.handle(event(1, { type: 9, content: '菜单 8' }));
   assert.deepEqual(h.sends[0].input.pageIndices, [7]);
+});
+
+test('configured nine-page menu routes ice cream aliases to images while bare ice cream reaches the waiter', async t => {
+  const texts = [], waiterInputs = [];
+  const h = await setup(t, { pageCount: 9, sendText: async input => { texts.push(input); },
+    waiter: { accepts: () => true, reply: async text => { waiterInputs.push(text); return 'HELADO'; } } });
+  await h.bot.handle(event(1));
+  assert.deepEqual(h.sends[0].input.pageIndices, [0,1,2,3,4,5,6,7,8]);
+  for (const [index, content] of ['冰淇淋菜单', '冰激凌菜单', '冰淇淋口味', '冰淇淋有哪些口味', '菜单 九'].entries()) {
+    h.setNow(h.now() + 10_000);
+    await h.bot.handle(event(index + 2, { content, msg_timestamp: h.now() }));
+    assert.deepEqual(h.sends.at(-1).input.pageIndices, [8]);
+  }
+  assert.equal(h.sends.length, 6); assert.equal(texts.length, 0); assert.equal(waiterInputs.length, 0);
+  h.setNow(h.now() + 1000);
+  await h.bot.handle(event(10, { content: '冰淇淋', msg_timestamp: h.now() }));
+  assert.deepEqual(waiterInputs, ['冰淇淋']); assert.equal(texts[0].text, 'HELADO');
+  assert.equal(h.bot.status().pageCount, 9);
+  assert.throws(() => new MenuBot({ ...h.config, pageCount: 10 }), /Invalid menu bot configuration/);
 });
 
 test('ignores other channels, DMs, bot/system events, malformed identities and old/future events', async t => {
