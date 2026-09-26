@@ -7,6 +7,10 @@ export function loadConfig(env = process.env) {
   if (!channelIds.length || channelIds.length > 20 || channelIds.some(value => !/^\d{5,30}$/.test(value))) throw new Error('Invalid menu channel configuration');
   const host = env.HOST || '127.0.0.1', port = Number(env.PORT || 18995);
   if (!['127.0.0.1', '::1'].includes(host) || !Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('Invalid local listener');
+  const apiKey = env.OPENAI_API_KEY?.trim();
+  if (apiKey && !/^\S{8,512}$/.test(apiKey)) throw new Error('Invalid AI configuration');
+  if (env.OPENAI_MODEL && env.OPENAI_MODEL !== 'gpt-6-astra') throw new Error('Menu waiter requires gpt-6-astra');
   return { token, channelIds, host, port, dataDir: path.resolve(env.DATA_DIR || './data'),
+    ai: apiKey ? { apiKey, baseUrl: env.OPENAI_BASE_URL || 'https://api.openai.com/v1' } : undefined,
     assetDir: path.resolve(env.MENU_ASSET_DIR || fileURLToPath(new URL('../assets/', import.meta.url))) };
 }
