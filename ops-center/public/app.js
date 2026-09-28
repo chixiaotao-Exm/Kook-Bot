@@ -227,7 +227,14 @@ window.createOpsPanel = function(root = document, options = {}) {
     const playback = !status.fresh || status.state === 'unknown' ? '待确认' : status.state === 'degraded' ? '播放异常'
       : bot.playing === true ? '♫ 正在播放' : bot.playing === false ? '当前未播放' : '未提供';
     const transport = ['connected', 'disconnected'].includes(bot.transport) ? `<div><dt>语音连接</dt><dd>${!status.fresh ? '待确认' : bot.transport === 'connected' ? '已连接' : '已断开'}</dd></div>` : '';
-    return `<article class="glass bot-card"><div class="card-heading"><div class="bot-identity"><span class="bot-icon" aria-hidden="true">✦</span><div><h3>${escapeHtml(text(bot.name, bot.id))}</h3><p>${escapeHtml(text(bot.kind, '机器人'))}</p></div></div>${badge(status)}</div><dl class="bot-meta"><div><dt>所在服务器</dt><dd>${escapeHtml(text(host.name, host.id))}</dd></div><div><dt>频道</dt><dd>${escapeHtml(text(bot.channelName, '未提供'))}</dd></div><div><dt>播放状态</dt><dd>${playback}</dd></div>${transport}<div><dt>最近观测</dt><dd>${escapeHtml(stamp(host.observedAt || host.lastSeenAt))}</dd></div></dl>${bot.lastError ? `<p class="bot-error">${escapeHtml(text(bot.lastError))}</p>` : ''}</article>`;
+    const seconds = bot.uptimeSeconds, runtimeKnown = status.fresh && ['online','offline','degraded'].includes(status.state);
+    const total = runtimeKnown && typeof seconds === 'number' && Number.isFinite(seconds) && seconds >= 0 && seconds <= 1e12 ? Math.floor(seconds) : null;
+    const days = Math.floor(total / 86400), hours = Math.floor(total / 3600) % 24, minutes = Math.floor(total / 60) % 60;
+    const duration = total === null ? status.fresh ? '待确认' : '待确认（样本过期）'
+      : `${days ? `${days} 天 ` : ''}${hours ? `${hours} 小时 ` : ''}${minutes || days || hours ? `${minutes} 分` : `${total} 秒`}`;
+    const started = time(bot.startedAt), startedLabel = runtimeKnown && Number.isFinite(started) && started >= 0 && started <= currentTime() + 60000 ? stamp(bot.startedAt) : '待确认';
+    const runtime = bot.kind === 'music' ? `<div><dt>运行时长（采样）</dt><dd>${escapeHtml(duration)}</dd></div><div><dt>本次启动</dt><dd>${escapeHtml(startedLabel)}</dd></div>` : '';
+    return `<article class="glass bot-card"><div class="card-heading"><div class="bot-identity"><span class="bot-icon" aria-hidden="true">✦</span><div><h3>${escapeHtml(text(bot.name, bot.id))}</h3><p>${escapeHtml(text(bot.kind, '机器人'))}</p></div></div>${badge(status)}</div><dl class="bot-meta"><div><dt>所在服务器</dt><dd>${escapeHtml(text(host.name, host.id))}</dd></div><div><dt>频道</dt><dd>${escapeHtml(text(bot.channelName, '未提供'))}</dd></div><div><dt>播放状态</dt><dd>${playback}</dd></div>${transport}${runtime}<div><dt>最近观测</dt><dd>${escapeHtml(stamp(host.observedAt || host.lastSeenAt))}</dd></div></dl>${bot.lastError ? `<p class="bot-error">${escapeHtml(text(bot.lastError))}</p>` : ''}</article>`;
   }
   function incidentHtml(item, compact = false) {
     const resolved = item.state === 'resolved';

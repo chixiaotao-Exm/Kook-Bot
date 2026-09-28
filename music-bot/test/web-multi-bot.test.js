@@ -43,6 +43,7 @@ async function fixture(t) {
     runtimes.set(id, runtime); return runtime;
   }
   const summary = (r) => ({ id: r.id, name: r.self?.username || r.id, username: r.self?.username || '', online: Boolean(r.gateway?.ready),
+    startedAt: r.startedAt, uptimeSeconds: r.uptimeSeconds,
     status: r.status, error: r.error, managed: r.managed, guildIds: [...r.config.guilds], context: r.player?.context, playing: false,
     token: r.config.token, config: r.config });
   create('default'); create('second');
@@ -69,6 +70,21 @@ async function fixture(t) {
   t.after(async () => { await web.close(); assert.equal(path.dirname(dir), tmpdir()); assert.ok(path.basename(dir).startsWith('kook-multi-web-')); await rm(dir, { recursive: true, force: true }); });
   return { web, manager, music, runtimes, calls, leases, request, auth };
 }
+
+test('bot list and selected state expose independent uptime with missing or invalid values left unknown', async (t) => {
+  const { request, runtimes } = await fixture(t);
+  Object.assign(runtimes.get('default'), { startedAt: '2026-09-28T08:00:00.000Z', uptimeSeconds: 90061 });
+  let bots = (await (await request('/api/bots')).json()).bots;
+  assert.equal(bots[0].uptimeSeconds, 90061); assert.equal(bots[0].startedAt, '2026-09-28T08:00:00.000Z');
+  assert.equal(bots[1].uptimeSeconds, null); assert.equal(bots[1].startedAt, null);
+  const state = await (await request('/api/state?botId=default')).json();
+  assert.equal(state.bot.uptimeSeconds, 90061);
+  for (const value of [-1, NaN, Infinity, true, '12']) {
+    Object.assign(runtimes.get('second'), { startedAt: 'invalid-date', uptimeSeconds: value });
+    bots = (await (await request('/api/bots')).json()).bots;
+    assert.equal(bots[1].uptimeSeconds, null); assert.equal(bots[1].startedAt, null);
+  }
+});
 
 test('every playback route and activity log belongs to the selected bot', async (t) => {
   const { request, runtimes, calls, leases } = await fixture(t);

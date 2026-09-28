@@ -59,7 +59,12 @@ export class OpsEngine {
         const binding=(host.repairBindings||[]).find(entry=>item.id===entry.probeId||item.id.startsWith(entry.probeId+':'));
         const repairReason=binding&&item.serviceId===binding.serviceId&&(
           item.repairReason==='gateway_offline'&&state==='offline'||item.repairReason==='health_probe_failed'&&state==='unknown')?item.repairReason:null;
+        const runtimeKnown = ['online','offline'].includes(state) && health !== 'unknown';
+        const uptime = runtimeKnown ? number(item.uptimeSeconds, 1e12) : null;
+        const started = typeof item.startedAt === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,6})?(?:Z|[+-]\d\d:\d\d)$/.test(item.startedAt) ? Date.parse(item.startedAt) : NaN;
         return { id: item.id, name: text(item.name) || item.id, kind: text(item.kind, 30), state, health, transport,
+          ...(item.kind === 'music' ? { uptimeSeconds: uptime === null ? null : Math.floor(uptime),
+            startedAt: runtimeKnown && Number.isFinite(started) && started >= 0 && started <= now + 60000 ? iso(started) : null } : {}),
           ...(binding&&item.serviceId===binding.serviceId?{serviceId:binding.serviceId,repairReason}:{}),
           channelName: text(item.channelName), playing: item.playing === true && state === 'online' && health === 'healthy', lastError };
       });
@@ -147,7 +152,8 @@ export class OpsEngine {
       return { id: host.id, name: host.name, observedAt: value?.observedAt || null, lastSeenAt: value?.lastSeenAt || null, maintenance,
         state: maintenance ? 'maintenance' : !valid ? 'unknown' : this.hostProblem(value) ? 'down' : 'up',
         metrics: value?.metrics || {}, services: value?.services || host.services.map(({ token, ...service }) => ({ ...service, activeState: 'unknown', ok: false })),
-        bots: [...(value?.bots || []).map(bot => valid ? bot : { ...bot, state: bot.state === 'stopped' ? 'stopped' : 'unknown', health: 'unknown', transport: null, playing: false }),
+        bots: [...(value?.bots || []).map(bot => valid ? bot : { ...bot, state: bot.state === 'stopped' ? 'stopped' : 'unknown', health: 'unknown', transport: null, playing: false,
+          ...(bot.kind === 'music' ? { uptimeSeconds: null, startedAt: null } : {}) }),
           ...host.services.filter(service => service.expected === 'stopped').map(service => ({ id: `planned:${service.id}`, name: service.name, kind: 'discussion',
             state: valid && value.services.find(item => item.id === service.id)?.activeState === 'inactive' ? 'stopped' : 'unknown', channelName: '', playing: false, lastError: '' }))], history: value?.history || [] };
     }), monitors: this.config.monitors.map(monitor => {
