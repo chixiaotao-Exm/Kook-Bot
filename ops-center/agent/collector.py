@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -20,7 +21,7 @@ import sys
 import tempfile
 import threading
 import time
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit, urljoin
 from urllib.request import build_opener, HTTPCookieProcessor, HTTPRedirectHandler, ProxyHandler, Request
 
@@ -34,6 +35,7 @@ KINDS = {"music", "ai", "quota", "bridge", "broker"}
 STATES = {"online", "offline", "stopped", "unknown"}
 METRIC_FIELDS = ("cpuPercent", "memoryPercent", "diskPercent", "load1", "uptimeSeconds")
 RESULT_MESSAGES = {"succeeded": "服务已重启。", "failed": "重启未执行或服务未能启动。", "unknown": "执行结果未确认，请检查服务状态。"}
+REPAIR_REASONS = {"gateway_offline", "health_probe_failed"}
 
 
 class AgentError(Exception):
@@ -87,6 +89,36 @@ def checked_url(value, server=False):
         raise AgentError("INVALID_CONFIG") from None
 
 
+def local_probe(value):
+    """Only a loopback probe can identify failure of this host's own service."""
+    try:
+        hostname = urlsplit(value).hostname
+        return hostname == "localhost" or ipaddress.ip_address(hostname or "").is_loopback
+    except (ValueError, TypeError):
+        return False
+
+
+def transport_failure(error):
+    # HTTP failures, invalid JSON, authentication and business errors do not
+    # justify restarting the local process. Neither does an unreachable host.
+    if isinstance(error, AgentError):
+        return str(error) == "HTTP_TIMEOUT"
+    if isinstance(error, HTTPError):
+        return False
+    if isinstance(error, URLError):
+        error = error.reason
+    return isinstance(error, TimeoutError) or isinstance(error, OSError) and error.errno in {
+        errno.ECONNREFUSED, errno.ECONNRESET, errno.ECONNABORTED, errno.ETIMEDOUT, errno.EPIPE}
+
+
+def repair_fields(probe, reason=None):
+    # The service mapping comes from validated local configuration, never from
+    # an HTTP health response. The center must independently verify this mapping.
+    if "serviceId" not in probe:
+        return {}
+    return {"serviceId": probe["serviceId"], "repairReason": reason if reason in REPAIR_REASONS else None}
+
+
 def validate_config(value):
     if not isinstance(value, dict) or not isinstance(value.get("hostId"), str) or not IDENTIFIER.fullmatch(value["hostId"]):
         raise AgentError("INVALID_CONFIG")
@@ -104,7 +136,7 @@ def validate_config(value):
     if not isinstance(collect_metrics, bool) or not isinstance(services, list) or len(services) > 30 or not isinstance(probes, list) or len(probes) > 16 \
             or not collect_metrics and services:
         raise AgentError("INVALID_CONFIG")
-    service_ids, units, probe_ids = set(), set(), set()
+    service_ids, running_service_ids, units, probe_ids = set(), set(), set(), set()
     normalized_services, normalized_probes = [], []
     for item in services:
         if not isinstance(item, dict) or not isinstance(item.get("id"), str) or not IDENTIFIER.fullmatch(item["id"]) or item["id"] in service_ids \
@@ -113,6 +145,8 @@ def validate_config(value):
                 or item.get("expected") not in ("running", "stopped") or not isinstance(item.get("restartAllowed"), bool):
             raise AgentError("INVALID_CONFIG")
         service_ids.add(item["id"]); units.add(item["unit"])
+        if item["expected"] == "running":
+            running_service_ids.add(item["id"])
         normalized_services.append({key: item[key] for key in ("id", "name", "unit", "expected", "restartAllowed")})
     for item in probes:
         if not isinstance(item, dict) or not isinstance(item.get("id"), str) or not IDENTIFIER.fullmatch(item["id"]) or item["id"] in probe_ids or item.get("kind") not in KINDS:
@@ -120,7 +154,11 @@ def validate_config(value):
         probe_ids.add(item["id"])
         if "name" in item and (not isinstance(item["name"], str) or not 1 <= len(item["name"]) <= 80):
             raise AgentError("INVALID_CONFIG")
-        normalized_probes.append({"id": item["id"], "kind": item["kind"], "url": checked_url(item.get("url")), **({"name": item["name"]} if "name" in item else {})})
+        if "serviceId" in item and (not isinstance(item["serviceId"], str) or item["serviceId"] not in running_service_ids):
+            raise AgentError("INVALID_CONFIG")
+        normalized_probes.append({"id": item["id"], "kind": item["kind"], "url": checked_url(item.get("url")),
+                                  **({"name": item["name"]} if "name" in item else {}),
+                                  **({"serviceId": item["serviceId"]} if "serviceId" in item else {})})
     return {"serverUrl": checked_url(value.get("serverUrl"), True), "hostId": value["hostId"], "token": token,
             "intervalSeconds": interval, "dataDir": data_dir, "collectMetrics": collect_metrics, "services": normalized_services, "probes": normalized_probes}
 
@@ -387,7 +425,7 @@ class ProbeCollector:
         self.http, self.now, self.secrets = http or JsonHttp(), now, secrets
         self.music_sessions = set()
 
-    def bot(self, probe, identifier=None, name=None, state="unknown", channel=None, playing=None, error="", health=None, transport=None):
+    def bot(self, probe, identifier=None, name=None, state="unknown", channel=None, playing=None, error="", health=None, transport=None, repair_reason=None):
         identity = str(identifier or probe["id"])
         if not IDENTIFIER.fullmatch(identity) or plain(identity, 1000, self.secrets) != identity:
             identity = probe["id"][:60] + ":" + hashlib.sha256(identity.encode("utf-8", errors="replace")).hexdigest()[:32]
@@ -395,7 +433,8 @@ class ProbeCollector:
                 "state": state if state in STATES else "unknown", "channelName": plain(channel, 100, self.secrets),
                 "playing": playing if isinstance(playing, bool) else None, "lastError": plain(error, 200, self.secrets),
                 "health": health if health in ("healthy", "degraded", "unknown") else "healthy" if state in ("online", "stopped") else "degraded" if state == "offline" else "unknown",
-                "transport": transport if transport in ("connected", "disconnected") else None}
+                "transport": transport if transport in ("connected", "disconnected") else None,
+                **repair_fields(probe, repair_reason)}
 
     def connection(self, value):
         if value.get("running") is False or value.get("enabled") is False:
@@ -418,20 +457,25 @@ class ProbeCollector:
                 gateways = value.get("bots") if isinstance(value.get("bots"), list) else [value.get("gateway")]
                 return [self.bot(probe, f"{probe['id']}:{item.get('botId') or index}", item.get("label") or probe.get("name") or probe["id"],
                                  "unknown" if value.get("ok") is False and self.connection(item) == "online" else self.connection(item),
-                                 value.get("channelId"), error=item.get("lastError") or value.get("chat", {}).get("lastError") or "")
+                                 value.get("channelId"), error=item.get("lastError") or value.get("chat", {}).get("lastError") or "",
+                                 repair_reason="gateway_offline" if self.connection(item) == "offline"
+                                 and value.get("running") is not False and value.get("enabled") is not False
+                                 and value.get("chat", {}).get("enabled") is not False else None)
                         for index, item in enumerate(gateways[:32]) if isinstance(item, dict)] or [self.bot(probe)]
             if probe["kind"] == "quota":
                 query = value.get("keyQueryBot")
                 if isinstance(query, dict):
-                    return [self.bot(probe, name=probe.get("name") or "额度查询机器人", state=self.connection(query), error=query.get("lastError") or query.get("queryLastError") or "")]
+                    return [self.bot(probe, name=probe.get("name") or "额度查询机器人", state=self.connection(query), error=query.get("lastError") or query.get("queryLastError") or "",
+                                     repair_reason="gateway_offline" if self.connection(query) == "offline" and value.get("enabled") is not False and value.get("running") is not False else None)]
             if probe["kind"] == "bridge":
                 queue = value.get("queue", {})
                 state = "online" if value.get("status") == "ok" and not queue.get("lastError") else "unknown"
                 return [self.bot(probe, name=probe.get("name") or "GitHub 通知机器人", state=state, error=queue.get("lastError") or "")]
             state = "online" if value.get("status") == "ok" or value.get("ok") is True else "unknown"
             return [self.bot(probe, state=state)]
-        except (OSError, ValueError, TypeError, AttributeError, AgentError):
-            return [self.bot(probe, error="状态暂不可用")]
+        except (OSError, ValueError, TypeError, AttributeError, AgentError) as error:
+            return [self.bot(probe, error="状态暂不可用",
+                             repair_reason="health_probe_failed" if local_probe(probe.get("url")) and transport_failure(error) else None)]
 
     def music(self, probe):
         base = probe["url"].rstrip("/")
@@ -478,7 +522,9 @@ class ProbeCollector:
                 business, issue, playing, transport = "healthy", "", False, None
             result.append(self.bot(probe, f"{probe['id']}:{item.get('id', len(result))}", item.get("name") or item.get("username"), state,
                                    channel, playing if business == "healthy" else False if business == "degraded" else None,
-                                   issue, business, transport if fresh else None))
+                                   issue, business, transport if fresh else None,
+                                   repair_reason="gateway_offline" if fresh and state == "offline"
+                                   and item.get("enabled") is not False and item.get("running") is not False else None))
         return result
 
 
@@ -507,7 +553,8 @@ class Agent:
         for probe in self.config["probes"]:
             if self.stopping.is_set() or time.monotonic() - collected >= 60:
                 bots.append((time.monotonic(), {"id": probe["id"], "name": plain(probe.get("name") or probe["id"], 80), "kind": probe["kind"],
-                                               "state": "unknown", "channelName": "", "playing": None, "lastError": "本轮采集已达到等待上限"}))
+                                               "state": "unknown", "channelName": "", "playing": None, "lastError": "本轮采集已达到等待上限",
+                                               **repair_fields(probe)}))
                 continue
             observed = time.monotonic()
             bots.extend((observed, bot) for bot in self.probes.collect(probe))
@@ -519,7 +566,8 @@ class Agent:
             metrics = {key: None for key in metrics}
             services = [{**service, "activeState": "unknown", "subState": "unknown", "ok": False} for service in services]
         return {"hostId": self.config["hostId"], "observedAt": iso(self.now()), "metrics": metrics, "services": services,
-                "bots": [{**bot, "state": "unknown", "health": "unknown", "transport": None, "playing": None, "lastError": "状态样本已过期"} if finished - at > 120 else bot for at, bot in bots],
+                "bots": [{**bot, "state": "unknown", "health": "unknown", "transport": None, "playing": None, "lastError": "状态样本已过期",
+                          **({"repairReason": None} if "repairReason" in bot else {})} if finished - at > 120 else bot for at, bot in bots],
                 "commandResults": self.ledger.pending()}
 
     def cycle(self):

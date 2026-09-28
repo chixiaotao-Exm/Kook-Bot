@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { OpsError } from './storage.js';
+import { observeRepairs, repairState, repairSnapshot } from './auto-repair.js';
 
 const finite = value => typeof value === 'number' && Number.isFinite(value);
 const number = (value, max = 100) => finite(value) && value >= 0 && value <= max ? value : null;
@@ -55,7 +56,11 @@ export class OpsEngine {
         const health = state === 'unknown' ? 'unknown' : state === 'stopped' ? 'healthy' : state === 'offline' ? 'degraded'
           : item.kind === 'music' && (lastError || item.playing === true && transport === 'disconnected') ? 'degraded'
             : ['healthy', 'degraded', 'unknown'].includes(item.health) ? item.health : 'healthy';
+        const binding=(host.repairBindings||[]).find(entry=>item.id===entry.probeId||item.id.startsWith(entry.probeId+':'));
+        const repairReason=binding&&item.serviceId===binding.serviceId&&(
+          item.repairReason==='gateway_offline'&&state==='offline'||item.repairReason==='health_probe_failed'&&state==='unknown')?item.repairReason:null;
         return { id: item.id, name: text(item.name) || item.id, kind: text(item.kind, 30), state, health, transport,
+          ...(binding&&item.serviceId===binding.serviceId?{serviceId:binding.serviceId,repairReason}:{}),
           channelName: text(item.channelName), playing: item.playing === true && state === 'online' && health === 'healthy', lastError };
       });
     return { observedAt: raw.observedAt, lastSeenAt: iso(now), services, bots, metrics: {
@@ -80,11 +85,19 @@ export class OpsEngine {
         command.message = completed.status === 'succeeded' ? '服务重启命令已完成。' : completed.status === 'failed' ? '服务重启失败，请检查服务器。' : '执行结果待确认，请先核对服务状态。';
       }
       this.expireCommands(draft, now);
+      if (!previous || Date.parse(previous.observedAt) < Date.parse(report.observedAt)) observeRepairs(draft,host,report,previous,this.config,now);
       const commands = [];
       for (const command of draft.commands.filter(item => item.hostId === host.id && item.status === 'pending')) {
         const policy = host.services.find(item => item.id === command.serviceId);
+        if(command.origin==='auto'&&(!policy?.autoRepair||draft.maintenance['host:'+host.id]||this.config.monitors.some(m=>m.repairTarget?.hostId===host.id&&m.repairTarget.serviceId===command.serviceId&&draft.maintenance['monitor:'+m.id]))) {
+          command.status='failed';command.message='自动修复策略或维护状态已暂停执行。';continue;
+        }
         if (!policy?.restartAllowed || policy.expected !== 'running') { command.status = 'failed'; command.message = '服务策略已禁止执行。'; continue; }
         command.status = 'dispatched'; command.dispatchedAt = iso(now);
+        if(command.origin==='auto'){
+          const state=draft.autoRepair?.states[host.id+':'+command.serviceId];
+          if(state?.commandId===command.id){state.phase='restarting';state.message='自动重启已派发，等待执行回执'}
+        }
         commands.push({ id: command.id, serviceId: command.serviceId, action: 'restart', expiresAt: command.expiresAt });
       }
       return { accepted: true, commands };
@@ -107,7 +120,7 @@ export class OpsEngine {
       if (!this.hostFresh(draft.hosts[host.id], now)) throw new OpsError('服务器采集已离线，不能执行重启。', 409);
       this.expireCommands(draft, now);
       if (draft.commands.some(item => item.hostId === host.id && (['pending', 'dispatched'].includes(item.status) || now - Date.parse(item.createdAt) < 60000))) throw new OpsError('此服务器刚收到操作，请稍后再试。', 429);
-      const command = { id: randomUUID(), requestId: input.requestId, hostId: host.id, serviceId: service.id, action: 'restart', status: 'pending', createdAt: iso(now), expiresAt: iso(now + 90000), message: '等待服务器领取。' };
+      const command = { id: randomUUID(), requestId: input.requestId, hostId: host.id, serviceId: service.id, action: 'restart', origin:'manual', status: 'pending', createdAt: iso(now), expiresAt: iso(now + 90000), message: '等待服务器领取。' };
       draft.commands.unshift(command); draft.commands = draft.commands.slice(0, 300);
       draft.audit.unshift({ at: iso(now), action: 'restart_requested', target: `${host.name} / ${service.name}` }); draft.audit = draft.audit.slice(0, 300);
       return structuredClone(command);
@@ -140,6 +153,7 @@ export class OpsEngine {
     }), incidents: data.incidents.slice(0, 100), commands: data.commands.slice(0, 50), audit: data.audit.slice(0, 100),
     notification: { enabled: Boolean(this.send), botName: '思维2', infraChannel: this.config.channelIds.infra, webChannel: this.config.channelIds.web, lastError: this.notificationError },
     queryBot: this.queryBotStatus(), reports: this.reportStatus?.() || { enabled: false, intervalMinutes: 30, nextRunAt: null, lastRunAt: null, channels: {}, lastError: null },
+    autoRepair:repairSnapshot(data,this.config,now),
     storageError: this.store.failed ? '状态存储不可用' : null };
   }
   async monitor(monitor) {
@@ -172,6 +186,26 @@ export class OpsEngine {
     if (!this.send || this.sending || this.store.failed) return;
     this.sending = (async () => {
       for (;;) {
+        const repairMaintenance=(draft,item)=>draft.maintenance['host:'+item.hostId]||this.config.monitors.some(m=>m.repairTarget?.hostId===item.hostId&&m.repairTarget.serviceId===item.serviceId&&draft.maintenance['monitor:'+m.id]);
+        const repair=this.store.data.autoRepair?.events.slice().reverse().find(item=>item.notification==='pending'&&!repairMaintenance(this.store.data,item));
+        if(repair){
+          const claimed=await this.store.transaction(draft=>{
+            const entry=repairState(draft).events.find(item=>item.id===repair.id);
+            if(!entry||entry.notification!=='pending'||repairMaintenance(draft,entry))return null;
+            const current=draft.autoRepair.states[entry.hostId+':'+entry.serviceId];
+            if(entry.phase==='queued'&&['recovered','maintenance','failed','unknown','blocked'].includes(current?.phase)){entry.notification='suppressed';return null}
+            entry.notification='sending';return structuredClone(entry);
+          });
+          if(!claimed)continue;
+          let state='sent';
+          try{
+            await this.send({category:claimed.category,title:claimed.title,theme:claimed.phase==='recovered'?'success':['failed','unknown','blocked'].includes(claimed.phase)?'warning':'info',
+              lines:[claimed.message,`时间：${new Date(claimed.at).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false})}（北京时间）`]});
+            this.notificationError=null;
+          }catch{state='uncertain';this.notificationError='KOOK 修复通知未确认送达，请查看修复记录。'}
+          await this.store.transaction(draft=>{const entry=repairState(draft).events.find(item=>item.id===repair.id);if(entry)entry.notification=state});
+          continue;
+        }
         const record = this.store.data.incidents.find(item => !this.store.data.maintenance[item.targetId] && (item.notified === 'pending' || item.recoveryNotified === 'pending'));
         if (!record) return;
         const key = record.notified === 'pending' ? 'notified' : 'recoveryNotified';

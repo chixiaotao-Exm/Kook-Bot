@@ -3,7 +3,7 @@ import { OPS_CHANNELS, createKookSender, safeOpsText } from './kook.js';
 
 const ID = /^\d{5,30}$/;
 const RECEIPT = /^[a-f0-9-]{16,100}$/i;
-const COMMANDS = new Set(['状态', '服务器状态', '机器人状态', '网站状态', '运维帮助']);
+const COMMANDS = new Set(['状态', '服务器状态', '机器人状态', '网站状态', '修复状态', '运维帮助']);
 const MESSAGE_AGE = 5 * 60000;
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const number = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
@@ -15,7 +15,14 @@ const label = value => NAMES[value] || '未知';
 
 function summary(command, snapshot, category) {
   if (command === '运维帮助') return { category, theme: 'info', title: '运维帮助',
-    lines: ['发送：状态、服务器状态、机器人状态、网站状态。', '只查询已配置的监控状态，不执行服务器命令或启动机器人。'] };
+    lines: ['发送：状态、服务器状态、机器人状态、网站状态、修复状态。', '查询指令只读。自动修复按服务器白名单与冷却策略执行，计划停用服务不会被启动。'] };
+  if(command==='修复状态'){
+    const repair=snapshot?.autoRepair,states=Array.isArray(repair?.states)?repair.states:[],events=Array.isArray(repair?.events)?repair.events:[];
+    return{category,theme:states.some(s=>['failed','blocked','unknown'].includes(s.phase))?'warning':'info',title:'自动修复状态',
+      lines:[repair?.enabled?'自动修复已开启：连续3次异常后重启，连续2次正常确认恢复；15分钟冷却，每服务每小时最多2次。':'自动修复尚未开启。',
+        ...states.filter(s=>!['idle','recovered'].includes(s.phase)).slice(0,5).map(s=>safeOpsText(s.message||'修复状态待确认')),
+        ...events.slice(0,3).map(e=>safeOpsText(`${e.title}：${e.message}`))]};
+  }
   const hosts = Array.isArray(snapshot?.hosts) ? snapshot.hosts.slice(0, 100) : [];
   const monitors = Array.isArray(snapshot?.monitors) ? snapshot.monitors.slice(0, 100) : [];
   const showHosts = command === '服务器状态' || command === '状态' && category === 'infra';

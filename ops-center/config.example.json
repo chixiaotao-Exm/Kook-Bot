@@ -1,13 +1,15 @@
 {
+  "localHostId": "main",
   "hosts": [{
     "id": "main", "name": "主服务器", "token": "replace-with-a-unique-random-token-of-at-least-32-characters",
     "services": [
-      { "id": "quota", "name": "额度看板", "unit": "sub2api-quota-dashboard.service", "expected": "running", "restartAllowed": true },
+      { "id": "quota", "name": "额度看板", "unit": "sub2api-quota-dashboard.service", "expected": "running", "restartAllowed": true, "autoRepair": true },
       { "id": "discussion", "name": "双机器人讨论（计划停用）", "unit": "kook-ai-duet.service", "expected": "stopped", "restartAllowed": false }
-    ]
+    ],
+    "repairBindings": [{ "probeId": "quota", "serviceId": "quota" }]
   }],
   "monitors": [
     { "id": "quota", "name": "额度网页", "url": "https://api.chixiaotao.cn/quota/", "expectedStatus": 200 },
-    { "id": "quota-health", "name": "额度服务健康", "url": "http://127.0.0.1:18998/health", "expectedStatus": 200, "jsonPath": "status", "jsonEquals": "ok" }
+    { "id": "quota-health", "name": "额度服务健康", "url": "http://127.0.0.1:18998/health", "expectedStatus": 200, "jsonPath": "status", "jsonEquals": "ok", "repairTarget": { "hostId": "main", "serviceId": "quota" } }
   ]
 }
