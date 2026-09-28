@@ -104,13 +104,14 @@ const runtimes = new Map();
 function createRuntime(id, name, guildIds = ['10001']) {
   const botConfig = { ...config, guilds: new Set(guildIds), dataDir: path.join(config.dataDir, id) };
   const player = new Player(botConfig, api, music, audio, async () => {});
-  const runtime = { id, name, config: botConfig, api, player, gateway: { ready: true }, self: { id, username: name }, status: 'ready', error: '', managed: id !== 'default' };
+  const runtime = { id, name, config: botConfig, api, player, started: Date.now(), gateway: { ready: true }, self: { id, username: name }, status: 'ready', error: '', managed: id !== 'default' };
   runtimes.set(id, runtime); return runtime;
 }
 const manager = {
   get(id = 'default') { const bot = runtimes.get(id); if (!bot) throw new UserError('机器人不存在，请重新选择。'); return bot; },
   describe(bot) { return this.list().find((entry) => entry.id === bot.id); },
   list() { return [...runtimes.values()].map((bot) => ({ id: bot.id, name: bot.name, username: bot.self.username, online: bot.gateway.ready,
+    startedAt: new Date(bot.started).toISOString(), uptimeSeconds: Math.max(0, Math.floor((Date.now() - bot.started) / 1000)),
     status: bot.status, error: bot.error, managed: bot.managed, guildIds: [...bot.config.guilds], context: bot.player.context, playing: bot.player.snapshot().status === 'playing' })); },
   async withBot(id, fn) { return fn(this.get(id)); },
   async add({ name, token, guildIds }) {
@@ -120,7 +121,7 @@ const manager = {
     return this.list().find((item) => item.id === bot.id);
   },
   async remove(id) { if (id === 'default') throw new UserError('默认机器人不能移除。'); const bot = this.get(id); await bot.features?.close(); await bot.player.shutdown(); runtimes.delete(id); },
-  async retry(id) { const bot = this.get(id); bot.status = 'ready'; bot.gateway.ready = true; return this.list().find((item) => item.id === id); },
+  async retry(id) { const bot = this.get(id); bot.status = 'ready'; bot.gateway.ready = true; bot.started = Date.now(); return this.list().find((item) => item.id === id); },
   async shutdown() { await Promise.all([...runtimes.values()].map(async (bot) => { await bot.features?.close(); await bot.player.shutdown(); })); },
 };
 async function attachFeatures(bot) {

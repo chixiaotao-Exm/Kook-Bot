@@ -7,6 +7,14 @@ const nonnegative = value => typeof value === 'number' && Number.isFinite(value)
 const name = (value, fallback) => safeOpsText(typeof value?.name === 'string' && value.name.trim() ? value.name
   : typeof value?.id === 'string' && value.id ? value.id : fallback, 48) || fallback;
 const rows = value => Array.isArray(value) ? value.filter(item => item && typeof item === 'object' && !Array.isArray(item)) : [];
+function runtimeLabel(bot, current) {
+  if (bot.kind !== 'music') return '';
+  if (!current) return ' · 运行时长待确认（样本过期）';
+  const seconds = nonnegative(bot.uptimeSeconds);
+  if (!['online','offline'].includes(bot.state) || bot.health === 'unknown' || seconds === null || seconds > 1e12) return ' · 运行时长待确认';
+  const total = Math.floor(seconds), days = Math.floor(total / 86400), hours = Math.floor(total / 3600) % 24, minutes = Math.floor(total / 60) % 60;
+  return ` · 已运行${days ? `${days}天` : ''}${hours ? `${hours}小时` : ''}${minutes || days || hours ? `${minutes}分` : `${total}秒`}（采样）`;
+}
 function fresh(value, now, ttl) {
   const time = typeof value === 'string' && value ? Date.parse(value) : NaN;
   return Number.isFinite(time) && now - time >= -60000 && now - time <= ttl;
@@ -79,7 +87,7 @@ export function buildScheduledSummary(snapshot, category, now = Date.now()) {
         else if (bot.state === 'online') state = bot.playing === true ? '在线 · 播放中' : '在线';
         else if (bot.state === 'offline') { state = '离线'; danger ||= !maintenance; }
         else { state = '已停止'; warning = true; }
-        items.push(`${name(bot, '机器人')}：${state}`);
+        items.push(`${name(bot, '机器人')}：${state}${runtimeLabel(bot, current)}`);
       }
       const prefix = `${name(host, '服务器')}｜`;
       sections.push(safeOpsText(prefix + items[0]), ...items.slice(1).map(item => safeOpsText(`↳ ${item}`)));

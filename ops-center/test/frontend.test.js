@@ -105,6 +105,20 @@ test('expired host and monitor observations become unknown and planned stops are
   assert.equal(f.ops.monitorState({ ...monitor, checkedAt: iso(61000) }, NOW).state, 'unknown');
 });
 
+test('music cards show sampled bot uptime without extrapolation and hide it when stale or invalid', async t => {
+  const raw = snapshot();raw.hosts[0].bots[0] = {...raw.hosts[0].bots[0],kind:'music',uptimeSeconds:93784,startedAt:iso(-93784000)};
+  const f = await harness(t,{authenticated:true,fetch:call=>call.route==='snapshot'?response(raw):undefined});
+  assert.match(f.get('bot-list').innerHTML,/运行时长（采样）/);assert.match(f.get('bot-list').innerHTML,/1 天 2 小时 3 分/);
+  f.advance(60000,{runTimers:false});f.ops.render();assert.match(f.get('bot-list').innerHTML,/1 天 2 小时 3 分/);
+  f.advance(60001,{runTimers:false});f.ops.render();assert.match(f.get('bot-list').innerHTML,/待确认（样本过期）/);
+  assert.doesNotMatch(f.get('bot-list').innerHTML,/1 天 2 小时 3 分/);
+  f.ops.state.data.hosts[0].observedAt = new Date(NOW+120001).toISOString();f.ops.state.data.hosts[0].lastSeenAt=f.ops.state.data.hosts[0].observedAt;
+  const bot=f.ops.state.data.hosts[0].bots[0];
+  for(const value of [undefined,null,-1,'100',true,Infinity,1e13]){bot.uptimeSeconds=value;f.ops.render();assert.match(f.get('bot-list').innerHTML,/运行时长（采样）<\/dt><dd>待确认/);}
+  bot.uptimeSeconds=93784;bot.state='unknown';f.ops.render();assert.doesNotMatch(f.get('bot-list').innerHTML,/1 天 2 小时 3 分/);
+  bot.kind='ai';f.ops.render();assert.doesNotMatch(f.get('bot-list').innerHTML,/运行时长（采样）|本次启动/);
+});
+
 test('background visibility pauses GET polling and resumes by aging old data before any new response', async t => {
   let block = false; const gate = deferred(); t.after(() => gate.resolve(response(snapshot())));
   const f = await harness(t, { authenticated: true, fetch: call => call.route === 'snapshot' && block ? gate.promise : undefined });
