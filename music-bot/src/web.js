@@ -6,9 +6,10 @@ import { fileURLToPath } from 'node:url';
 import QRCode from 'qrcode';
 import { WebAuth } from './web-auth.js';
 import { atomicJson, log, UserError } from './util.js';
-import { musicSource } from './music-sources.js';
+import { musicSource, sourceDescriptor, SOURCE_NAMES } from './music-sources.js';
 import { parseMusicInput } from './music-input.js';
 import { qqId } from './qq-music.js';
+import { qishuiId } from './qishui-music.js';
 
 const root = fileURLToPath(new URL('../web/', import.meta.url));
 const mime = { '.html': 'text/html; charset=utf-8', '.css': 'text/css', '.js': 'text/javascript', '.png': 'image/png', '.webp': 'image/webp', '.jpg': 'image/jpeg', '.vrm': 'model/gltf-binary', '.ico': 'image/x-icon', '.svg': 'image/svg+xml', '.md': 'text/plain; charset=utf-8' };
@@ -159,7 +160,7 @@ export class WebConsole {
   }
   safeMessage(value, extraSecrets = []) {
     let result = typeof value === 'string' ? value : '';
-    const secrets = [this.config.token, ...extraSecrets];
+    const secrets = [this.config.token, this.config.qishuiApiToken, ...extraSecrets];
     if (this.manager) {
       for (const item of this.manager.list()) {
         try { secrets.push(this.manager.get(item.id)?.config?.token); } catch {}
@@ -352,7 +353,7 @@ export class WebConsole {
           ...(error.code === 'QQ_RATE_LIMIT' ? { code: 'QQ_RATE_LIMIT', retryAfterSeconds: error.retryAfterSeconds } : {}),
           ...(error.statusCode === 429 && Number.isFinite(error.retryAfterSeconds) ? { retryAfterSeconds: error.retryAfterSeconds } : {}) });
       log('web_request_error', { kind: error.constructor.name });
-      if (!(error instanceof UserError) || /(?:QQ|网易云).*(?:登录|过期|超时|音源|接口)/.test(error.message)) {
+      if (!(error instanceof UserError) || /(?:QQ|网易云|汽水).*(?:登录|过期|超时|音源|接口)/.test(error.message)) {
         this.diagnostics?.record({ botId: requestBotId, level: 'warning', kind: 'request_failed',
           message: error instanceof UserError ? this.safeMessage(error.message, [submittedToken, ...submittedSecrets]) : '控制台请求失败，请检查服务器日志。' });
       }
@@ -361,7 +362,7 @@ export class WebConsole {
   async get(url, actor) {
     const source = musicSource(url.searchParams.get('source') ?? undefined);
     switch (url.pathname) {
-      case '/api/sources': return { sources: [{ id: 'netease', name: '网易云音乐', enabled: true }, { id: 'qq', name: 'QQ音乐', enabled: Boolean(this.music.forSource) }] };
+      case '/api/sources': return { sources: this.music.sources?.() || [sourceDescriptor('netease'), sourceDescriptor('qq', Boolean(this.music.forSource)), sourceDescriptor('qishui', false)] };
       case '/api/bots': return { bots: this.bots(), defaultBotId: 'default' };
       case '/api/features': {
         const runtime = this.runtime(url.searchParams.get('botId') ?? undefined);
@@ -396,7 +397,7 @@ export class WebConsole {
         if (!query || query.length > 200) throw new UserError('请输入 1-200 字的歌名或歌手。');
         if (!this.music.searchAll) throw new UserError('联合搜索暂不可用。');
         const result = await this.cached(`joint-search:${query}`, () => this.music.searchAll(query, 20), 15000);
-        const groups = ['netease', 'qq'].map((id) => ({ source: id, name: id === 'qq' ? 'QQ音乐' : '网易云音乐',
+        const groups = Object.keys(result.results || {}).filter((id) => Object.hasOwn(SOURCE_NAMES, id)).map((id) => ({ source: id, name: SOURCE_NAMES[id],
           tracks: result.results?.[id]?.tracks || [], ...(result.results?.[id]?.error ? { error: this.safeMessage(result.results[id].error) } : {}) }));
         return { groups, tracks: result.tracks || groups.flatMap((group) => group.tracks),
           errors: groups.filter((group) => group.error).map((group) => ({ source: group.source, message: group.error })) };
@@ -425,16 +426,17 @@ export class WebConsole {
         const offsetText = url.searchParams.get('offset') ?? '0';
         const limitText = url.searchParams.get('limit') ?? '50';
         const offset = Number(offsetText); const limit = Number(limitText);
-        if (source === 'qq' ? qqId(id, 'playlist') !== id : !/^[1-9]\d{0,17}$/.test(id)) throw new UserError('请输入有效的歌单 ID。');
+        if (source === 'qq' ? qqId(id, 'playlist') !== id : source === 'qishui' ? qishuiId(id) !== id : !/^[1-9]\d{0,17}$/.test(id)) throw new UserError('请输入有效的歌单 ID。');
         if (!/^\d+$/.test(offsetText) || !/^\d+$/.test(limitText) || !Number.isSafeInteger(offset) ||
             !Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new UserError('歌单分页位置无效，每页可读取 1-100 首歌曲。');
         return this.cached(`source:${source}:playlist:${id}:${offset}:${limit}`, () => this.music.playlistDetails(id, { offset, limit }, source));
       }
       case '/api/account': return this.cached(`source:${source}:account`, async () => {
         const account = await this.music.account(source);
-        return { ...account, status: account.loggedIn ? 'logged_in' : account.expired ? 'expired' : 'logged_out' };
+        return { ...account, status: account.unavailable ? 'unavailable' : account.loggedIn ? 'logged_in' : account.expired ? 'expired' : 'logged_out' };
       }, 30000);
       case '/api/account/qr': {
+        if (source === 'qishui') throw new UserError('汽水音乐由服务器管理登录，暂不支持在此页面扫码。');
         return this.accountExclusive(async () => {
           this.authorizeLegacy(url.pathname, { source }, actor, 'GET');
           if (source === 'netease') return this.qrStatus();
@@ -531,6 +533,7 @@ export class WebConsole {
         if (typeof data.stayConnected !== 'boolean') throw new UserError('常驻设置无效。');
         record(await player.control('stay', data.stayConnected, { checkState: authorize, actorName: actor?.name || '房主' })); break;
       case '/api/account/qr': {
+        if (source === 'qishui') throw new UserError('汽水音乐由服务器管理登录，暂不支持在此页面扫码。');
         if (source === 'qq') {
           if (!['qq', 'wx'].includes(data.type ?? 'qq')) throw new UserError('请选择 QQ 或微信扫码。');
           return this.provider(source).qrCreate(data.type ?? 'qq');
@@ -544,6 +547,7 @@ export class WebConsole {
         return { image, expires: this.qr.expires };
       }
       case '/api/account/logout':
+        if (source === 'qishui') throw new UserError('汽水音乐由服务器管理登录，暂不支持在此页面退出。');
         if (source === 'qq') { await this.provider(source).logout(); this.clearAccountCache(source); this.diagnostics?.invalidateAccount(source, false); this.record('QQ 音乐账号已退出'); break; }
         if (this.config.cookie) throw new UserError('账号由环境变量配置，需先在服务器清空 NETEASE_COOKIE。');
         await unlink(path.join(this.config.dataDir, 'netease-cookie.json')).catch((e) => { if (e.code !== 'ENOENT') throw e; });

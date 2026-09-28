@@ -1,3 +1,4 @@
+import { sourceName, normalizeSource, defaultSources, sourceSupports } from './music-sources.js';
 const escape = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const icon = (name) => `<i data-lucide="${name}"></i>`;
 const seconds = (value) => Number.isFinite(Number(value)) ? Math.max(0, Number(value)) : 0;
@@ -12,7 +13,7 @@ function playerAvailable(bot, player) {
   return Boolean(player && !player.disabled && player.status !== 'unavailable' && !['starting', 'stopping', 'error', 'failed', 'removed'].includes(bot.status));
 }
 
-export function createBotStatus({ api, drawIcons, onControl, onManage, onChanged = () => {} }) {
+export function createBotStatus({ api, drawIcons, onControl, onManage, onChanged = () => {}, getSources = defaultSources }) {
   const $ = (id) => document.getElementById(id);
   const records = new Map(), catalogs = new Map(), pendingCatalogs = new Map();
   const busy = new Set(), feedback = new Map(), revisions = new Map(), reads = new Map(), volumeDrafts = new Map();
@@ -39,7 +40,7 @@ export function createBotStatus({ api, drawIcons, onControl, onManage, onChanged
     return `<div class="status-controls" data-status-part="controls">
       <div class="status-transport" aria-label="播放控制"><button class="secondary" data-status-action="previous" title="播放上一首">${icon('skip-back')}<span>上一首</span></button><button class="secondary status-toggle" data-status-toggle data-status-action="resume">${icon('play')}<span>播放</span></button><button class="secondary" data-status-action="skip" title="播放下一首">${icon('skip-forward')}<span>下一首</span></button></div>
       <label class="status-volume">${icon('volume-2')}<span>音量</span><input type="range" min="0" max="100" step="1" data-status-volume="${escape(id)}" aria-label="机器人音量"><output data-status-volume-output>0%</output></label>
-      <div class="status-shortcuts"><span class="status-caption">快捷歌单</span><div><button class="secondary" data-status-hot="qq">${icon('flame')}QQ音乐热歌榜</button><button class="secondary" data-status-hot="netease">${icon('flame')}网易云热歌榜</button></div><p>整榜追加，最多补至 500 首；当前播放继续。</p></div>
+      <div class="status-shortcuts"><span class="status-caption">快捷歌单</span><div><button class="secondary" data-status-hot="qq">${icon('flame')}QQ音乐热歌榜</button><button class="secondary" data-status-hot="netease">${icon('flame')}网易云热歌榜</button><button class="secondary" data-status-hot="qishui">${icon('flame')}汽水热门歌单</button></div><p>追加到队尾，最多补至 500 首；当前播放继续。</p></div>
       <p class="status-control-hint" data-status-control-hint hidden></p>
       <div class="status-feedback" aria-live="polite" aria-atomic="true"><p data-status-feedback></p><button class="quiet-button" data-status-login hidden>去账号与设置登录${icon('arrow-right')}</button></div>
     </div>`;
@@ -63,7 +64,7 @@ export function createBotStatus({ api, drawIcons, onControl, onManage, onChanged
     previous.disabled = disabled || !player?.canPrevious;
     previous.title = player?.canPrevious ? '播放上一首' : player?.historyCount ? '队列已满，先腾出位置再返回上一首' : '还没有播放过的上一首';
     node.querySelector('[data-status-action="skip"]').disabled = disabled || (!player?.current && !player?.queue?.length);
-    for (const button of node.querySelectorAll('[data-status-hot]')) button.disabled = disabled || Number(player?.capacity) < 1 || permissions && !permissions.manageSite;
+    for (const button of node.querySelectorAll('[data-status-hot]')) button.disabled = disabled || Number(player?.capacity) < 1 || permissions && !permissions.manageSite || !sourceSupports(getSources(), button.dataset.statusHot, 'discover');
     const slider = node.querySelector('[data-status-volume]');
     slider.disabled = disabled;
     const volume = volumeDrafts.get(id)?.value ?? Math.min(100, seconds(player?.volume));
@@ -100,7 +101,7 @@ export function createBotStatus({ api, drawIcons, onControl, onManage, onChanged
       <div class="status-card-heading"><span class="bot-avatar">${icon('bot')}</span><div><h2>${escape(bot.name || bot.username || '音乐机器人')}</h2><span>${bot.managed === false ? '默认机器人' : '独立音乐房'}</span></div><span class="status-pill ${gatewayTone}"><b></b>${escape(gatewayLabel)}</span></div>
       <div class="status-connections"><span>${icon('activity')}机器人连接 <strong>${escape(gatewayLabel)}</strong></span><span>${icon('radio-tower')}语音连接 <strong>${voice}</strong></span></div>
       <div class="status-room"><span class="status-caption">${!unavailable && player.connected ? '所在频道' : '已选频道'}</span><strong>${icon('radio')}${escape(room.channel)}</strong>${room.guild ? `<span>${escape(room.guild)}</span>` : ''}</div>
-      <div class="status-track"><div class="status-track-heading"><span class="status-playback${player?.status === 'playing' ? ' playing' : ''}">${icon(player?.status === 'playing' ? 'audio-lines' : player?.status === 'paused' ? 'pause' : 'music-2')}${playback}</span>${song ? `<span class="source-badge ${song.source === 'qq' ? 'qq' : 'netease'}">${song.source === 'qq' ? 'QQ音乐' : '网易云'}</span>` : ''}</div><h3>${escape(song?.name || (unavailable ? '暂时无法读取歌曲' : '等待下一首好歌'))}</h3><p>${escape(song?.artists || (unavailable ? '稍后会自动重试' : '可以前往控制台点歌'))}</p>${song ? `<div class="status-progress"><progress value="${Math.min(elapsed, Math.max(1, total))}" max="${Math.max(1, total)}" aria-label="${escape(song.name)}播放进度"></progress><span>${duration(elapsed)} / ${duration(total)}</span></div>` : '<div class="status-track-placeholder"></div>'}</div>
+      <div class="status-track"><div class="status-track-heading"><span class="status-playback${player?.status === 'playing' ? ' playing' : ''}">${icon(player?.status === 'playing' ? 'audio-lines' : player?.status === 'paused' ? 'pause' : 'music-2')}${playback}</span>${song ? `<span class="source-badge ${normalizeSource(song.source)}">${sourceName(song.source)}</span>` : ''}</div><h3>${escape(song?.name || (unavailable ? '暂时无法读取歌曲' : '等待下一首好歌'))}</h3><p>${escape(song?.artists || (unavailable ? '稍后会自动重试' : '可以前往控制台点歌'))}</p>${song ? `<div class="status-progress"><progress value="${Math.min(elapsed, Math.max(1, total))}" max="${Math.max(1, total)}" aria-label="${escape(song.name)}播放进度"></progress><span>${duration(elapsed)} / ${duration(total)}</span></div>` : '<div class="status-track-placeholder"></div>'}</div>
       <dl class="status-facts"><div><dt>待播队列</dt><dd>${unavailable ? '—' : `${Array.isArray(player.queue) ? player.queue.length : 0} 首`}</dd></div><div><dt>音量</dt><dd>${unavailable ? '—' : `${Math.min(100, seconds(player.volume))}%`}</dd></div><div><dt>频道常驻</dt><dd>${unavailable ? '—' : player.stayConnected ? '已开启' : '未开启'}</dd></div></dl>
       ${controls(bot.id)}
       <div class="status-card-notes">${note ? `<p class="status-card-note error">${escape(note)}</p>` : ''}${bot.error ? `<p class="status-card-note error">${escape(bot.error)}</p>` : ''}${player?.recoveryError && player.recoveryError !== bot.error ? `<p class="status-card-note error">${escape(player.recoveryError)}</p>` : ''}${context && catalog?.error ? '<p class="status-card-note">频道名称暂时无法更新，保留已知名称或 ID。</p>' : ''}</div>
@@ -201,7 +202,7 @@ export function createBotStatus({ api, drawIcons, onControl, onManage, onChanged
     const player = records.get(id).player;
     if (!player.context) return;
     busy.add(id); revisions.set(id, (revisions.get(id) || 0) + 1);
-    feedback.set(id, { pending: source ? `正在加入${source === 'qq' ? 'QQ音乐' : '网易云'}热歌…` : action === 'volume' ? `正在设置音量 ${value}%…` : '正在处理播放操作…' });
+    feedback.set(id, { pending: source ? `正在加入${sourceName(source)}热门歌单…` : action === 'volume' ? `正在设置音量 ${value}%…` : '正在处理播放操作…' });
     render();
     let attempted = false;
     try {
@@ -214,7 +215,7 @@ export function createBotStatus({ api, drawIcons, onControl, onManage, onChanged
       }
       attempted = true;
       const result = source ? await api('/hot', { botId: id, source, full: true }) : await api('/control', { botId: id, action, ...(value === undefined ? {} : { value }) });
-      const message = source ? (Number.isInteger(result.added) ? `${source === 'qq' ? 'QQ音乐' : '网易云'}热歌已加入 ${result.added} 首。` : result.notice || '热歌已加入队列。') :
+      const message = source ? (Number.isInteger(result.added) ? `${sourceName(source)}已加入 ${result.added} 首。` : result.notice || '热歌已加入队列。') :
         ({ previous: '已切换上一首。', skip: '已切换下一首。', pause: '已暂停，进度已保留。', resume: '已请求继续播放。', volume: `音量已设置为 ${value}%。` })[action];
       feedback.set(id, { text: message });
     } catch (error) {

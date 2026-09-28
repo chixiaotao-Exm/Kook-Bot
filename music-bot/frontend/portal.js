@@ -1,6 +1,7 @@
 import { createIcons, Headphones, UserRound, Radio, ArrowLeft, ArrowRight, QrCode, SlidersHorizontal, Disc3, SkipBack, SkipForward, Pause, Play, Volume2, Search, Users, Copy, X, Music2, ListMusic, RefreshCw, Shuffle, ListX } from 'lucide';
 import { createSessionApi } from './session.js';
 import { takeAccessToken } from './access.js';
+import { sourceName, normalizeSource, defaultSources, sourceDescriptors, sourceSupports } from './music-sources.js';
 const accessToken = takeAccessToken();
 const icons = { Headphones, UserRound, Radio, ArrowLeft, ArrowRight, QrCode, SlidersHorizontal, Disc3, SkipBack, SkipForward, Pause, Play, Volume2, Search, Users, Copy, X, Music2, ListMusic, RefreshCw, Shuffle, ListX };
 const $ = (id) => document.getElementById(id);
@@ -10,14 +11,14 @@ const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&':'&a
 const duration = (value) => { const n = Math.max(0, Number(value) || 0); return `${Math.floor(n / 60)}:${String(Math.floor(n) % 60).padStart(2, '0')}`; };
 const clock = (value) => new Date(value).toLocaleTimeString('zh-CN', { hour:'2-digit', minute:'2-digit' });
 const date = (value) => new Date(value).toLocaleString('zh-CN', { hour12:false });
-const sourceName = (source) => source === 'qq' ? 'QQ 音乐' : '网易云';
-const badge = (source) => `<span class="source-badge ${source === 'qq' ? 'qq' : 'netease'}">${sourceName(source)}</span>`;
+const badge = (source) => `<span class="source-badge ${normalizeSource(source)}">${sourceName(source)}</span>`;
 const roleName = (role) => ({ guest:'访客', member:'网页成员', dj:'DJ', owner:'房主', siteAdmin:'站长' })[role] || '网页成员';
 const cleanPath = decodeURIComponent(location.pathname).match(/^\/room\/([a-zA-Z0-9][a-zA-Z0-9_-]{0,63})\/?$/);
 const botId = cleanPath?.[1] || '';
 const roomPath = (id) => `/room/${encodeURIComponent(id)}`;
 let csrf = '', actor = null, room = null, busy = false, pollTimer, heartbeatTimer, toastTimer, searchTimer, requestSerial = 0, refreshSerial = 0;
 let source = 'netease', lastSource = 'netease', tab = 'queue', searchItems = [], preview = null, renderedQueue = '', renderedMembers = '', searchStatus = '', lastHeartbeat = 0;
+let availableSources = defaultSources();
 let accessTail = Promise.resolve();
 let manageableBotIds = [];
 let catalog = null, catalogPending = null, catalogAttempt = 0;
@@ -41,6 +42,7 @@ function lock(value) {
   busy = value; document.body.classList.toggle('working', value);
   $('identity-button').disabled = value;
   for (const el of document.querySelectorAll('#room-search-form input,#room-search-form button,[data-request],[data-withdraw],[data-control],#room-volume,#room-progress,#room-loop,#create-invite,[data-revoke],[data-revoke-invite]')) el.disabled = value;
+  renderSources();
   if (!value && room) renderRoom();
 }
 async function mutate(task) {
@@ -93,7 +95,7 @@ function renderRoom() {
   $('room-online').textContent = online(room.online); $('room-role').textContent = actor?.siteAdmin ? '站长' : roleName(room.role);
   $('room-playback').textContent = ({playing:'正在播放',paused:'已暂停',idle:'空闲待播',ready:'进度已保留',recovering:'正在恢复'})[p.status] || '暂不可用';
   $('room-current-title').textContent = current?.name || '等待下一首好歌'; $('room-current-artist').textContent = current?.artists || '';
-  $('room-source').textContent = current ? sourceName(current.source) : ''; $('room-source').className = `source-badge ${current?.source === 'qq' ? 'qq' : 'netease'}`; $('room-source').hidden = !current;
+  $('room-source').textContent = current ? sourceName(current.source) : ''; $('room-source').className = `source-badge ${normalizeSource(current?.source)}`; $('room-source').hidden = !current;
   $('room-requester').textContent = current?.requester?.name ? `${current.requester.name} 点的歌${current.mine ? ' · 你的点歌' : ''}` : '';
   const img = $('room-current-cover');
   if (current?.cover && /^https?:\/\//i.test(current.cover)) { if (img.dataset.source !== current.cover) { img.dataset.source = current.cover; img.src = current.cover; img.hidden = false; } }
@@ -153,7 +155,18 @@ async function heartbeat() {
   lastHeartbeat = Date.now();
   try { await api('/room/heartbeat', { botId }); } catch { /* The next presence heartbeat retries without affecting audio. */ }
 }
-function searchLock() { $('room-search-form').querySelectorAll('input,button').forEach((el) => { el.disabled = busy; }); }
+function renderSources() {
+  document.querySelectorAll('[data-source]').forEach((button) => {
+    button.setAttribute('aria-pressed', String(button.dataset.source === source));
+    button.disabled = busy || (button.dataset.source !== 'all' && !sourceSupports(availableSources, button.dataset.source, 'search'));
+  });
+}
+async function loadSources() {
+  try { availableSources = sourceDescriptors((await api('/sources')).sources); }
+  catch { /* Keep the optional bridge disabled when source discovery fails. */ }
+  renderSources();
+}
+function searchLock() { $('room-search-form').querySelectorAll('input,button').forEach((el) => { el.disabled = busy; }); renderSources(); }
 function requestButton(index, label='加入队列') { return `<button class="secondary" data-request="${index}" data-request-label="${esc(label)}" ${busy || actor?.name && (!can('request') || !room?.player?.context || room.player.capacity < 1) ? 'disabled' : ''}>${actor?.name ? label : '设置昵称'}</button>`; }
 async function search({ automatic = false } = {}) {
   if (busy) return;
@@ -162,7 +175,8 @@ async function search({ automatic = false } = {}) {
   preview = null; searchItems = []; searchStatus = input; $('room-search-results').innerHTML = '<div class="empty">正在寻找这段旋律…</div>';
   const link = /https?:\/\//i.test(input), numeric = /^\d+$/.test(input);
   try {
-    if (source === 'all' && numeric) throw new Error('纯数字 ID 请先选择网易云或 QQ 音乐。');
+    if (source === 'all' && numeric) throw new Error('纯数字 ID 请先选择一个音乐来源。');
+    if (!link && source !== 'all' && !sourceSupports(availableSources, source, 'search')) throw new Error('这个音乐来源暂不可用，请选择其他来源。');
     if (link || numeric) {
       const result = await api(`/resolve?${new URLSearchParams({ input, source: source === 'all' ? lastSource : source })}`);
       if (serial !== requestSerial || input !== $('room-query').value.trim()) return;
@@ -236,7 +250,7 @@ $('room-query').oninput = () => { clearTimeout(searchTimer); requestSerial++; pr
 document.addEventListener('click', (event) => {
   const button = event.target.closest('button'); if (!button || button.disabled) return;
   if (button.hasAttribute('data-close')) button.closest('dialog').close();
-  if (button.dataset.source) { source=button.dataset.source;if(source!=='all')lastSource=source;requestSerial++;document.querySelectorAll('[data-source]').forEach((b)=>b.setAttribute('aria-pressed',String(b.dataset.source===source)));if($('room-query').value.trim())void search(); }
+  if (button.dataset.source) { source=button.dataset.source;if(source!=='all')lastSource=source;requestSerial++;renderSources();if($('room-query').value.trim())void search(); }
   if (button.dataset.tab) { tab=button.dataset.tab;renderedQueue='';renderQueue(); }
   if (button.hasAttribute('data-request')) void requestMusic(button.dataset.request);
   if (button.dataset.withdraw && can('withdrawOwn')) void mutate(async()=>{await api('/room/withdraw',{botId,entryId:button.dataset.withdraw});toast('已撤回这首待播歌曲。');});
@@ -292,11 +306,12 @@ window.addEventListener('hashchange',()=>{const token=takeAccessToken();if(token
 async function poll() {clearTimeout(pollTimer);if(!document.hidden&&!busy){if(botId)await refreshRoom().catch((e)=>message(`房间更新暂时失败：${e.message}`,true));else await refreshLobby();}pollTimer=setTimeout(poll,botId?4000:10000);}
 async function start() {
   const session=await api('/session');csrf=session.csrf;actor=session.actor;
+  await loadSources();
   if(accessToken){try{await redeem(accessToken);}catch(error){message(`链接未能验证：${error.message}。管理员请使用右上角登录入口。`,true);}}
   paintIdentity();$('lobby').hidden=Boolean(botId);$('room').hidden=!botId;
   if(botId){await refreshRoom();await heartbeat();heartbeatTimer=setInterval(()=>void heartbeat(),20000);}else await refreshLobby();
   const initialQuery = new URLSearchParams(location.search);
-  if (botId && initialQuery.get('q')) { source = initialQuery.get('source') === 'qq' ? 'qq' : 'netease';lastSource=source;document.querySelectorAll('[data-source]').forEach((button)=>button.setAttribute('aria-pressed',String(button.dataset.source===source)));$('room-query').value=initialQuery.get('q').slice(0,2000);void search(); }
+  if (botId && initialQuery.get('q')) { source = normalizeSource(initialQuery.get('source'));lastSource=source;renderSources();$('room-query').value=initialQuery.get('q').slice(0,2000);void search(); }
   pollTimer=setTimeout(poll,botId?4000:10000);draw();
 }
 draw();void start().catch((error)=>message(error.message||'暂时无法进入房间，请刷新重试。',true));

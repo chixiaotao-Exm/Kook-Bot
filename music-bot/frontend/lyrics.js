@@ -1,3 +1,4 @@
+import { sourceName, normalizeSource } from './music-sources.js';
 const escape = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 export function createLyrics({ api, root, drawIcons }) {
@@ -9,7 +10,7 @@ export function createLyrics({ api, root, drawIcons }) {
     if (!active) return;
     const song = snapshot?.player?.current;
     root.querySelector('#lyrics-title').textContent = song?.name || '随音乐一起';
-    root.querySelector('#lyrics-meta').textContent = song ? `${snapshot.bot?.name || '当前机器人'} · ${song.artists || ''} · ${song.source === 'qq' ? 'QQ音乐' : '网易云音乐'}` : '选择机器人，查看当前歌曲的歌词。';
+    root.querySelector('#lyrics-meta').textContent = song ? `${snapshot.bot?.name || '当前机器人'} · ${song.artists || ''} · ${sourceName(song.source)}` : '选择机器人，查看当前歌曲的歌词。';
     root.querySelector('#lyrics-notice').textContent = content;
     root.querySelector('#lyrics-translation').hidden = !lines.some((line) => line.translation);
     list.innerHTML = lines.map((line, index) => `<div class="lyric-line" data-lyric-index="${index}"><p>${escape(line.text)}</p>${translation && line.translation ? `<span>${escape(line.translation)}</span>` : ''}</div>`).join('');
@@ -33,7 +34,7 @@ export function createLyrics({ api, root, drawIcons }) {
     const song = snapshot.player.current, captured = key, request = ++generation;
     loaded = true; content = '正在读取歌词…'; root.querySelector('#lyrics-retry').hidden = true; render();
     try {
-      const data = await api(`/lyrics?${new URLSearchParams({ source: song.source === 'qq' ? 'qq' : 'netease', id: song.source === 'qq' ? song.mid || song.id : song.id })}`);
+      const data = await api(`/lyrics?${new URLSearchParams({ source: normalizeSource(song.source), id: song.source === 'qq' ? song.mid || song.id : song.id })}`);
       if (request !== generation || captured !== key) return;
       lines = (data.lines || []).filter((line) => Number.isFinite(line.time)).sort((a, b) => a.time - b.time);
       content = data.notice || (lines.length ? '歌词跟随当前机器人的播放进度。' : data.plain || '这首歌暂无歌词，或是纯音乐。');
