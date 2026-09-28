@@ -14,7 +14,7 @@ const integer = (value, min, max, label) => {
 };
 const flag = (value) => { if (typeof value !== 'boolean') throw new UserError('开关值无效。'); return value; };
 const source = (value, mixed = false) => {
-  if (!(mixed ? ['netease', 'qq', 'mixed'] : ['netease', 'qq']).includes(value)) throw new UserError('音乐平台无效。');
+  if (!(mixed ? ['netease', 'qq', 'qishui', 'mixed'] : ['netease', 'qq', 'qishui']).includes(value)) throw new UserError('音乐平台无效。');
   return value;
 };
 const playlistId = (value) => {
@@ -190,7 +190,8 @@ export class RoomFeatures {
   }
   async candidates(settings, limit) {
     if (settings.strategy === 'playlist') return this.playlist(settings.playlistId, limit, settings.source);
-    const sources = settings.source === 'mixed' ? ['netease', 'qq'] : [settings.source];
+    const sources = settings.source === 'mixed'
+      ? this.music.sources?.().filter((item) => item.enabled).map((item) => item.id) || ['netease', 'qq'] : [settings.source];
     const results = await Promise.allSettled(sources.map(async (platform) => {
       if (settings.strategy !== 'acg') return (await this.read(this.music.hot(limit, platform))).tracks;
       const lists = await this.read(this.music.discover('acg', platform));

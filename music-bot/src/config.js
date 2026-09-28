@@ -18,6 +18,8 @@ export function readConfig(env = process.env, { requireToken = true } = {}) {
     cooldownMs: integer('COMMAND_COOLDOWN_SECONDS', 2, 1, 60) * 1000,
     cookie: env.NETEASE_COOKIE || '',
     qqPython: env.QQ_PYTHON_PATH || 'python3',
+    qishuiApiUrl: env.QISHUI_API_URL?.trim() || '',
+    qishuiApiToken: env.QISHUI_API_TOKEN?.trim() || '',
     stayConnected: env.STAY_CONNECTED === 'true',
     webEnabled: env.WEB_ENABLED === 'true',
     webHost: env.WEB_HOST || '127.0.0.1',

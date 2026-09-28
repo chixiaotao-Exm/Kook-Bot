@@ -43,6 +43,19 @@ test('room features default disabled and enabling auto radio preserves independe
   assert.equal(f.features.snapshot().radio.lastError, '');
 });
 
+test('Qishui supports radio and schedules while mixed radio uses only enabled providers', async (t) => {
+  const f = await fixture(t); await f.player.join(context);
+  await f.features.configure('radio', { enabled: true, source: 'qishui', batchSize: 2 }); await f.features.tick();
+  assert.equal(f.player.current.source, 'qishui'); assert.equal(f.player.queue[0].source, 'qishui');
+  await f.features.configure('schedules', [schedule({ action: 'hot', source: 'qishui' })]);
+  assert.equal(f.features.schedules[0].source, 'qishui');
+  f.music.sources = () => [{ id: 'netease', enabled: true }, { id: 'qq', enabled: false }, { id: 'qishui', enabled: true }];
+  f.calls.length = 0;
+  const found = await f.features.candidates({ source: 'mixed', strategy: 'hot' }, 2);
+  assert.deepEqual(found.map((item) => item.source), ['netease', 'qishui', 'netease', 'qishui']);
+  assert.deepEqual(f.calls, [{ hot: 'netease' }, { hot: 'qishui' }]);
+});
+
 test('manual pause suspends radio durably and explicit resume reenables future fill', async (t) => {
   const f = await fixture(t); await f.player.add(context, [track(90)]);
   await f.features.configure('radio', { enabled: true }); await f.player.control('pause'); await f.features.tail;
