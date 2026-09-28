@@ -50,6 +50,7 @@ test('repair status is read-only and does not claim restart execution means reco
   const f=await fixture(t,{getSnapshot:()=>({...sample(),autoRepair:{enabled:true,states:[{phase:'verifying',message:'重启命令完成，仍在复核'}],events:[]}})});
   await f.bot.handle(event(1,'修复状态'));
   assert.equal(f.sent.length,1);assert.equal(f.sent[0].title,'自动修复状态');
+  assert.ok(f.sent[0].lines.some(line=>line.includes('连续2次未获取到健康状态')));
   assert.ok(f.sent[0].lines.some(line=>line.includes('仍在复核')));
   assert.ok(!f.sent[0].lines.some(line=>line.includes('已确认恢复')));
 });
