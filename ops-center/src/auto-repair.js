@@ -21,12 +21,17 @@ export function observeRepairMonitor(draft, monitor, result, config){
   if(!monitor.repairTarget)return;
   const checks=repairState(draft).monitorChecks;
   const counter=checks[monitor.id] ||= {fail:0,checkedAt:null};
+  const observed=Date.parse(result.checkedAt),previousObserved=Date.parse(counter.lastObservedAt||counter.checkedAt);
+  if(!Number.isFinite(observed)||Number.isFinite(previousObserved)&&observed<=previousObserved)return;
+  counter.lastObservedAt=result.checkedAt;
   if(draft.maintenance['monitor:'+monitor.id]||draft.maintenance['host:'+monitor.repairTarget.hostId]){counter.fail=0;counter.checkedAt=result.checkedAt;return}
+  const failure=result.ok===false&&(result.httpStatus===null||result.httpStatus>=500||result.httpStatus===200);
+  if(!failure){counter.fail=0;counter.checkedAt=result.checkedAt;return}
   const elapsed=Date.parse(result.checkedAt)-Date.parse(counter.checkedAt);
   if(counter.checkedAt&&elapsed<20000)return;
   if(counter.checkedAt&&elapsed>config.monitorStaleMs)counter.fail=0;
   counter.checkedAt=result.checkedAt;
-  counter.fail=result.ok===false&&(result.httpStatus===null||result.httpStatus>=500||result.httpStatus===200)?Math.min(counter.fail+1,100):0;
+  counter.fail=Math.min(counter.fail+1,100);
 }
 
 function event(state, data, phase, message, now) {
@@ -50,8 +55,9 @@ export function repairSignals(host, report, draft, config, now) {
     const bots=report.bots.filter(bot=>bot.serviceId===service.id && bindings.some(binding=>bot.id===binding.probeId||bot.id.startsWith(binding.probeId+':')));
     const associated=config.monitors.filter(m=>m.repairTarget?.hostId===host.id&&m.repairTarget.serviceId===service.id);
     const monitorRows=associated.map(m=>({config:m,value:draft.monitors[m.id],maintenance:draft.maintenance['monitor:'+m.id]}));
-    const monitorBad=monitorRows.find(({config:m,value,maintenance})=>!maintenance&&recent(value?.checkedAt,now,config.monitorStaleMs)
-      && value.ok===false && (value.httpStatus===null||value.httpStatus>=500||value.httpStatus===200) && (draft.autoRepair?.monitorChecks?.[m.id]?.fail||0)>0);
+    const monitorBad=monitorRows.filter(({config:m,value,maintenance})=>!maintenance&&recent(value?.checkedAt,now,config.monitorStaleMs)
+      && value.ok===false && (value.httpStatus===null||value.httpStatus>=500||value.httpStatus===200) && (draft.autoRepair?.monitorChecks?.[m.id]?.fail||0)>0)
+      .sort((a,b)=>draft.autoRepair.monitorChecks[b.config.id].fail-draft.autoRepair.monitorChecks[a.config.id].fail)[0];
     const botBad=bots.find(bot=>bot.repairReason==='gateway_offline'&&bot.state==='offline'||bot.repairReason==='health_probe_failed'&&bot.state==='unknown');
     const processBad=status&&['failed','inactive'].includes(status.activeState);
     const maintenance=draft.maintenance['host:'+host.id]===true || monitorRows.some(row=>row.maintenance===true);
@@ -83,7 +89,12 @@ export function observeRepairs(draft, host, report, previous, config, now) {
     }
     if(state.phase==='maintenance'){state.phase='idle';state.message='维护结束，重新观察';state.failures=0;state.successes=0}
     // Two reports sent too close together or replayed reports must not manufacture confidence.
-    if(state.lastObservationAt&&Date.parse(report.observedAt)-Date.parse(state.lastObservationAt)<20000)continue;
+    if(state.lastObservationAt&&Date.parse(report.observedAt)<=Date.parse(state.lastObservationAt))continue;
+    if(state.lastObservationAt&&Date.parse(report.observedAt)-Date.parse(state.lastObservationAt)<20000){
+      if(!signal.problem)state.failures=0;
+      if(!signal.healthy)state.successes=0;
+      continue;
+    }
     if(state.lastObservationAt&&Date.parse(report.observedAt)-Date.parse(state.lastObservationAt)>config.hostStaleMs){state.failures=0;state.successes=0}
     state.lastObservationAt=report.observedAt;
     state.failures=signal.problem?(signal.monitorFailureCount??state.failures+1):0;
