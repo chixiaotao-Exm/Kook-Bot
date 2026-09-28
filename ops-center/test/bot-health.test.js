@@ -12,7 +12,7 @@ function fixture() {
   ] }], monitors: [] }, {});
   const store = new StateStore({ dataDir: 'unused', writeState: async () => {} });
   const engine = new OpsEngine({ config, store, now: () => now });
-  return { engine, store, now: () => now, async report(bot, service = {}) {
+  return { engine, store, now: () => now, advance: ms => { now += ms; }, async report(bot, service = {}) {
     now += 30000;
     await engine.ingest(config.hosts[0], { hostId: 'music', observedAt: new Date(now).toISOString(), metrics: { cpuPercent: 5, memoryPercent: 20, diskPercent: 30 },
       services: [{ id: 'music', activeState: 'active', subState: 'running', pid: 100, ok: true, ...service }], bots: [bot], commandResults: [] });
@@ -52,4 +52,40 @@ test('an intentionally stopped music bot does not alert from its historical disc
   const f = fixture(); for (let i = 0; i < 3; i++) await f.report(music({ state: 'stopped', health: 'degraded', transport: 'disconnected', lastError: '消息连接暂时中断' }));
   const host = f.engine.snapshot().hosts[0]; assert.equal(host.bots[0].health, 'healthy'); assert.equal(host.bots[0].playing, false);
   assert.equal(host.state, 'up'); assert.equal(f.engine.snapshot().incidents.length, 0);
+});
+
+test('music runtime survives a gateway reconnect, resets on runtime replacement, and never substitutes host uptime', async () => {
+  const f = fixture(), startedAt = new Date(f.now() - 3600000).toISOString();
+  await f.report(music({ uptimeSeconds: 3600, startedAt }));
+  assert.equal(f.engine.snapshot().hosts[0].bots[0].uptimeSeconds, 3600);
+  await f.report(music({ state: 'offline', uptimeSeconds: 3630, startedAt }));
+  let bot = f.engine.snapshot().hosts[0].bots[0];
+  assert.equal(bot.uptimeSeconds, 3630); assert.equal(bot.startedAt, startedAt);
+  const restarted = new Date(f.now()).toISOString();
+  await f.report(music({ uptimeSeconds: 30, startedAt: restarted }));
+  bot = f.engine.snapshot().hosts[0].bots[0]; assert.equal(bot.uptimeSeconds, 30); assert.equal(bot.startedAt, restarted);
+  await f.report(music()); bot = f.engine.snapshot().hosts[0].bots[0];
+  assert.equal(bot.uptimeSeconds, null); assert.equal(bot.startedAt, null);
+});
+
+test('invalid, unavailable, stopped, nonmusic and stale runtime values cannot appear as current uptime', async () => {
+  const f = fixture();
+  for (const uptimeSeconds of [-1, true, '120', Infinity, NaN, 1e13]) {
+    await f.report(music({ uptimeSeconds, startedAt: '<script>unsafe</script>' }));
+    const bot = f.engine.snapshot().hosts[0].bots[0]; assert.equal(bot.uptimeSeconds, null); assert.equal(bot.startedAt, null);
+  }
+  for (const startedAt of ['2026', 'today', new Date(f.now() + 3600000).toISOString()]) {
+    await f.report(music({ uptimeSeconds: 0, startedAt })); assert.equal(f.engine.snapshot().hosts[0].bots[0].startedAt, null);
+  }
+  for (const patch of [{ state: 'unknown' }, { state: 'stopped' }, { health: 'unknown' }]) {
+    await f.report(music({ uptimeSeconds: 500, startedAt: new Date(f.now() - 500000).toISOString(), ...patch }));
+    const bot = f.engine.snapshot().hosts[0].bots[0]; assert.equal(bot.uptimeSeconds, null); assert.equal(bot.startedAt, null);
+  }
+  await f.report(music({ kind: 'ai', uptimeSeconds: 900, startedAt: new Date(f.now()).toISOString() }));
+  assert.equal(Object.hasOwn(f.engine.snapshot().hosts[0].bots[0], 'uptimeSeconds'), false);
+  await f.report(music({ uptimeSeconds: 0, startedAt: new Date(f.now()).toISOString() }));
+  assert.equal(f.engine.snapshot().hosts[0].bots[0].uptimeSeconds, 0);
+  f.advance(120001); const bot = f.engine.snapshot().hosts[0].bots[0];
+  assert.equal(bot.uptimeSeconds, null); assert.equal(bot.startedAt, null);
+  assert.match(buildScheduledSummary(f.engine.snapshot(), 'infra', f.now()).lines.join('\n'), /运行时长待确认（样本过期）/);
 });

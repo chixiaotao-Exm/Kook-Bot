@@ -50,3 +50,4 @@
 
 /* Third music source keeps the same compact source controls. */
 .source-dot.qishui{background:#9b6bc7}.source-badge.qishui,.dock-song #dock-source .qishui,.playlist-item>.source-badge.qishui{background:#eadff2dc;color:#72508a}.qishui-avatar{background:#e7dff0}.source-picker{flex-wrap:wrap;max-width:100%}@media(max-width:420px){.source-picker button{flex:1 1 40%}}
+.status-connections>.status-runtime{flex-basis:100%;flex-wrap:wrap}.status-runtime strong{font-variant-numeric:tabular-nums}.status-runtime small{font-size:9px;color:#746d45;margin-left:3px}

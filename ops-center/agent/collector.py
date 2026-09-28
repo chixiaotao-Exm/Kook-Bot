@@ -425,7 +425,7 @@ class ProbeCollector:
         self.http, self.now, self.secrets = http or JsonHttp(), now, secrets
         self.music_sessions = set()
 
-    def bot(self, probe, identifier=None, name=None, state="unknown", channel=None, playing=None, error="", health=None, transport=None, repair_reason=None):
+    def bot(self, probe, identifier=None, name=None, state="unknown", channel=None, playing=None, error="", health=None, transport=None, repair_reason=None, uptime_seconds=None, started_at=None):
         identity = str(identifier or probe["id"])
         if not IDENTIFIER.fullmatch(identity) or plain(identity, 1000, self.secrets) != identity:
             identity = probe["id"][:60] + ":" + hashlib.sha256(identity.encode("utf-8", errors="replace")).hexdigest()[:32]
@@ -434,7 +434,8 @@ class ProbeCollector:
                 "playing": playing if isinstance(playing, bool) else None, "lastError": plain(error, 200, self.secrets),
                 "health": health if health in ("healthy", "degraded", "unknown") else "healthy" if state in ("online", "stopped") else "degraded" if state == "offline" else "unknown",
                 "transport": transport if transport in ("connected", "disconnected") else None,
-                **repair_fields(probe, repair_reason)}
+                **repair_fields(probe, repair_reason),
+                **({"uptimeSeconds": uptime_seconds, "startedAt": started_at} if probe["kind"] == "music" else {})}
 
     def connection(self, value):
         if value.get("running") is False or value.get("enabled") is False:
@@ -520,11 +521,17 @@ class ProbeCollector:
                 issue = "状态样本已过期" if not fresh else "缺少机器人健康记录"
             if state == "stopped" and fresh:
                 business, issue, playing, transport = "healthy", "", False, None
+            uptime = item.get("uptimeSeconds")
+            started = timestamp(item.get("startedAt"))
+            runtime_known = state in ("online", "offline") and fresh and business != "unknown"
+            uptime = math.floor(uptime) if runtime_known and isinstance(uptime, (int, float)) and not isinstance(uptime, bool) and math.isfinite(uptime) and 0 <= uptime <= 1e12 else None
+            started_at = iso(started) if runtime_known and started is not None and 0 <= started <= self.now() + 60 else None
             result.append(self.bot(probe, f"{probe['id']}:{item.get('id', len(result))}", item.get("name") or item.get("username"), state,
                                    channel, playing if business == "healthy" else False if business == "degraded" else None,
                                    issue, business, transport if fresh else None,
                                    repair_reason="gateway_offline" if fresh and state == "offline"
-                                   and item.get("enabled") is not False and item.get("running") is not False else None))
+                                   and item.get("enabled") is not False and item.get("running") is not False else None,
+                                   uptime_seconds=uptime, started_at=started_at))
         return result
 
 
@@ -567,6 +574,7 @@ class Agent:
             services = [{**service, "activeState": "unknown", "subState": "unknown", "ok": False} for service in services]
         return {"hostId": self.config["hostId"], "observedAt": iso(self.now()), "metrics": metrics, "services": services,
                 "bots": [{**bot, "state": "unknown", "health": "unknown", "transport": None, "playing": None, "lastError": "状态样本已过期",
+                          **({"uptimeSeconds": None, "startedAt": None} if bot.get("kind") == "music" else {}),
                           **({"repairReason": None} if "repairReason" in bot else {})} if finished - at > 120 else bot for at, bot in bots],
                 "commandResults": self.ledger.pending()}
 

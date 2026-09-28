@@ -29,7 +29,7 @@ export class BotManager {
       createBot: (...args) => new Bot(...args),
       createGateway: (...args) => new Gateway(...args),
       createFeatures: (options) => new RoomFeatures(options),
-      sleep, ...dependencies,
+      now: () => Date.now(), monotonicNow: () => performance.now(), sleep, ...dependencies,
     };
     this.file = path.join(config.dataDir, 'bots.json');
     this.runtimes = new Map(); this.definitions = []; this.tail = Promise.resolve();
@@ -62,7 +62,7 @@ export class BotManager {
       dataDir: managed ? path.join(this.config.dataDir, 'bots', definition.id) : this.config.dataDir };
     const runtime = { id: definition.id, name: definition.name, managed, config,
       api: null, self: null, player: null, gateway: null, bot: null,
-      status: 'starting', error: '', leases: new Set(), definition };
+      status: 'starting', error: '', startedAt: null, startedMonotonic: null, leases: new Set(), definition };
     this.runtimes.set(runtime.id, runtime);
     return runtime;
   }
@@ -105,9 +105,12 @@ export class BotManager {
   }
   describe(runtime) {
     const context = runtime.player?.context;
+    const running = runtime.status === 'ready' && runtime.startedMonotonic !== null;
     return { id: runtime.id, name: this.publicText(runtime.name || runtime.self?.username || '音乐机器人'),
       username: this.publicText(runtime.self?.username || ''),
       online: runtime.status === 'ready' && Boolean(runtime.gateway?.ready), status: runtime.status,
+      startedAt: running ? runtime.startedAt : null,
+      uptimeSeconds: running ? Math.max(0, Math.floor((this.dependencies.monotonicNow() - runtime.startedMonotonic) / 1000)) : null,
       error: runtime.error, managed: runtime.managed, guildIds: [...runtime.config.guilds],
       context: context ? { guildId: context.guildId, voiceChannelId: context.voiceChannelId, textChannelId: context.textChannelId } : null,
       playing: Boolean(runtime.player?.stream && !runtime.player.stream.paused) };
@@ -187,6 +190,7 @@ export class BotManager {
   }
   async start(runtime, identified = false) {
     runtime.status = 'starting'; runtime.error = '';
+    runtime.startedAt = null; runtime.startedMonotonic = null;
     try {
       this.assertOpen();
       if (!identified) {
@@ -220,6 +224,8 @@ export class BotManager {
       runtime.gateway = this.dependencies.createGateway(runtime.api, (event) => runtime.bot.accept(event));
       this.assertOpen();
       runtime.status = 'ready'; runtime.gateway.start();
+      runtime.startedAt = new Date(this.dependencies.now()).toISOString();
+      runtime.startedMonotonic = this.dependencies.monotonicNow();
       await runtime.player.resumeAfterRestart();
       this.emit({ kind: 'ready', runtime });
       log('bot_started', { id: runtime.id, botId: runtime.self.id });
@@ -254,6 +260,7 @@ export class BotManager {
   }
   async stopRuntime(runtime) {
     runtime.status = 'stopping';
+    runtime.startedAt = null; runtime.startedMonotonic = null;
     this.emit({ kind: 'stopping', runtime });
     runtime.gateway?.stop();
     const command = runtime.bot?.stop();

@@ -78,6 +78,37 @@ test('default keeps original queue and new bot independently restores queue, pro
   if (process.platform !== 'win32') assert.equal((await stat(path.join(f.dir, 'bots.json'))).mode & 0o777, 0o600);
 });
 
+test('each bot measures its current runtime across playback and reconnects and resets on restart', async (t) => {
+  const f = await fixture(t);
+  let wall = Date.parse('2026-09-28T08:00:00Z'), monotonic = 0;
+  f.dependencies.now = () => wall; f.dependencies.monotonicNow = () => monotonic;
+  const manager = f.create(); await manager.init();
+  assert.equal(manager.describe(manager.get()).uptimeSeconds, 0);
+  monotonic += 61000; wall += 61000;
+  const extra = await manager.add({ token: 'second-secret' });
+  assert.equal(manager.describe(manager.get()).uptimeSeconds, 61);
+  assert.equal(extra.uptimeSeconds, 0);
+  const runtime = manager.get(extra.id), startedAt = extra.startedAt;
+  await runtime.player.add(context('202'), [song(21)]); await runtime.player.control('pause');
+  monotonic += 9000; wall -= 3600000; runtime.gateway.ready = false;
+  const reconnecting = manager.describe(runtime);
+  assert.equal(reconnecting.online, false); assert.equal(reconnecting.uptimeSeconds, 9);
+  assert.equal(reconnecting.startedAt, startedAt);
+  await manager.retry(extra.id);
+  assert.equal(manager.describe(runtime).uptimeSeconds, 0);
+  assert.notEqual(manager.describe(runtime).startedAt, startedAt);
+  assert.equal(manager.describe(manager.get()).uptimeSeconds, 70);
+  monotonic += 1000; f.failures.set('second-secret', 'offline'); await manager.retry(extra.id);
+  assert.equal(manager.describe(runtime).status, 'error');
+  assert.equal(manager.describe(runtime).startedAt, null); assert.equal(manager.describe(runtime).uptimeSeconds, null);
+  f.failures.delete('second-secret'); await manager.retry(extra.id);
+  assert.equal(manager.describe(runtime).uptimeSeconds, 0);
+  await manager.shutdown();
+  assert.equal(manager.describe(manager.get()).uptimeSeconds, null);
+  const restarted = f.create(); await restarted.init();
+  assert.ok(restarted.list().every(bot => bot.uptimeSeconds === 0));
+});
+
 test('invalid tokens and duplicate token/account are rejected before voice cleanup or persistence', async (t) => {
   const f = await fixture(t), manager = f.create(); await manager.init();
   f.failures.set('bad-secret', 'denied');
