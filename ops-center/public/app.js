@@ -212,7 +212,7 @@ window.createOpsPanel = function(root = document, options = {}) {
     const status = hostState(host), heading = `<div class="card-heading"><div><h3>${escapeHtml(text(host.name, host.id))}</h3><p>${status.fresh ? '最近采样 ' : '采样待更新 · '}${escapeHtml(stamp(host.observedAt || host.lastSeenAt))}</p></div>${badge(status)}</div>`;
     if (compact) return `<div class="mini-host">${heading}${metrics(host, true)}</div>`;
     const uptime = host.metrics?.uptimeSeconds, uptimeLabel = typeof uptime === 'number' && uptime >= 0 ? uptime >= 86400 ? `${number(uptime / 86400, 1)} 天` : `${number(uptime / 3600, 1)} 小时` : '—';
-    const services = list(host.services).map(service => `<div class="service-row"><div><strong>${escapeHtml(text(service.name, service.id))}</strong><small>PID ${number(service.pid)} · 重启 ${number(service.restarts)} 次${service.expected === 'stopped' ? ' · 计划停用' : ''}</small></div>${badge(serviceState(service, host))}<button type="button" class="button secondary small" data-restart-host="${escapeHtml(host.id)}" data-restart-service="${escapeHtml(service.id)}"${canRestart(host, service) ? '' : ' disabled'}>${state.uncertainRestarts.has(`${host.id}:${service.id}`) ? '待确认' : '重启'}</button></div>`).join('');
+    const services = list(host.services).map(service => `<div class="service-row"><div><strong>${escapeHtml(text(service.name, service.id))}</strong><small>PID ${number(service.pid)} · 重启 ${number(service.restarts)} 次${service.expected === 'stopped' ? ' · 计划停用' : ''}${service.autoRepair === true && service.expected === 'running' ? ' · 自动修复' : ''}</small></div>${badge(serviceState(service, host))}<button type="button" class="button secondary small" data-restart-host="${escapeHtml(host.id)}" data-restart-service="${escapeHtml(service.id)}"${canRestart(host, service) ? '' : ' disabled'}>${state.uncertainRestarts.has(`${host.id}:${service.id}`) ? '待确认' : '重启'}</button></div>`).join('');
     return `<article class="glass host-card">${heading}${metrics(host)}<div class="host-detail"><span>运行时间 ${uptimeLabel}</span><span>1 分钟负载 ${number(host.metrics?.load1, 2)}</span></div><div class="service-list">${services || empty('暂无服务记录')}</div><div class="card-footer"><span>${host.maintenance ? '维护期间按维护策略处理告警' : '正常监控中'}</span>${maintenanceButton('host', host)}</div></article>`;
   }
   function monitorHtml(monitor, compact = false) {
@@ -237,9 +237,41 @@ window.createOpsPanel = function(root = document, options = {}) {
   }
   function commandHtml(command) {
     const map = { pending: ['排队中', 'warn'], dispatched: ['已下发', 'warn'], succeeded: ['成功', 'good'], failed: ['失败', 'bad'], unknown: ['结果待确认', 'warn'] };
-    const [label, tone] = map[command.status] || ['待确认', ''];
+    const [label, tone] = command.origin === 'auto' && command.status === 'succeeded' ? ['重启已执行', '']
+      : Object.hasOwn(map, command.status) ? map[command.status] : ['待确认', ''];
     const host = state.data.hosts.find(item => item.id === command.hostId), service = list(host?.services).find(item => item.id === command.serviceId);
-    return `<article class="command-item"><div><strong>${escapeHtml(text(host?.name, command.hostId))} / ${escapeHtml(text(service?.name, command.serviceId))}</strong>${badge({ label, tone })}</div>${command.message ? `<p>${escapeHtml(text(command.message))}</p>` : ''}<small>${escapeHtml(stamp(command.createdAt))}</small></article>`;
+    return `<article class="command-item"><div><strong>${escapeHtml(text(host?.name, command.hostId))} / ${escapeHtml(text(service?.name, command.serviceId))}</strong>${badge({ label, tone })}</div>${command.message ? `<p>${escapeHtml(text(command.message))}</p>` : ''}${command.origin === 'auto' && command.reason ? `<p>${escapeHtml(text(command.reason))}</p>` : ''}<small>${command.origin === 'auto' ? '自动修复' : '手动重启'} · ${escapeHtml(stamp(command.createdAt))}</small></article>`;
+  }
+  function repairPhase(phase) {
+    const labels = { idle: ['监测中', ''], queued: ['等待重启', 'warn'], restarting: ['重启中', 'warn'],
+      verifying: ['复核中', 'warn'], recovered: ['已恢复', 'good'], failed: ['修复失败', 'bad'],
+      blocked: ['已受限', 'warn'], unknown: ['待确认', 'warn'], maintenance: ['维护中', 'maintenance'] };
+    const [label, tone] = Object.hasOwn(labels, phase) ? labels[phase] : ['待确认', 'warn'];
+    return { label, tone };
+  }
+  function repairOverviewHtml(repair) {
+    if (!repair || typeof repair !== 'object' || Array.isArray(repair)) return '';
+    const items = list(repair.states).filter(item => item && typeof item === 'object');
+    const active = items.filter(item => ['queued', 'restarting', 'verifying'].includes(item.phase)).length;
+    const attention = items.filter(item => !['idle', 'queued', 'restarting', 'verifying', 'recovered', 'maintenance'].includes(item.phase)).length;
+    const policy = repair.policy;
+    const validPolicy = policy && [policy.failureThreshold, policy.recoveryThreshold, policy.cooldownMs, policy.maxAttemptsPerHour]
+      .every(value => Number.isInteger(value) && value > 0);
+    return `<div class="notification-row"><span>自动修复</span>${badge({ label: repair.enabled === true ? '已开启' : '未开启', tone: repair.enabled === true ? 'good' : '' })}</div><div class="notification-row"><span>修复状态</span><strong>${active} 项处理中 · ${attention} 项待确认</strong></div>${repair.enabled === true && validPolicy ? `<p class="notification-note">连续 ${number(policy.failureThreshold)} 次异常后重启，连续 ${number(policy.recoveryThreshold)} 次正常后确认恢复。间隔至少 ${number(Math.ceil(policy.cooldownMs / 60000))} 分钟，每小时最多 ${number(policy.maxAttemptsPerHour)} 次。</p>` : ''}`;
+  }
+  function repairLogHtml(repair) {
+    if (!repair || typeof repair !== 'object' || Array.isArray(repair)) return '';
+    const target = item => {
+      const host = state.data.hosts.find(host => host.id === item.hostId), service = list(host?.services).find(service => service.id === item.serviceId);
+      return `${text(host?.name, item.hostId)} / ${text(service?.name, item.serviceId)}`;
+    };
+    const states = list(repair.states).filter(item => item && typeof item === 'object' && !['idle', 'recovered'].includes(item.phase));
+    const statusRows = states.slice(0, 8).map(item => `<article class="command-item"><div><strong>${escapeHtml(target(item))}</strong>${badge(repairPhase(item.phase))}</div>${item.message || item.reason ? `<p>${escapeHtml(text(item.message || item.reason))}</p>` : ''}${Number.isFinite(time(item.nextAttemptAt)) ? `<small>下次可尝试 ${escapeHtml(stamp(item.nextAttemptAt))}</small>` : ''}</article>`).join('');
+    const events = list(repair.events).filter(item => item && typeof item === 'object')
+      .slice().sort((a, b) => (time(b.at) || 0) - (time(a.at) || 0));
+    const notifications = { pending: '待通知', sending: '通知发送中', sent: '已通知', uncertain: '通知待确认' };
+    const eventRows = events.slice(0, 8).map(item => `<article class="command-item"><div><strong>${escapeHtml(target(item))}</strong>${badge(repairPhase(item.phase))}</div><p>${escapeHtml(text(item.title, '自动修复事件'))}${item.message ? ` · ${escapeHtml(text(item.message))}` : ''}</p><small>${escapeHtml(stamp(item.at))} · ${Object.hasOwn(notifications, item.notification) ? notifications[item.notification] : '通知待确认'}</small></article>`).join('');
+    return `<section class="repair-block"><h3>自动修复 · 当前状态</h3>${statusRows || '<p class="notification-note">暂无进行中或受限的修复。</p>'}${states.length > 8 ? `<p class="notification-note">另有 ${states.length - 8} 项，请查看服务状态。</p>` : ''}<h3>最近修复记录</h3>${eventRows || '<p class="notification-note">尚无修复记录。</p>'}</section><h3 class="repair-command-heading">重启操作</h3>`;
   }
   function reportsHtml(reports) {
     if (!reports || typeof reports !== 'object' || Array.isArray(reports)) return '';
@@ -277,14 +309,14 @@ window.createOpsPanel = function(root = document, options = {}) {
     $('#overview-attention').innerHTML = open.slice(0, 5).map(item => incidentHtml(item, true)).join('') || empty('暂时没有未恢复事件', '状态过期的目标仍需等待新采样确认。');
     $('#overview-monitors').innerHTML = monitors.slice(0, 5).map(monitor => monitorHtml(monitor, true)).join('') || empty('尚未配置监控目标');
     const notification = data.notification || {};
-    $('#notification-status').innerHTML = `<div class="notification-row"><span>通知服务</span>${badge({ label: notification.enabled === true ? '已开启' : '未开启', tone: notification.enabled === true ? 'good' : '' })}</div><div class="notification-row"><span>播报机器人</span><strong>${escapeHtml(text(notification.botName, '思维2'))}</strong></div><div class="notification-row"><span>基础设施频道</span><strong>${escapeHtml(text(notification.infraChannel, '未配置'))}</strong></div><div class="notification-row"><span>网站接口频道</span><strong>${escapeHtml(text(notification.webChannel, '未配置'))}</strong></div><div class="notification-row"><span>查询机器人</span>${badge({ label: data.queryBot?.connected === true ? '在线' : '未连接', tone: data.queryBot?.connected === true ? 'good' : '' })}</div>${reportsHtml(data.reports)}${notification.lastError ? `<p class="notification-note">${escapeHtml(text(notification.lastError))}</p>` : ''}`;
+    $('#notification-status').innerHTML = `<div class="notification-row"><span>通知服务</span>${badge({ label: notification.enabled === true ? '已开启' : '未开启', tone: notification.enabled === true ? 'good' : '' })}</div><div class="notification-row"><span>播报机器人</span><strong>${escapeHtml(text(notification.botName, '思维2'))}</strong></div><div class="notification-row"><span>基础设施频道</span><strong>${escapeHtml(text(notification.infraChannel, '未配置'))}</strong></div><div class="notification-row"><span>网站接口频道</span><strong>${escapeHtml(text(notification.webChannel, '未配置'))}</strong></div><div class="notification-row"><span>查询机器人</span>${badge({ label: data.queryBot?.connected === true ? '在线' : '未连接', tone: data.queryBot?.connected === true ? 'good' : '' })}</div>${repairOverviewHtml(data.autoRepair)}${reportsHtml(data.reports)}${notification.lastError ? `<p class="notification-note">${escapeHtml(text(notification.lastError))}</p>` : ''}`;
     $('#host-count').textContent = `${hosts.length} 台`; $('#host-list').innerHTML = hosts.map(host => hostHtml(host)).join('') || empty('尚未接入服务器');
     $('#monitor-count').textContent = `${monitors.length} 个`; $('#monitor-list').innerHTML = monitors.map(monitor => monitorHtml(monitor)).join('') || empty('尚未配置监控目标');
     $('#bot-count').textContent = `${bots.length} 个`; $('#bot-list').innerHTML = bots.map(({ bot, host }) => botHtml(bot, host)).join('') || empty('尚未收到机器人状态');
     $('#nav-incidents').hidden = !open.length; $('#nav-incidents').textContent = String(open.length);
     const selected = data.incidents.filter(item => $('#event-filter').value === 'all' || item.state === $('#event-filter').value).slice().sort((a, b) => (time(b.openedAt) || 0) - (time(a.openedAt) || 0));
     $('#incident-list').innerHTML = selected.slice(0, 100).map(item => incidentHtml(item)).join('') || empty('暂无匹配事件');
-    $('#command-list').innerHTML = data.commands.slice().sort((a, b) => (time(b.createdAt) || 0) - (time(a.createdAt) || 0)).slice(0, 30).map(commandHtml).join('') || empty('尚无操作记录');
+    $('#command-list').innerHTML = repairLogHtml(data.autoRepair) + (data.commands.slice().sort((a, b) => (time(b.createdAt) || 0) - (time(a.createdAt) || 0)).slice(0, 30).map(commandHtml).join('') || empty('尚无操作记录'));
   }
   async function changeMaintenance(kind, id) {
     if (!state.canManage || state.mutation || !['host', 'monitor'].includes(kind)) return;

@@ -225,6 +225,46 @@ test('untrusted names, errors and URLs render as text while charts include only 
   assert.doesNotMatch(f.ops.sparkline([{ cpuPercent: '" onload="bad' }], 'cpuPercent'), /onload|bad/);
 });
 
+test('automatic repair status and verified recovery history are read-only and distinct from manual restarts', async t => {
+  const raw = snapshot(); raw.hosts[0].services[0].autoRepair = true;
+  raw.autoRepair = { enabled: true, policy: { failureThreshold: 3, recoveryThreshold: 2, cooldownMs: 900000, maxAttemptsPerHour: 2 },
+    states: [{ hostId: 'host-1', serviceId: 'music', phase: 'verifying', message: '重启完成，等待新采样。' },
+      { hostId: 'host-1', serviceId: 'duet', phase: 'maintenance', message: '计划停用。' }],
+    events: [{ hostId: 'host-1', serviceId: 'music', phase: 'recovered', title: '已确认恢复', message: '连续两次采样正常。', at: iso(-5000), notification: 'sent' }] };
+  raw.commands = [{ hostId: 'host-1', serviceId: 'music', origin: 'auto', status: 'succeeded', reason: '连续三次异常', createdAt: iso(-10000) },
+    { hostId: 'host-1', serviceId: 'music', status: 'succeeded', createdAt: iso(-30000) }];
+  const f = await harness(t, { authenticated: true, fetch: call => call.route === 'snapshot' ? response(raw) : undefined });
+  const overview = f.get('notification-status').innerHTML, log = f.get('command-list').innerHTML;
+  assert.match(overview, /自动修复/); assert.match(overview, /1 项处理中 · 0 项待确认/);
+  assert.match(overview, /连续 3 次异常后重启，连续 2 次正常后确认恢复/);
+  assert.match(overview, /间隔至少 15 分钟，每小时最多 2 次/);
+  assert.match(log, /复核中/); assert.match(log, /已确认恢复/); assert.match(log, /连续三次异常/);
+  assert.match(log, /重启已执行/); assert.match(log, /自动修复 ·/); assert.match(log, /手动重启 ·/);
+  assert.match(f.get('host-list').innerHTML, /重启 0 次 · 自动修复/);
+  assert.doesNotMatch(overview + log, /<button|<input/);
+  assert.equal(f.calls.some(call => call.method === 'POST'), false);
+});
+
+test('repair event fields are escaped and unknown phases or receipts stay unconfirmed', async t => {
+  const raw = snapshot(); raw.autoRepair = { enabled: true, states: [null,
+    { hostId: '<img src=x onerror=bad()>', serviceId: '<script>bad()</script>', phase: 'toString', message: '<img src=x>', nextAttemptAt: '<script>' }],
+    events: [null, { hostId: 'host-1', serviceId: 'music', phase: '<svg onload=bad()>', title: '<script>bad()</script>',
+      message: '<img src=x onerror=bad()>', notification: 'toString', at: 'invalid' }] };
+  raw.commands = [{ hostId: 'host-1', serviceId: 'music', origin: 'auto', status: 'toString', reason: '<svg onload=bad()>', createdAt: iso(0) }];
+  const f = await harness(t, { authenticated: true, fetch: call => call.route === 'snapshot' ? response(raw) : undefined });
+  const log = f.get('command-list').innerHTML;
+  assert.match(log, /待确认/); assert.match(log, /通知待确认/); assert.match(log, /&lt;script&gt;/);
+  assert.doesNotMatch(log, /<img|<script|<svg|已恢复|已通知/);
+  assert.match(f.get('notification-status').innerHTML, /0 项处理中 · 1 项待确认/);
+});
+
+test('older snapshots without automatic repairs keep existing restart and notification views', async t => {
+  const f = await harness(t, { authenticated: true });
+  assert.doesNotMatch(f.get('command-list').innerHTML + f.get('notification-status').innerHTML, /自动修复|最近修复记录/);
+  assert.match(f.get('command-list').innerHTML, /尚无操作记录/);
+  f.ops.openRestart('host-1', 'music'); assert.equal(f.get('restart-dialog').open, true);
+});
+
 test('a wall-clock rollback cannot turn old host data healthy again', async t => {
   const f = await harness(t, { authenticated: true }); f.document.hidden = true; await f.event('visibilitychange');
   f.setWall(NOW - 3600000); f.advance(151000, { changeWall: false });

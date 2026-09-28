@@ -46,6 +46,14 @@ test('only exact human commands in authorized group channels can query or receiv
   assert.equal(f.reads(), 0); assert.deepEqual(f.sent, []);
 });
 
+test('repair status is read-only and does not claim restart execution means recovery', async t => {
+  const f=await fixture(t,{getSnapshot:()=>({...sample(),autoRepair:{enabled:true,states:[{phase:'verifying',message:'重启命令完成，仍在复核'}],events:[]}})});
+  await f.bot.handle(event(1,'修复状态'));
+  assert.equal(f.sent.length,1);assert.equal(f.sent[0].title,'自动修复状态');
+  assert.ok(f.sent[0].lines.some(line=>line.includes('仍在复核')));
+  assert.ok(!f.sent[0].lines.some(line=>line.includes('已确认恢复')));
+});
+
 test('unknown bot flags require authoritative identity and never echo identity errors or arbitrary chat', async t => {
   let identity = { id: '223456789', bot: true }, calls = 0;
   const f = await fixture(t, { resolveAuthor: async () => { calls++; return identity; } });
