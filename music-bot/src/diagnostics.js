@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { atomicJson, log, UserError } from './util.js';
+import { SOURCE_NAMES } from './music-sources.js';
 
 const LIMIT = 300;
 const levels = new Set(['info', 'warning', 'error']);
@@ -13,8 +14,9 @@ export class Diagnostics {
     this.events = []; this.accounts = {}; this.previous = new Map(); this.attached = new WeakSet();
     this.writeTail = Promise.resolve(); this.closed = false; this.persistDisabled = false;
     this.accountPending = null; this.lastAccountAttempt = null; this.storageError = '';
-    this.accountVersions = { netease: 0, qq: 0 }; this.recheckAccounts = false;
-    for (const source of ['netease', 'qq']) this.accounts[source] = { loggedIn: false, status: 'checking', checkedAt: 0, error: '' };
+    this.accountSources = this.music.sources?.().filter((item) => item.enabled).map((item) => item.id) || ['netease', 'qq'];
+    this.accountVersions = Object.fromEntries(this.accountSources.map((source) => [source, 0])); this.recheckAccounts = false;
+    for (const source of this.accountSources) this.accounts[source] = { loggedIn: false, status: 'checking', checkedAt: 0, error: '' };
   }
   async init() {
     try {
@@ -33,7 +35,7 @@ export class Diagnostics {
   }
   redact(value) {
     let text = String(value || '');
-    const secrets = [this.config.token, this.config.cookie];
+    const secrets = [this.config.token, this.config.cookie, this.config.qishuiApiToken];
     for (const bot of this.manager.list()) {
       try { secrets.push(this.manager.get(bot.id).config?.token); } catch {}
     }
@@ -112,18 +114,18 @@ export class Diagnostics {
     const interval = force ? 60000 : this.accountIntervalMs;
     if (this.lastAccountAttempt !== null && this.now() - this.lastAccountAttempt < interval) return this.accounts;
     this.lastAccountAttempt = this.now();
-    const task = Promise.allSettled(['netease', 'qq'].map(async (source) => {
+    const task = Promise.allSettled(this.accountSources.map(async (source) => {
       const version = this.accountVersions[source];
       let next;
       try {
         const account = await this.music.account(source);
-        next = { loggedIn: Boolean(account.loggedIn), status: account.loggedIn ? 'logged_in' : account.expired ? 'expired' : 'logged_out', checkedAt: this.now(), error: '' };
+        next = { loggedIn: Boolean(account.loggedIn), status: account.unavailable ? 'unavailable' : account.loggedIn ? 'logged_in' : account.expired ? 'expired' : 'logged_out', checkedAt: this.now(), error: '' };
       } catch (error) {
         next = { loggedIn: false, status: 'error', checkedAt: this.now(), error: error instanceof UserError ? this.redact(error.message) : '账号状态暂时无法读取。' };
       }
       if (this.closed || this.accountVersions[source] !== version) return;
       const previous = this.accounts[source]; this.accounts[source] = next;
-      const name = source === 'qq' ? 'QQ 音乐' : '网易云音乐';
+      const name = SOURCE_NAMES[source];
       if (['expired', 'error'].includes(next.status) && (previous.status !== next.status || previous.error !== next.error)) {
         this.record({ level: 'warning', kind: 'account_attention', message: `${name}：${next.status === 'expired' ? '登录已失效，请重新扫码。' : next.error}` });
       } else if (next.loggedIn && ['expired', 'error'].includes(previous.status)) {

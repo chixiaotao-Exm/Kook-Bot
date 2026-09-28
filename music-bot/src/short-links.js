@@ -5,7 +5,7 @@ import { isIP } from 'node:net';
 import { musicInputUrl, parseMusicInput, MUSIC_LINK_HOSTS } from './music-input.js';
 import { UserError } from './util.js';
 
-const HOSTS = new Set([...MUSIC_LINK_HOSTS.netease, ...MUSIC_LINK_HOSTS.qq,
+const HOSTS = new Set([...MUSIC_LINK_HOSTS.netease, ...MUSIC_LINK_HOSTS.qq, ...MUSIC_LINK_HOSTS.qishui,
   '163cn.tv', '163cn.com', 'c.y.qq.com', 'c3.y.qq.com', 'c5.y.qq.com', 'c6.y.qq.com']);
 const MAX_BYTES = 256 * 1024;
 const invalid = () => new UserError('这条分享链接暂时无法展开，请复制官方完整歌曲／歌单链接。');
@@ -75,7 +75,7 @@ function htmlTarget(body, base) {
     if (candidates.size !== 1) throw invalid();
     return [...candidates][0];
   }
-  for (const raw of normalized.match(/https?:\/\/(?:music\.163\.com|y\.music\.163\.com|y\.qq\.com|i\.y\.qq\.com)\/[^\s<>"']+/gi) || []) {
+  for (const raw of normalized.match(/https?:\/\/(?:music\.163\.com|y\.music\.163\.com|y\.qq\.com|i\.y\.qq\.com|music\.douyin\.com)\/[^\s<>"']+/gi) || []) {
     try { const url = approved(raw); parseMusicInput(url.href); candidates.add(url.href); } catch {}
   }
   if (candidates.size !== 1) throw invalid();

@@ -9,6 +9,9 @@ export function musicRoomLink({ origin, botId, input, source = 'netease', kind =
     query = `https://y.qq.com/n/ryqq/${route}/${chart ? query.slice(4) : query}`;
   } else if (source === 'netease' && /^[1-9]\d{0,17}$/.test(query)) {
     query = `https://music.163.com/${kind === 'playlist' ? 'playlist' : 'song'}?id=${query}`;
+  } else if (source === 'qishui' && /^[1-9]\d{0,18}$/.test(query)) {
+    const route = kind === 'playlist' ? 'playlist' : 'track';
+    query = `https://music.douyin.com/qishui/share/${route}?${route}_id=${query}`;
   }
   room.searchParams.set('q', query); room.searchParams.set('source', source);
   return room.href;

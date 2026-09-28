@@ -8,6 +8,7 @@ import { createLyrics } from './lyrics.js';
 import { createHealth } from './health.js';
 import { takeAccessToken } from './access.js';
 import { musicRoomLink } from './room-links.js';
+import { sourceNames, sourceIds, normalizeSource, sourceName, defaultSources, sourceDescriptors, sourceSupports } from './music-sources.js';
 const accessToken = takeAccessToken();
 const initialLocation = new URLSearchParams(location.search);
 
@@ -20,15 +21,14 @@ const duration = (seconds) => `${Math.floor(Math.max(0, seconds) / 60)}:${String
 const count = (value) => value >= 100000000 ? `${(value / 100000000).toFixed(1)}亿` : value >= 10000 ? `${(value / 10000).toFixed(1)}万` : String(value);
 const coverUrl = (value, size = 320) => { if (!value) return ''; const url = new URL(value, location.origin); if (url.hostname.endsWith('.music.126.net')) url.searchParams.set('param', `${size}y${size}`); return url.href; };
 const empty = (message, action = '') => `<div class="empty-state">${icon('list-music')}<strong>${escape(message)}</strong>${action}</div>`;
-const sourceId = (item) => item?.source === 'qq' ? 'qq' : 'netease';
-const sourceNames = { netease: '网易云音乐', qq: 'QQ音乐' };
-const sourceBadge = (source) => `<span class="source-badge ${source}">${source === 'qq' ? 'QQ音乐' : '网易云'}</span>`;
+const sourceId = (item) => normalizeSource(item?.source);
+const sourceBadge = (source) => `<span class="source-badge ${normalizeSource(source)}">${normalizeSource(source) === 'netease' ? '网易云' : sourceName(source)}</span>`;
 const sourceRoute = (route, source, params = {}) => `${route}?${new URLSearchParams({ ...params, source })}`;
-let currentSource = localStorage.getItem('music-source') === 'qq' ? 'qq' : 'netease';
+let currentSource = normalizeSource(localStorage.getItem('music-source'));
 let jointSearch = false;
-let availableSources = [{ id: 'netease', name: sourceNames.netease, enabled: true }, { id: 'qq', name: sourceNames.qq, enabled: true }];
-const sourceBrowsing = { netease: { category: 'hot', scroll: 0 }, qq: { category: 'hot', scroll: 0 } };
-const accounts = {}, accountRequests = { netease: 0, qq: 0 };
+let availableSources = defaultSources();
+const sourceBrowsing = Object.fromEntries(sourceIds.map((id) => [id, { category: 'hot', scroll: 0 }]));
+const accounts = {}, accountRequests = Object.fromEntries(sourceIds.map((id) => [id, 0]));
 let searchRequest = 0, qrRequest = 0, qrSource = 'netease', qrType = 'qq', importSource = 'netease', pendingLoginAction = null;
 let accountGate = false;
 let selectedBotId = initialLocation.get('botId') || localStorage.getItem('selected-bot') || 'default', defaultBotId = 'default', bots = [], botsSignature = '';
@@ -43,10 +43,12 @@ let passwordRequired = true;
 let smartLinks = null;
 const sessionApi = createSessionApi({ getCsrf: () => csrf, setCsrf: (value) => { csrf = value; }, requiresPassword: () => passwordRequired, onUnauthorized: showLogin });
 const roomSettings = createRoomSettings({ root: $('view-room'), api, drawIcons, onLockChange: syncBotLock,
+  getSources: () => availableSources,
   getContext: () => ({ id: selectedBotId, name: state?.bot?.name || '当前机器人', available: botAvailable() && permission('manageRoom') }) });
 const lyricsPage = createLyrics({ root: $('view-lyrics'), api, drawIcons });
 const healthPage = createHealth({ root: $('view-health'), api, drawIcons, onAccount: () => view('account') });
 const statusPage = createBotStatus({ api, drawIcons,
+  getSources: () => availableSources,
   onManage: () => view('account'),
   onChanged: async (id) => {
     if (id !== selectedBotId) return;
@@ -113,11 +115,12 @@ function applyPermissions() {
   $('site-account-controls').hidden = !admin; $('add-bot-button').hidden = !admin;
   document.querySelectorAll('[data-retry-bot],[data-remove-bot]').forEach((button)=>{button.hidden=!admin;});
   document.querySelector('[data-view="room"]').hidden = !owner;
-  document.querySelectorAll('[data-category="mine"]').forEach((button)=>{button.hidden=!admin;});
+  document.querySelectorAll('[data-category="mine"]').forEach((button)=>{button.hidden=!admin || !sourceSupports(availableSources, currentSource, 'mine');});
   for (const id of ['play-pause','skip-button','recover-button','volume','seek','loop-button','loop-select','shuffle-queue','clear-queue']) if (!control) $(id).disabled = true;
   for (const id of ['channel-button','stay-toggle','leave-button']) if (!owner) $(id).disabled = true;
   document.querySelectorAll('[data-remove],[data-move]').forEach((button)=>{if(!control)button.disabled=true;});
   for (const id of ['heart-button','hot-button','import-button']) $(id).hidden = !admin;
+  syncSourceCapabilities();
   if (!admin) { $('playlist-add').textContent = '到房间点歌'; }
 }
 async function run(task, { rethrow = false } = {}) {
@@ -135,6 +138,12 @@ function syncBotLock() {
   document.querySelectorAll('[data-music-source]').forEach((button) => { button.disabled = botLocked() || (button.dataset.musicSource !== 'all' && !availableSources.find((source) => source.id === button.dataset.musicSource)?.enabled); });
   smartLinks?.render();
   applyPermissions();
+  syncSourceCapabilities();
+}
+function syncSourceCapabilities() {
+  const admin = permission('manageSite');
+  $('heart-button').hidden = !admin || !sourceSupports(availableSources, currentSource, currentSource === 'qq' ? 'mine' : 'heart');
+  document.querySelectorAll('[data-category="mine"]').forEach((button) => { button.hidden = !admin || !sourceSupports(availableSources, currentSource, 'mine'); });
 }
 function botAvailable() { return state?.botId === selectedBotId && !state.loading && (!state.bot.status || state.bot.status === 'ready'); }
 function checkBot(botId) {
@@ -326,7 +335,7 @@ function renderDiscover() {
   drawIcons();
 }
 async function loadDiscover(category, restoreScroll = null) {
-  if (category === 'mine' && !permission('manageSite')) { category = 'hot'; }
+  if (category === 'mine' && (!permission('manageSite') || !sourceSupports(availableSources, currentSource, 'mine'))) { category = 'hot'; }
   const request = ++discoverRequest, source = currentSource;
   currentCategory = category;
   sourceBrowsing[source].category = category;
@@ -436,7 +445,7 @@ function renderSources() {
 async function loadSources() {
   try {
     const result = await api('/sources');
-    availableSources = result.sources.filter((source) => source.id in sourceNames);
+    availableSources = sourceDescriptors(result.sources);
     if (!availableSources.some((source) => source.id === currentSource && source.enabled)) {
       const fallback = availableSources.find((source) => source.enabled)?.id;
       if (fallback) switchSource(fallback);
@@ -468,6 +477,7 @@ function switchSource(source) {
   else if (currentView === 'discover' || currentView === 'playlist') view('discover', { restoreDiscover: true, skipScrollCapture: true });
 }
 function accountIds(source) {
+  if (source === 'qishui') return { name: 'qishui-account-name', status: 'qishui-account-status', avatar: 'qishui-account-avatar', error: 'qishui-account-error' };
   return source === 'qq' ? { name: 'qq-account-name', status: 'qq-account-status', avatar: 'qq-account-avatar', login: 'qq-qr-button', logout: 'qq-logout', error: 'qq-account-error' }
     : { name: 'account-name', status: 'account-status', avatar: 'account-avatar', login: 'qr-button', logout: 'netease-logout', error: 'netease-account-error' };
 }
@@ -479,19 +489,23 @@ async function loadAccount(source = 'netease') {
     accounts[source] = account;
     const expired = account.status === 'expired';
     $(ids.name).textContent = account.loggedIn ? account.name || sourceNames[source] : sourceNames[source];
-    $(ids.status).textContent = account.loggedIn ? '已登录' : expired ? '登录失效' : '未登录';
+    $(ids.status).textContent = account.loggedIn ? '已登录' : expired ? '登录失效' : account.status === 'unconfigured' || account.enabled === false ? '未配置' : '未登录';
     $(ids.status).classList.toggle('account-expired', expired);
-    $(ids.logout).hidden = !account.loggedIn;
-    $(ids.login).querySelector('span').textContent = account.loggedIn ? '更换账号' : expired ? '重新登录' : '扫码登录';
+    if (ids.logout) $(ids.logout).hidden = !account.loggedIn;
+    if (ids.login) $(ids.login).querySelector('span').textContent = account.loggedIn ? '更换账号' : expired ? '重新登录' : '扫码登录';
     $(ids.error).hidden = true;
     setImage(ids.avatar, account.avatar);
     return account;
   } catch (error) {
-    if (request === accountRequests[source]) { $(ids.error).textContent = error.message || '登录状态读取失败，请刷新重试。'; $(ids.error).hidden = false; }
+    if (request === accountRequests[source]) {
+      $(ids.name).textContent = sourceNames[source];
+      $(ids.status).textContent = source === 'qishui' && !sourceSupports(availableSources, source, 'play') ? '未配置' : '状态读取失败';
+      $(ids.error).textContent = error.message || '登录状态读取失败，请刷新重试。'; $(ids.error).hidden = false;
+    }
     throw error;
   }
 }
-async function loadAccounts() { await Promise.allSettled(['netease', 'qq'].map((source) => loadAccount(source))); }
+async function loadAccounts() { await Promise.allSettled(sourceIds.map((source) => loadAccount(source))); }
 async function requireAccount(source, task) {
   if (source !== 'qq') return task();
   if (accountGate || pendingLoginAction) return toast('请先完成当前QQ音乐登录操作。');
@@ -535,6 +549,7 @@ function confirmAction(title, message, task) {
   syncBotLock();
 }
 async function showQR(source = qrSource, type = qrType) {
+  if (!['netease', 'qq'].includes(source)) return toast('这个音乐来源不支持在控制台扫码登录。', true);
   qrSource = source; qrType = type;
   const request = ++qrRequest;
   clearTimeout(qrTimer); if (!$('qr-dialog').open) $('qr-dialog').showModal();
@@ -692,6 +707,7 @@ $('channel-form').onsubmit = (event) => { event.preventDefault(); const botId = 
   await botApi('/channel', channel, botId); selected = channel; sessionStorage.setItem(`channel:${botId}`, JSON.stringify(selected)); $('channel-dialog').close(); toast('频道已连接');
 }); };
 $('heart-button').onclick = () => {
+  if (!sourceSupports(availableSources, currentSource, currentSource === 'qq' ? 'mine' : 'heart')) return;
   if (currentSource === 'qq') { currentCategory = 'mine'; view('discover'); return; }
   const source = currentSource, botId = selectedBotId;
   withContext((ctx) => run(async () => { const result = await botApi('/heart', { ...ctx, source }, botId); toast(result.notice); }), botId);
@@ -699,7 +715,7 @@ $('heart-button').onclick = () => {
 $('hot-button').onclick = () => { const source = currentSource, botId = selectedBotId; requireAccount(source, () => withContext((ctx) => run(async () => { const result = await botApi('/hot', { ...ctx, source }, botId); toast(result.notice); }), botId)); };
 $('import-button').onclick = () => {
   importSource = currentSource; importBot = selectedBotId; $('import-title').textContent = '导入音乐歌单';
-  $('playlist-input').placeholder = `粘贴 QQ / 网易云完整链接，或${sourceNames[importSource]}歌单 ID`;
+  $('playlist-input').placeholder = `粘贴 QQ / 网易云 / 汽水完整链接，或${sourceNames[importSource]}歌单 ID`;
   $('import-source-note').textContent = `完整链接自动识别平台；纯数字 ID 使用${sourceNames[importSource]}。`;
   $('import-dialog').showModal(); syncBotLock();
 };
