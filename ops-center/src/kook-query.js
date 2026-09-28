@@ -19,7 +19,7 @@ function summary(command, snapshot, category) {
   if(command==='修复状态'){
     const repair=snapshot?.autoRepair,states=Array.isArray(repair?.states)?repair.states:[],events=Array.isArray(repair?.events)?repair.events:[];
     return{category,theme:states.some(s=>['failed','blocked','unknown'].includes(s.phase))?'warning':'info',title:'自动修复状态',
-      lines:[repair?.enabled?'自动修复已开启：连续3次异常后重启，连续2次正常确认恢复；15分钟冷却，每服务每小时最多2次。':'自动修复尚未开启。',
+      lines:[repair?.enabled?`自动修复已开启：连续${repair.policy?.failureThreshold||2}次未获取到健康状态或确认异常后重启，连续2次正常确认恢复；15分钟冷却，每服务每小时最多2次。`:'自动修复尚未开启。',
         ...states.filter(s=>!['idle','recovered'].includes(s.phase)).slice(0,5).map(s=>safeOpsText(s.message||'修复状态待确认')),
         ...events.slice(0,3).map(e=>safeOpsText(`${e.title}：${e.message}`))]};
   }

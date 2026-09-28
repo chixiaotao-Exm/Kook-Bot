@@ -24,15 +24,15 @@ function fixture({send, probe, writeState, services=[SERVICE,STOPPED], bindings=
   const ingest=value=>engine.ingest(config.hosts[0],value||report());
   return {config,raw,store,engine,report,bad,ingest,advance:ms=>{now+=ms;},get now(){return now;}};
 }
-async function samples(f, count=3, make=()=>f.bad()) {
+async function samples(f, count=2, make=()=>f.bad()) {
   let result;for(let index=0;index<count;index++){result=await f.ingest(make());f.advance(30000);}return result;
 }
 const state=f=>f.store.data.autoRepair?.states['linux:ai'];
 const bot=(extra={})=>({id:'gateway:1',name:'AI',kind:'ai',state:'offline',health:'degraded',serviceId:'ai',repairReason:'gateway_offline',...extra});
 
-test('three distinct spaced failures issue one durable restart with the strict agent wire shape',async()=>{
+test('two distinct spaced failures issue one durable restart with the strict agent wire shape',async()=>{
   const saved=[],f=fixture({writeState:async value=>saved.push(structuredClone(value))});
-  assert.deepEqual((await samples(f,2)).commands,[]);
+  assert.deepEqual((await samples(f,1)).commands,[]);
   const response=await samples(f,1);
   assert.equal(response.commands.length,1);
   assert.deepEqual(Object.keys(response.commands[0]).sort(),['action','expiresAt','id','serviceId']);
@@ -50,8 +50,8 @@ test('replays and reports less than twenty seconds apart cannot manufacture the 
   f.advance(1000);await f.ingest(f.bad());
   f.advance(1000);await f.ingest(f.bad());
   assert.equal(state(f).failures,1);assert.equal(f.store.data.commands.length,0);
-  f.advance(30000);await f.ingest(f.bad());assert.equal(state(f).failures,2);
-  f.advance(30000);assert.equal((await f.ingest(f.bad())).commands.length,1);
+  f.advance(30000);assert.equal((await f.ingest(f.bad())).commands.length,1);assert.equal(state(f).failures,2);
+  f.advance(30000);assert.equal((await f.ingest(f.bad())).commands.length,0);
 });
 
 test('unknown status, stale reports, resource pressure, and planned stops do not restart services',async()=>{
@@ -71,10 +71,9 @@ test('unknown status, stale reports, resource pressure, and planned stops do not
 });
 
 test('a stale collection gap breaks consecutiveness instead of restarting immediately after reconnection',async()=>{
-  const f=fixture();await samples(f,2);f.advance(120001);
+  const f=fixture();await samples(f,1);f.advance(120001);
   assert.deepEqual((await f.ingest(f.bad())).commands,[]);assert.equal(state(f).failures,1);
-  f.advance(30000);await f.ingest(f.bad());f.advance(30000);
-  assert.equal((await f.ingest(f.bad())).commands.length,1);
+  f.advance(30000);assert.equal((await f.ingest(f.bad())).commands.length,1);
 });
 
 test('healthy observations resolve an uncertain repair without claiming its command receipt arrived',async()=>{
@@ -82,14 +81,14 @@ test('healthy observations resolve an uncertain repair without claiming its comm
   await f.ingest(f.report({commandResults:[{id:first.id,status:'unknown'}]}));f.advance(30000);await f.ingest(f.report());
   assert.equal(state(f).phase,'recovered');assert.equal(f.store.data.commands[0].status,'unknown');
   assert.ok(f.store.data.commands[0].recoveryVerifiedAt);
-  f.advance(900000);await samples(f,2);assert.equal((await samples(f,1)).commands.length,1);
+  f.advance(900000);await samples(f,1);assert.equal((await samples(f,1)).commands.length,1);
 });
 
-test('maintenance clears evidence and prevents repair, then requires three fresh failures again',async()=>{
-  const f=fixture();await samples(f,2);
+test('maintenance clears evidence and prevents repair, then requires two fresh failures again',async()=>{
+  const f=fixture();await samples(f,1);
   await f.engine.maintenance({kind:'host',id:'linux',enabled:true});await samples(f,4);
   assert.equal(f.store.data.commands.length,0);assert.equal(state(f).phase,'maintenance');
-  await f.engine.maintenance({kind:'host',id:'linux',enabled:false});await samples(f,2);
+  await f.engine.maintenance({kind:'host',id:'linux',enabled:false});await samples(f,1);
   assert.equal(f.store.data.commands.length,0);assert.equal((await samples(f,1)).commands.length,1);
 });
 
@@ -101,8 +100,31 @@ test('only the independently configured probe-to-service mapping can nominate a 
   }
   const unbound=fixture();await samples(unbound,4,()=>unbound.report({bots:[bot()]}));assert.equal(unbound.store.data.commands.length,0);
   for(const entry of [bot(),bot({id:'gateway'}),bot({state:'unknown',repairReason:'health_probe_failed'})]){
-    const f=fixture({bindings:[{probeId:'gateway',serviceId:'ai'}]});assert.equal((await samples(f,3,()=>f.report({bots:[entry]}))).commands.length,1);
+    const f=fixture({bindings:[{probeId:'gateway',serviceId:'ai'}]});assert.equal((await samples(f,2,()=>f.report({bots:[entry]}))).commands.length,1);
   }
+});
+
+test('two fresh local health connection failures restart, and an intervening healthy report resets the count',async()=>{
+  const f=fixture({bindings:[{probeId:'gateway',serviceId:'ai'}]});
+  const failed=()=>f.report({bots:[bot({state:'unknown',repairReason:'health_probe_failed'})]});
+  assert.deepEqual((await f.ingest(failed())).commands,[]);assert.equal(state(f).failures,1);
+  f.advance(30000);await f.ingest(f.report({bots:[bot({state:'online',health:'healthy',repairReason:null})]}));
+  assert.equal(state(f).failures,0);f.advance(30000);
+  assert.deepEqual((await f.ingest(failed())).commands,[]);assert.equal(state(f).failures,1);
+  f.advance(30000);assert.equal((await f.ingest(failed())).commands.length,1);
+  assert.match(f.store.data.commands[0].reason,/健康连接/);
+});
+
+test('unknown health without a confirmed repair reason and stale health reports never count as failures',async()=>{
+  for(const repairReason of [undefined,null,'gateway_offline','health_unknown']){
+    const f=fixture({bindings:[{probeId:'gateway',serviceId:'ai'}]});
+    await samples(f,3,()=>f.report({bots:[bot({state:'unknown',repairReason})]}));
+    assert.equal(state(f).failures,0);assert.equal(f.store.data.commands.length,0);
+  }
+  const f=fixture({bindings:[{probeId:'gateway',serviceId:'ai'}]});
+  const old=f.report({observedAt:new Date(f.now-120001).toISOString(),bots:[bot({state:'unknown',repairReason:'health_probe_failed'})]});
+  await assert.rejects(f.ingest(old),/过期/);f.advance(30000);await assert.rejects(f.ingest(old),/过期/);
+  assert.equal(f.store.data.commands.length,0);
 });
 
 test('recovery requires the restart acknowledgement and two later healthy observations',async()=>{
@@ -117,14 +139,14 @@ test('recovery requires the restart acknowledgement and two later healthy observ
 });
 
 test('a restart acknowledgement alone does not mean a disconnected or missing bot recovered',async()=>{
-  const f=fixture({bindings:[{probeId:'gateway',serviceId:'ai'}]}),result=await samples(f,3,()=>f.report({bots:[bot()]})),id=result.commands[0].id;
+  const f=fixture({bindings:[{probeId:'gateway',serviceId:'ai'}]}),result=await samples(f,2,()=>f.report({bots:[bot()]})),id=result.commands[0].id;
   await f.ingest(f.report({bots:[bot()],commandResults:[{id,status:'succeeded'}]}));f.advance(30000);
   await samples(f,2,()=>f.report());assert.notEqual(state(f).phase,'recovered');
   await samples(f,2,()=>f.report({bots:[bot({state:'online',health:'healthy',repairReason:null})]}));assert.equal(state(f).phase,'recovered');
 });
 
 test('intentionally stopped music tenants do not prevent the shared service from confirming recovery',async()=>{
-  const f=fixture({bindings:[{probeId:'gateway',serviceId:'ai'}]}),result=await samples(f,3,()=>f.report({bots:[bot()]})),id=result.commands[0].id;
+  const f=fixture({bindings:[{probeId:'gateway',serviceId:'ai'}]}),result=await samples(f,2,()=>f.report({bots:[bot()]})),id=result.commands[0].id;
   const bots=[bot({state:'online',health:'healthy',repairReason:null}),bot({id:'gateway:disabled',kind:'music',state:'stopped',health:'healthy',repairReason:null})];
   await f.ingest(f.report({bots,commandResults:[{id,status:'succeeded'}]}));f.advance(30000);
   await f.ingest(f.report({bots}));assert.equal(state(f).phase,'recovered');
@@ -134,7 +156,7 @@ test('failed restarts wait fifteen minutes, allow only two attempts in an hour, 
   const f=fixture(),first=await samples(f),firstId=first.commands[0].id,firstAt=Date.parse(f.store.data.commands[0].createdAt);
   await f.ingest(f.bad({commandResults:[{id:firstId,status:'failed'}]}));f.advance(30000);
   await samples(f,3);assert.equal(f.store.data.commands.length,1);
-  f.advance(firstAt+15*60000-f.now);await samples(f,2);assert.equal(f.store.data.commands.length,1);
+  f.advance(firstAt+15*60000-f.now);await samples(f,1);assert.equal(f.store.data.commands.length,1);
   const second=await samples(f,1),secondId=second.commands[0].id;assert.equal(f.store.data.commands.length,2);
   await f.ingest(f.bad({commandResults:[{id:secondId,status:'failed'}]}));f.advance(30000);
   f.advance(15*60000);await samples(f,3);assert.equal(f.store.data.commands.length,2);assert.equal(state(f).phase,'blocked');
@@ -162,7 +184,7 @@ test('five minutes of unhealthy post-restart samples reports failure instead of 
 });
 
 test('manual and automatic restarts share the host in-flight lock',async()=>{
-  const f=fixture();await samples(f,2);
+  const f=fixture();await samples(f,1);
   const manual=await f.engine.command({hostId:'linux',serviceId:'ai',action:'restart',requestId:randomUUID()});
   const result=await f.ingest(f.bad());assert.deepEqual(result.commands.map(command=>command.id),[manual.id]);assert.equal(f.store.data.commands.length,1);
   const g=fixture();await samples(g);
@@ -192,6 +214,34 @@ test('only mapped local persistent HTTP 500 faults can request a monitor repair;
   const unmapped=fixture({monitors:[{id:'site',name:'site',url:'https://external.example/'}],probe:async()=>({ok:false,httpStatus:500})});
   for(let count=0;count<5;count++){await unmapped.engine.tick();await unmapped.ingest();unmapped.advance(30000);}
   assert.equal(unmapped.store.data.commands.length,0);
+});
+
+test('the second independent monitor failure can dispatch on the next host report without another host threshold',async()=>{
+  let checks=0;
+  const f=fixture({monitors:[MONITOR],probe:async()=>{checks++;return {ok:false,httpStatus:500};}});
+  await f.engine.tick();assert.deepEqual((await f.ingest()).commands,[]);
+  f.advance(30000);assert.deepEqual((await f.ingest()).commands,[]);
+  f.advance(30000);assert.deepEqual((await f.ingest()).commands,[]);
+  assert.equal(checks,1);assert.equal(f.store.data.commands.length,0);
+  f.advance(30000);await f.engine.tick();assert.equal(checks,2);
+  assert.equal((await f.ingest()).commands.length,1);assert.equal(state(f).category,'web');
+});
+
+test('monitor samples with the same checkedAt do not form two independent failures',async()=>{
+  const f=fixture({monitors:[MONITOR],probe:async()=>({ok:false,httpStatus:500})});
+  await f.engine.tick();await f.engine.tick();await f.ingest();
+  f.advance(30000);assert.deepEqual((await f.ingest()).commands,[]);
+  assert.equal(f.store.data.commands.length,0);
+  f.advance(30000);await f.engine.tick();assert.equal((await f.ingest()).commands.length,1);
+});
+
+test('an intervening healthy monitor check resets its own two-failure evidence',async()=>{
+  let ok=false;
+  const f=fixture({monitors:[MONITOR],probe:async()=>({ok,httpStatus:ok?200:500})});
+  await f.engine.tick();assert.deepEqual((await f.ingest()).commands,[]);f.advance(30000);
+  ok=true;await f.engine.tick();await f.ingest();f.advance(30000);
+  ok=false;await f.engine.tick();assert.deepEqual((await f.ingest()).commands,[]);f.advance(30000);
+  await f.engine.tick();assert.equal((await f.ingest()).commands.length,1);
 });
 
 test('a local monitor cannot accidentally restart a service on a different host',()=>{
@@ -228,7 +278,7 @@ test('delayed repair notifications cannot announce an obsolete start after recov
 });
 
 test('failed durable command admission never returns or sends an unpersisted restart',async()=>{
-  const f=fixture();await samples(f,2);f.store.writeState=async()=>{throw Error('disk failed');};
+  const f=fixture();await samples(f,1);f.store.writeState=async()=>{throw Error('disk failed');};
   await assert.rejects(f.ingest(f.bad()),/保存失败/);assert.equal(f.store.data.commands.length,0);assert.equal(f.store.failed,true);
   await assert.rejects(f.ingest(f.bad()),/不可用/);
 });
