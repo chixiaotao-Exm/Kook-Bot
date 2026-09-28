@@ -1,4 +1,4 @@
-import { createIcons, Headphones, LockKeyhole, Eye, EyeOff, ArrowLeft, ArrowRight, AudioLines, Disc3, SlidersHorizontal, Bot, LogOut, ChevronRight, ChevronDown, Sparkles, Expand, Minimize, Radio, Search, Heart, Flame, ListPlus, Shuffle, ListX, Music2, RefreshCw, UserRound, QrCode, RadioTower, Repeat2, Repeat1, Activity, ExternalLink, Play, Pause, SkipBack, SkipForward, Volume2, X, Plus, Trash2, ArrowUp, ListMusic, LoaderCircle, History } from 'lucide';
+import { createIcons, Headphones, LockKeyhole, Eye, EyeOff, ArrowLeft, ArrowRight, AudioLines, Disc3, SlidersHorizontal, Bot, LogOut, ChevronRight, ChevronDown, Sparkles, Expand, Minimize, Radio, Search, Heart, Flame, ListPlus, Shuffle, ListX, Music2, RefreshCw, UserRound, QrCode, RadioTower, Repeat2, Repeat1, Activity, ExternalLink, Play, Pause, SkipBack, SkipForward, Volume2, X, Plus, Trash2, ArrowUp, ListMusic, LoaderCircle, History, Clock3 } from 'lucide';
 import { initBackground } from './background.js';
 import { createBotStatus } from './bot-status.js';
 import { createSmartLinks } from './smart-links.js';
@@ -12,7 +12,7 @@ import { sourceNames, sourceIds, normalizeSource, sourceName, defaultSources, so
 const accessToken = takeAccessToken();
 const initialLocation = new URLSearchParams(location.search);
 
-const icons = { Headphones, LockKeyhole, Eye, EyeOff, ArrowLeft, ArrowRight, AudioLines, Disc3, SlidersHorizontal, Bot, LogOut, ChevronRight, ChevronDown, Sparkles, Expand, Minimize, Radio, Search, Heart, Flame, ListPlus, Shuffle, ListX, Music2, RefreshCw, UserRound, QrCode, RadioTower, Repeat2, Repeat1, Activity, ExternalLink, Play, Pause, SkipBack, SkipForward, Volume2, X, Plus, Trash2, ArrowUp, ListMusic, LoaderCircle, History };
+const icons = { Headphones, LockKeyhole, Eye, EyeOff, ArrowLeft, ArrowRight, AudioLines, Disc3, SlidersHorizontal, Bot, LogOut, ChevronRight, ChevronDown, Sparkles, Expand, Minimize, Radio, Search, Heart, Flame, ListPlus, Shuffle, ListX, Music2, RefreshCw, UserRound, QrCode, RadioTower, Repeat2, Repeat1, Activity, ExternalLink, Play, Pause, SkipBack, SkipForward, Volume2, X, Plus, Trash2, ArrowUp, ListMusic, LoaderCircle, History, Clock3 };
 const $ = (id) => document.getElementById(id);
 const drawIcons = () => createIcons({ icons, attrs: { 'aria-hidden': 'true' } });
 const icon = (name) => `<i data-lucide="${name}"></i>`;

@@ -11,6 +11,20 @@ const monitor = patch => ({ id: 'quota', name: '额度网站', url: 'https://api
   checkedAt: iso(0), httpStatus: 200, latencyMs: 12, tlsDays: 80, ...patch });
 const content = value => [value.title, ...value.lines].join('\n');
 
+test('music reports use sampled runtime only, with explicit unavailable and stale labels', () => {
+  const music = { id:'music', name:'音乐', kind:'music', state:'online', health:'healthy', uptimeSeconds:93784, startedAt:iso(-93784000) };
+  assert.match(content(buildScheduledSummary({hosts:[host({bots:[music]})]},'infra',NOW)),/已运行1天2小时3分（采样）/);
+  const still = content(buildScheduledSummary({hosts:[host({bots:[music]})]},'infra',NOW+60000));
+  assert.match(still,/已运行1天2小时3分（采样）/);assert.doesNotMatch(still,/2小时4分/);
+  assert.match(content(buildScheduledSummary({hosts:[host({bots:[music]})]},'infra',NOW+120001)),/运行时长待确认（样本过期）/);
+  for(const uptimeSeconds of [undefined,null,-1,Infinity,NaN,'500',true,1e13]){
+    const value=content(buildScheduledSummary({hosts:[host({bots:[{...music,uptimeSeconds}]})]},'infra',NOW));
+    assert.match(value,/运行时长待确认/);assert.doesNotMatch(value,/已运行/);
+  }
+  for(const state of ['unknown','stopped'])assert.doesNotMatch(content(buildScheduledSummary({hosts:[host({bots:[{...music,state}]})]},'infra',NOW)),/已运行/);
+  assert.doesNotMatch(content(buildScheduledSummary({hosts:[host({bots:[{...music,kind:'ai'}]})]},'infra',NOW)),/运行时长|已运行/);
+});
+
 test('infra summary keeps every current host, all eight bots and the explicitly stopped discussion', () => {
   const bots = Array.from({ length: 8 }, (_, i) => ({ id: `music${i}`, name: `音乐机器人${i}`, state: 'online', playing: i % 2 === 0 }));
   const snapshot = { hosts: [host({ bots: [], services: [{ id: 'duet', name: '双机器人讨论', expected: 'stopped', activeState: 'inactive' }] }),

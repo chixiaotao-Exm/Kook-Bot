@@ -172,6 +172,8 @@ export class WebConsole {
   descriptor(item) {
     return { id: item.id, name: this.safeMessage(item.name || item.username || '机器人'), username: this.safeMessage(item.username || ''),
       online: Boolean(item.online), status: item.status || 'ready', error: this.safeMessage(item.error), managed: Boolean(item.managed),
+      startedAt: typeof item.startedAt === 'string' && Number.isFinite(Date.parse(item.startedAt)) ? new Date(item.startedAt).toISOString() : null,
+      uptimeSeconds: typeof item.uptimeSeconds === 'number' && Number.isFinite(item.uptimeSeconds) && item.uptimeSeconds >= 0 ? Math.floor(item.uptimeSeconds) : null,
       guildIds: Array.isArray(item.guildIds) ? item.guildIds.filter((id) => typeof id === 'string') : [],
       context: item.context ? { guildId: item.context.guildId, voiceChannelId: item.context.voiceChannelId, textChannelId: item.context.textChannelId } : null,
       playing: Boolean(item.playing) };
@@ -180,6 +182,7 @@ export class WebConsole {
     if (this.manager) return this.manager.list().map((item) => this.descriptor(item));
     return [this.descriptor({ id: 'default', name: this.self?.username, username: this.self?.username, online: this.gateway?.ready,
       status: 'ready', managed: false, guildIds: [...this.config.guilds], context: this.player?.context,
+      startedAt: new Date(this.started).toISOString(), uptimeSeconds: Math.max(0, Math.floor((Date.now() - this.started) / 1000)),
       playing: Boolean(this.player?.stream && !this.player.stream.paused) })];
   }
   requirePlayer(runtime) {

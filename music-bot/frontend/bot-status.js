@@ -3,6 +3,12 @@ const escape = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&':
 const icon = (name) => `<i data-lucide="${name}"></i>`;
 const seconds = (value) => Number.isFinite(Number(value)) ? Math.max(0, Number(value)) : 0;
 const duration = (value) => `${Math.floor(seconds(value) / 60)}:${String(Math.floor(seconds(value)) % 60).padStart(2, '0')}`;
+const runtimeDuration = (value) => {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > Number.MAX_SAFE_INTEGER) return '—';
+  const whole = Math.floor(value), parts = [[Math.floor(whole / 86400), '天'], [Math.floor(whole % 86400 / 3600), '小时'],
+    [Math.floor(whole % 3600 / 60), '分钟'], [whole % 60, '秒']];
+  return parts.filter(([amount]) => amount > 0).map(([amount, unit]) => `${amount} ${unit}`).join(' ') || '0 秒';
+};
 const time = (value) => new Date(value).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
 function gateway(bot) {
@@ -99,7 +105,7 @@ export function createBotStatus({ api, drawIcons, onControl, onManage, onChanged
     const catalog = catalogs.get(bot.id);
     return `<article class="status-card${stale ? ' is-stale' : ''}" data-status-bot="${escape(bot.id)}" data-playback-status="${escape(unavailable ? 'unavailable' : player.status)}">
       <div class="status-card-heading"><span class="bot-avatar">${icon('bot')}</span><div><h2>${escape(bot.name || bot.username || '音乐机器人')}</h2><span>${bot.managed === false ? '默认机器人' : '独立音乐房'}</span></div><span class="status-pill ${gatewayTone}"><b></b>${escape(gatewayLabel)}</span></div>
-      <div class="status-connections"><span>${icon('activity')}机器人连接 <strong>${escape(gatewayLabel)}</strong></span><span>${icon('radio-tower')}语音连接 <strong>${voice}</strong></span></div>
+      <div class="status-connections"><span>${icon('activity')}机器人连接 <strong>${escape(gatewayLabel)}</strong></span><span>${icon('radio-tower')}语音连接 <strong>${voice}</strong></span><span class="status-runtime" title="本次机器人启动后的运行时间，按最近采样显示；暂停播放或短暂重连不会清零。">${icon('clock-3')}运行时长 <strong>${runtimeDuration(bot.uptimeSeconds)}</strong>${listError ? '<small>上次采样</small>' : ''}</span></div>
       <div class="status-room"><span class="status-caption">${!unavailable && player.connected ? '所在频道' : '已选频道'}</span><strong>${icon('radio')}${escape(room.channel)}</strong>${room.guild ? `<span>${escape(room.guild)}</span>` : ''}</div>
       <div class="status-track"><div class="status-track-heading"><span class="status-playback${player?.status === 'playing' ? ' playing' : ''}">${icon(player?.status === 'playing' ? 'audio-lines' : player?.status === 'paused' ? 'pause' : 'music-2')}${playback}</span>${song ? `<span class="source-badge ${normalizeSource(song.source)}">${sourceName(song.source)}</span>` : ''}</div><h3>${escape(song?.name || (unavailable ? '暂时无法读取歌曲' : '等待下一首好歌'))}</h3><p>${escape(song?.artists || (unavailable ? '稍后会自动重试' : '可以前往控制台点歌'))}</p>${song ? `<div class="status-progress"><progress value="${Math.min(elapsed, Math.max(1, total))}" max="${Math.max(1, total)}" aria-label="${escape(song.name)}播放进度"></progress><span>${duration(elapsed)} / ${duration(total)}</span></div>` : '<div class="status-track-placeholder"></div>'}</div>
       <dl class="status-facts"><div><dt>待播队列</dt><dd>${unavailable ? '—' : `${Array.isArray(player.queue) ? player.queue.length : 0} 首`}</dd></div><div><dt>音量</dt><dd>${unavailable ? '—' : `${Math.min(100, seconds(player.volume))}%`}</dd></div><div><dt>频道常驻</dt><dd>${unavailable ? '—' : player.stayConnected ? '已开启' : '未开启'}</dd></div></dl>
