@@ -7,6 +7,7 @@ import os from 'node:os';
 import { OpsEngine } from '../src/engine.js';
 import { StateStore } from '../src/storage.js';
 import { validateConfig } from '../src/config.js';
+import { observeRepairMonitor } from '../src/auto-repair.js';
 
 const NOW = Date.parse('2026-09-28T12:00:00Z');
 const SERVICE = { id:'ai', name:'AI', unit:'kook-ai-bot.service', expected:'running', restartAllowed:true, autoRepair:true };
@@ -52,6 +53,24 @@ test('replays and reports less than twenty seconds apart cannot manufacture the 
   assert.equal(state(f).failures,1);assert.equal(f.store.data.commands.length,0);
   f.advance(30000);assert.equal((await f.ingest(f.bad())).commands.length,1);assert.equal(state(f).failures,2);
   f.advance(30000);assert.equal((await f.ingest(f.bad())).commands.length,0);
+});
+
+test('a new healthy or unknown host sample inside twenty seconds breaks consecutive failure evidence',async()=>{
+  for(const services of [undefined,[]]){
+    const f=fixture();await f.ingest(f.bad());f.advance(10000);
+    await f.ingest(f.report(services?{services}:{}));assert.equal(state(f).failures,0);
+    f.advance(20000);assert.deepEqual((await f.ingest(f.bad())).commands,[]);assert.equal(state(f).failures,1);
+    await assert.rejects(f.ingest(f.report({observedAt:new Date(NOW+10000).toISOString()})),/旧报告/);
+    assert.equal(state(f).failures,1);f.advance(30000);assert.equal((await f.ingest(f.bad())).commands.length,1);
+  }
+});
+
+test('an unhealthy host sample inside twenty seconds breaks recovery evidence without advancing command status',async()=>{
+  const f=fixture(),id=(await samples(f)).commands[0].id;
+  await f.ingest(f.report({commandResults:[{id,status:'succeeded'}]}));assert.equal(state(f).successes,1);
+  f.advance(10000);await f.ingest(f.bad());assert.equal(state(f).successes,0);assert.equal(state(f).phase,'verifying');
+  f.advance(20000);await f.ingest();assert.equal(state(f).phase,'verifying');assert.equal(state(f).successes,1);
+  f.advance(30000);await f.ingest();assert.equal(state(f).phase,'recovered');
 });
 
 test('unknown status, stale reports, resource pressure, and planned stops do not restart services',async()=>{
@@ -242,6 +261,42 @@ test('an intervening healthy monitor check resets its own two-failure evidence',
   ok=true;await f.engine.tick();await f.ingest();f.advance(30000);
   ok=false;await f.engine.tick();assert.deepEqual((await f.ingest()).commands,[]);f.advance(30000);
   await f.engine.tick();assert.equal((await f.ingest()).commands.length,1);
+});
+
+test('a new healthy or nonrepairable monitor sample inside twenty seconds immediately clears failure evidence',async()=>{
+  for(const interruption of [{ok:true,httpStatus:200},{ok:false,httpStatus:401}]){
+    let result={ok:false,httpStatus:500};
+    const f=fixture({monitors:[MONITOR],probe:async()=>result});
+    await f.engine.tick();await f.ingest();f.advance(10000);
+    result=interruption;await f.engine.tick();await f.ingest();assert.equal(f.store.data.autoRepair.monitorChecks.health.fail,0);
+    f.advance(20000);result={ok:false,httpStatus:500};await f.engine.tick();assert.deepEqual((await f.ingest()).commands,[]);
+    assert.equal(f.store.data.autoRepair.monitorChecks.health.fail,1);
+    f.advance(30000);await f.engine.tick();assert.equal((await f.ingest()).commands.length,1);
+  }
+});
+
+test('old or repeated monitor health samples cannot clear newer failure evidence, even after an uncounted check',async()=>{
+  const f=fixture({monitors:[MONITOR],probe:async()=>({ok:false,httpStatus:500})});
+  await f.engine.tick();f.advance(10000);await f.engine.tick();
+  assert.equal(f.store.data.autoRepair.monitorChecks.health.fail,1);
+  for(const offset of [5000,10000]){
+    await f.store.transaction(draft=>observeRepairMonitor(draft,f.config.monitors[0],{ok:true,httpStatus:200,checkedAt:new Date(NOW+offset).toISOString()},f.config));
+    assert.equal(f.store.data.autoRepair.monitorChecks.health.fail,1);
+  }
+  f.advance(20000);await f.engine.tick();assert.equal(f.store.data.autoRepair.monitorChecks.health.fail,2);
+  await f.store.transaction(draft=>observeRepairMonitor(draft,f.config.monitors[0],{ok:true,httpStatus:200,checkedAt:new Date(NOW+10000).toISOString()},f.config));
+  assert.equal(f.store.data.autoRepair.monitorChecks.health.fail,2);
+  assert.equal((await f.ingest()).commands.length,1);
+});
+
+test('one monitor with only one failure cannot hide another mapped monitor with two independent failures',async()=>{
+  let firstFails=false;
+  const monitors=[{...MONITOR,id:'first'},{...MONITOR,id:'second'}];
+  const f=fixture({monitors,probe:async monitor=>({ok:monitor.id==='first'&&!firstFails,httpStatus:monitor.id==='first'&&!firstFails?200:500})});
+  await f.engine.tick();assert.deepEqual((await f.ingest()).commands,[]);f.advance(30000);
+  firstFails=true;await f.engine.tick();
+  assert.equal(f.store.data.autoRepair.monitorChecks.first.fail,1);assert.equal(f.store.data.autoRepair.monitorChecks.second.fail,2);
+  assert.equal((await f.ingest()).commands.length,1);assert.equal(state(f).failures,2);
 });
 
 test('a local monitor cannot accidentally restart a service on a different host',()=>{
