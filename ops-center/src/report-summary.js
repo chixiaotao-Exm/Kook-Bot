@@ -28,6 +28,19 @@ function pack(prefix, items) {
   return result.map(line => safeOpsText(line));
 }
 
+function repairSummary(value, category, now) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const inScope = item => category === 'infra' || item.category === 'web';
+  const recovered = new Set(rows(value.events).filter(item => inScope(item) && item.phase === 'recovered'
+    && Number.isFinite(Date.parse(item.at)) && now - Date.parse(item.at) >= 0 && now - Date.parse(item.at) <= HALF_HOUR)
+    .map(item => typeof item.id === 'string' && item.id ? item.id : `${item.hostId}:${item.serviceId}:${item.at}`)).size;
+  const states = [...new Map(rows(value.states).filter(inScope).map(item => [`${item.hostId}:${item.serviceId}`, item])).values()];
+  const pending = states.filter(item => !['idle', 'recovered', 'maintenance', 'blocked'].includes(item.phase)).length;
+  const blocked = states.filter(item => item.phase === 'blocked').length;
+  return { line: `自动修复：${value.enabled === true ? '已开启' : '未开启'} · 最近30分钟恢复${recovered}次 / 待确认${pending} / 受限${blocked}`,
+    attention: pending > 0 || blocked > 0 };
+}
+
 /** Snapshot-only half-hour report. It never refreshes data, executes commands or sends messages. */
 export function buildScheduledSummary(snapshot, category, now = Date.now()) {
   if (!['infra', 'web'].includes(category) || typeof now !== 'number' || !Number.isFinite(now) || now < 0 || now >= 8640000000000000) {
@@ -95,15 +108,18 @@ export function buildScheduledSummary(snapshot, category, now = Date.now()) {
   }
   // Keep the usual inventory scannable: one host/bot/site per line. Pack only
   // larger inventories so the sender's twelve-section cap need not omit them.
-  const displaySections = sections.length > 12 ? packedSections : sections;
-  const lines = [];
+  const repair = repairSummary(snapshot?.autoRepair, category, now);
+  warning ||= repair?.attention === true;
+  const displaySections = sections.length > (repair ? 11 : 12) ? packedSections : sections;
+  const lines = repair ? [repair.line] : [];
+  let displayed = 0;
   for (const section of displaySections) {
     // Leave room for the sender's card structure and public console address,
     // including JSON escaping. Typical two-host/nine-bot reports fit in full.
     if (lines.length >= 12 || JSON.stringify([...lines, section]).length > 5200) break;
-    lines.push(section);
+    lines.push(section); displayed++;
   }
-  if (lines.length < displaySections.length) {
+  if (displayed < displaySections.length) {
     if (lines.length === 12) lines.pop();
     lines.push('内容较多，其余记录请打开运维中心查看。'); warning = true;
   }

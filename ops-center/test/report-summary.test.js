@@ -108,3 +108,51 @@ test('secret names and mention syntax are sanitized and arbitrary snapshot field
   assert.doesNotMatch(content(result), /@all|sk-private|hidden-value|ignored-token|\(met\)|user@example|private-error|private-command/);
   assert.ok(result.lines.every(line => line.isWellFormed()));
 });
+
+test('automatic repair summaries count actual recent recoveries and scope website repairs separately', () => {
+  const autoRepair = { enabled: true, states: [
+    { hostId: 'main', serviceId: 'ai', category: 'infra', phase: 'verifying' },
+    { hostId: 'main', serviceId: 'quota', category: 'web', phase: 'unknown' },
+    { hostId: 'main', serviceId: 'music', category: 'infra', phase: 'blocked' },
+    { hostId: 'main', serviceId: 'menu', category: 'infra', phase: 'idle' },
+    { hostId: 'main', serviceId: 'bridge', category: 'infra', phase: 'recovered' },
+    { hostId: 'main', serviceId: 'duet', category: 'infra', phase: 'maintenance' },
+  ], events: [
+    { id: 'r1', phase: 'recovered', category: 'infra', at: iso(-1800000) },
+    { id: 'r1', phase: 'recovered', category: 'infra', at: iso(-1800000) },
+    { id: 'r2', phase: 'recovered', category: 'web', at: iso(-1) },
+    { id: 'too-old', phase: 'recovered', category: 'web', at: iso(-1800001) },
+    { id: 'future', phase: 'recovered', category: 'web', at: iso(1) },
+    { id: 'invalid', phase: 'recovered', category: 'web', at: 'invalid' },
+    { id: 'only-command-complete', phase: 'verifying', category: 'web', at: iso(0) },
+  ] };
+  const snapshot = { hosts: [host()], monitors: [monitor()], autoRepair }, before = structuredClone(snapshot);
+  assert.equal(buildScheduledSummary(snapshot, 'infra', NOW).lines[0], '自动修复：已开启 · 最近30分钟恢复2次 / 待确认2 / 受限1');
+  assert.equal(buildScheduledSummary(snapshot, 'web', NOW).lines[0], '自动修复：已开启 · 最近30分钟恢复1次 / 待确认1 / 受限0');
+  assert.equal(buildScheduledSummary(snapshot, 'infra', NOW).theme, 'warning');
+  assert.deepEqual(snapshot, before);
+});
+
+test('repair summary tolerates old snapshots and unknown phases without claiming recovery', () => {
+  for (const value of [undefined, null, []]) {
+    assert.doesNotMatch(content(buildScheduledSummary({ hosts: [host()], autoRepair: value }, 'infra', NOW)), /自动修复/);
+  }
+  const result = buildScheduledSummary({ hosts: [host()], autoRepair: { enabled: false,
+    states: [null, { hostId: 'main', serviceId: 'ai', phase: 'new-state' }, { hostId: 'main', serviceId: 'menu', phase: 'failed' }],
+    events: [{ phase: 'failed', at: iso(0), message: 'sk-not-for-reports' }] } }, 'infra', NOW);
+  assert.match(content(result), /自动修复：未开启 · 最近30分钟恢复0次 \/ 待确认2 \/ 受限0/);
+  assert.doesNotMatch(content(result), /sk-not-for-reports/);
+});
+
+test('repair summary reserves its section while packing complete host and bot inventory', () => {
+  const bots = Array.from({ length: 10 }, (_, i) => ({ id: `bot${i}`, name: `机器人${i}`, state: 'online' }));
+  const result = buildScheduledSummary({ hosts: [host({ bots }), host({ id: 'other', name: '备用服务器', bots: [] })],
+    autoRepair: { enabled: true, events: [], states: [] } }, 'infra', NOW);
+  assert.match(result.lines[0], /^自动修复：已开启/);
+  for (const bot of bots) assert.ok(content(result).includes(`${bot.name}：在线`));
+  assert.match(content(result), /主服务器｜正常/); assert.match(content(result), /备用服务器｜正常/);
+  assert.doesNotMatch(content(result), /其余记录/); assert.ok(result.lines.length <= 12);
+  const huge = buildScheduledSummary({ monitors: Array.from({ length: 300 }, (_, i) => monitor({ id: `m${i}`, name: `监控目标${i}` })),
+    autoRepair: { enabled: true, states: [], events: [] } }, 'web', NOW);
+  assert.match(huge.lines[0], /^自动修复：已开启/); assert.match(content(huge), /其余记录/); assert.ok(huge.lines.length <= 12);
+});
