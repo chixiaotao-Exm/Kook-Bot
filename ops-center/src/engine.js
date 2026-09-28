@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { OpsError } from './storage.js';
-import { observeRepairs, repairState, repairSnapshot } from './auto-repair.js';
+import { observeRepairs, observeRepairMonitor, repairState, repairSnapshot } from './auto-repair.js';
 
 const finite = value => typeof value === 'number' && Number.isFinite(value);
 const number = (value, max = 100) => finite(value) && value >= 0 && value <= max ? value : null;
@@ -133,6 +133,9 @@ export class OpsEngine {
     return this.store.transaction(draft => {
       authorize(); const key = `${input.kind}:${target.id}`; draft.maintenance[key] = input.enabled;
       draft.streaks[key] = { fail: 0, pass: 0 };
+      for(const monitor of this.config.monitors.filter(m=>input.kind==='monitor'?m.id===target.id:m.repairTarget?.hostId===target.id)) {
+        if(draft.autoRepair?.monitorChecks?.[monitor.id])draft.autoRepair.monitorChecks[monitor.id]={fail:0,checkedAt:null};
+      }
       draft.audit.unshift({ at: iso(this.now()), action: input.enabled ? 'maintenance_enabled' : 'maintenance_disabled', target: target.name }); draft.audit = draft.audit.slice(0, 300);
       return { updated: true };
     });
@@ -163,6 +166,7 @@ export class OpsEngine {
       const safe = { ok: result.ok === true, checkedAt: iso(now), latencyMs: number(result.latencyMs, 120000), httpStatus: number(result.httpStatus, 599), tlsDays: finite(result.tlsDays) ? result.tlsDays : null, error: text(result.error, 150) || null };
       history.push({ at: safe.checkedAt, ok: safe.ok, latencyMs: safe.latencyMs });
       draft.monitors[monitor.id] = { ...safe, history: history.filter(item => now - Date.parse(item.at) <= 86400000).slice(-1440) };
+      observeRepairMonitor(draft,monitor,safe,this.config);
       const problem = !safe.ok ? safe.error || '接口不可用' : safe.tlsDays !== null && safe.tlsDays <= 14 ? 'HTTPS 证书即将到期' : null;
       this.observe(draft, `monitor:${monitor.id}`, 'web', monitor.name, problem, iso(now));
     });

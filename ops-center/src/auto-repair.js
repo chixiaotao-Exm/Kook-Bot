@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-export const REPAIR_POLICY = Object.freeze({ failureThreshold: 3, recoveryThreshold: 2, cooldownMs: 15 * 60000, maxAttemptsPerHour: 2 });
+export const REPAIR_POLICY = Object.freeze({ failureThreshold: 2, recoveryThreshold: 2, cooldownMs: 15 * 60000, maxAttemptsPerHour: 2 });
 const VERIFY_MS = 5 * 60000;
 const at = value => new Date(value).toISOString();
 const recent = (time, now, ttl) => typeof time === 'string' && Number.isFinite(Date.parse(time)) && now - Date.parse(time) >= 0 && now - Date.parse(time) <= ttl;
@@ -12,7 +12,26 @@ export function repairState(draft) {
   if (!value || typeof value !== 'object' || Array.isArray(value) || !value.states || typeof value.states !== 'object'
     || Array.isArray(value.states) || Object.keys(value.states).length > 600 || !Array.isArray(value.events) || value.events.length > 300)
     throw Error('invalid_repair_state');
+  value.monitorChecks ||= {};
+  if(typeof value.monitorChecks!=='object'||Array.isArray(value.monitorChecks)||Object.keys(value.monitorChecks).length>40)throw Error('invalid_repair_monitor_state');
   return value;
+}
+
+export function observeRepairMonitor(draft, monitor, result, config){
+  if(!monitor.repairTarget)return;
+  const checks=repairState(draft).monitorChecks;
+  const counter=checks[monitor.id] ||= {fail:0,checkedAt:null};
+  const observed=Date.parse(result.checkedAt),previousObserved=Date.parse(counter.lastObservedAt||counter.checkedAt);
+  if(!Number.isFinite(observed)||Number.isFinite(previousObserved)&&observed<=previousObserved)return;
+  counter.lastObservedAt=result.checkedAt;
+  if(draft.maintenance['monitor:'+monitor.id]||draft.maintenance['host:'+monitor.repairTarget.hostId]){counter.fail=0;counter.checkedAt=result.checkedAt;return}
+  const failure=result.ok===false&&(result.httpStatus===null||result.httpStatus>=500||result.httpStatus===200);
+  if(!failure){counter.fail=0;counter.checkedAt=result.checkedAt;return}
+  const elapsed=Date.parse(result.checkedAt)-Date.parse(counter.checkedAt);
+  if(counter.checkedAt&&elapsed<20000)return;
+  if(counter.checkedAt&&elapsed>config.monitorStaleMs)counter.fail=0;
+  counter.checkedAt=result.checkedAt;
+  counter.fail=Math.min(counter.fail+1,100);
 }
 
 function event(state, data, phase, message, now) {
@@ -36,8 +55,9 @@ export function repairSignals(host, report, draft, config, now) {
     const bots=report.bots.filter(bot=>bot.serviceId===service.id && bindings.some(binding=>bot.id===binding.probeId||bot.id.startsWith(binding.probeId+':')));
     const associated=config.monitors.filter(m=>m.repairTarget?.hostId===host.id&&m.repairTarget.serviceId===service.id);
     const monitorRows=associated.map(m=>({config:m,value:draft.monitors[m.id],maintenance:draft.maintenance['monitor:'+m.id]}));
-    const monitorBad=monitorRows.find(({config:m,value,maintenance})=>!maintenance&&recent(value?.checkedAt,now,config.monitorStaleMs)
-      && value.ok===false && (value.httpStatus===null||value.httpStatus>=500||value.httpStatus===200) && (draft.streaks['monitor:'+m.id]?.fail||0)>=3);
+    const monitorBad=monitorRows.filter(({config:m,value,maintenance})=>!maintenance&&recent(value?.checkedAt,now,config.monitorStaleMs)
+      && value.ok===false && (value.httpStatus===null||value.httpStatus>=500||value.httpStatus===200) && (draft.autoRepair?.monitorChecks?.[m.id]?.fail||0)>0)
+      .sort((a,b)=>draft.autoRepair.monitorChecks[b.config.id].fail-draft.autoRepair.monitorChecks[a.config.id].fail)[0];
     const botBad=bots.find(bot=>bot.repairReason==='gateway_offline'&&bot.state==='offline'||bot.repairReason==='health_probe_failed'&&bot.state==='unknown');
     const processBad=status&&['failed','inactive'].includes(status.activeState);
     const maintenance=draft.maintenance['host:'+host.id]===true || monitorRows.some(row=>row.maintenance===true);
@@ -45,6 +65,7 @@ export function repairSignals(host, report, draft, config, now) {
       && bots.every(bot=>['online','stopped'].includes(bot.state)&&bot.health==='healthy'&&!bot.repairReason)
       && monitorRows.every(({value,maintenance})=>maintenance||recent(value?.checkedAt,now,config.monitorStaleMs)&&value.ok===true);
     return { service,status,maintenance,healthy,problem:processBad?'服务进程未运行':botBad?.repairReason==='gateway_offline'?'机器人网关持续离线':botBad?'本机健康连接持续失败':monitorBad?'本机健康接口持续异常':null,
+      monitorFailureCount:!processBad&&!botBad&&monitorBad?draft.autoRepair.monitorChecks[monitorBad.config.id].fail:null,
       category:monitorBad?'web':'infra' };
   });
 }
@@ -68,10 +89,15 @@ export function observeRepairs(draft, host, report, previous, config, now) {
     }
     if(state.phase==='maintenance'){state.phase='idle';state.message='维护结束，重新观察';state.failures=0;state.successes=0}
     // Two reports sent too close together or replayed reports must not manufacture confidence.
-    if(state.lastObservationAt&&Date.parse(report.observedAt)-Date.parse(state.lastObservationAt)<20000)continue;
+    if(state.lastObservationAt&&Date.parse(report.observedAt)<=Date.parse(state.lastObservationAt))continue;
+    if(state.lastObservationAt&&Date.parse(report.observedAt)-Date.parse(state.lastObservationAt)<20000){
+      if(!signal.problem)state.failures=0;
+      if(!signal.healthy)state.successes=0;
+      continue;
+    }
     if(state.lastObservationAt&&Date.parse(report.observedAt)-Date.parse(state.lastObservationAt)>config.hostStaleMs){state.failures=0;state.successes=0}
     state.lastObservationAt=report.observedAt;
-    state.failures=signal.problem?state.failures+1:0;
+    state.failures=signal.problem?(signal.monitorFailureCount??state.failures+1):0;
     state.successes=signal.healthy?state.successes+1:0;
     const command=draft.commands.find(item=>item.id===state.commandId);
     if(systemRestart&&!command&&!['queued','restarting','verifying','unknown'].includes(state.phase)) {
@@ -108,7 +134,7 @@ export function observeRepairs(draft, host, report, previous, config, now) {
       status:'pending',createdAt:at(now),expiresAt:at(now+90000),message:'持续异常达到阈值，等待自动重启。'});
     draft.commands=draft.commands.slice(0,300);
     draft.audit.unshift({at:at(now),action:'auto_restart_requested',target:`${host.name} / ${service.name}`});draft.audit=draft.audit.slice(0,300);
-    phase(state,data,'queued',`${host.name} / ${service.name}：连续三次检测到${signal.problem}，已触发自动重启（本小时第 ${state.attempts.length}/2 次）。`,now);
+    phase(state,data,'queued',`${host.name} / ${service.name}：连续${REPAIR_POLICY.failureThreshold}次检测到${signal.problem}，已触发自动重启（本小时第 ${state.attempts.length}/2 次）。`,now);
   }
 }
 
