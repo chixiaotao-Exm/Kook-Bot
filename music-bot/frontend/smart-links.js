@@ -1,7 +1,7 @@
-const sourceNames = { netease: '网易云音乐', qq: 'QQ音乐' };
+import { sourceNames, sourceIds } from './music-sources.js';
 const escape = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const icon = (name) => `<i data-lucide="${name}"></i>`;
-const linkLike = (value) => /https?:\/\/|(?:music\.163\.com|y\.qq\.com|c\.y\.qq\.com|163cn\.tv|163cn\.cn|url\.cn|qqmusic\.qq\.com)\//i.test(value);
+const linkLike = (value) => /https?:\/\/|(?:music\.163\.com|y\.qq\.com|c\.y\.qq\.com|163cn\.tv|163cn\.cn|url\.cn|qqmusic\.qq\.com|qishui\.douyin\.com|music\.douyin\.com)\//i.test(value);
 function effectiveSource(record) {
   if (record?.data?.source) return record.data.source;
   const raw = record?.raw || '';
@@ -11,6 +11,7 @@ function effectiveSource(record) {
       const host = new URL(link).hostname;
       if (['music.163.com', 'y.music.163.com'].includes(host)) return 'netease';
       if (['y.qq.com', 'i.y.qq.com'].includes(host)) return 'qq';
+      if (['qishui.douyin.com', 'music.douyin.com'].includes(host)) return 'qishui';
     } catch { /* Invalid links must not inherit the manually selected source. */ }
     return null;
   }
@@ -48,7 +49,7 @@ export function createSmartLinks({ input, container, api, getContext, drawIcons,
       body = `<div class="smart-message">${icon('loader-circle')}<div><strong>正在识别音乐链接</strong><p>读取平台与曲目，准备加入预览…</p></div></div>`;
     } else if (phase === 'error') {
       const source = effectiveSource(record);
-      const needsQQLogin = /登录|login|credential|账号.*(?:失效|过期)/i.test(error) && (source === 'qq' || source !== 'netease' && /QQ\s*音乐/i.test(error));
+      const needsQQLogin = /登录|login|credential|账号.*(?:失效|过期)/i.test(error) && (source === 'qq' || source === null && /QQ\s*音乐/i.test(error));
       body = `<div class="smart-message is-error">${icon('music-2')}<div><strong>暂时无法读取</strong><p id="smart-link-feedback" role="status">${escape(error)}</p><div class="smart-error-actions"><button id="smart-link-retry" class="secondary" type="button" ${isLocked() ? 'disabled' : ''}>${icon('refresh-cw')}重试</button>${needsQQLogin ? '<button id="smart-link-login" class="quiet-button" type="button">登录 QQ 音乐</button>' : ''}</div></div></div>`;
     } else if (data) {
       const isPlaylist = data.kind === 'playlist', linked = data.isLink;
@@ -76,7 +77,7 @@ export function createSmartLinks({ input, container, api, getContext, drawIcons,
     const raw = input.value.trim();
     if (!raw) { clear(); return; }
     const context = target(), request = ++generation;
-    if (context.jointSearch && /^\d+$/.test(raw)) { phase = 'error'; error = '纯数字 ID 请先选择 QQ 音乐或网易云音乐。'; record = { raw, botId: context.botId }; onShow(); render(); return; }
+    if (context.jointSearch && /^\d+$/.test(raw)) { phase = 'error'; error = '纯数字 ID 请先选择一个音乐来源。'; record = { raw, botId: context.botId }; onShow(); render(); return; }
     clearTimeout(timer); phase = 'loading'; error = ''; feedback = '';
     record = { raw, botId: context.botId, manualSource: context.source, hint };
     const captured = record;
@@ -85,7 +86,7 @@ export function createSmartLinks({ input, container, api, getContext, drawIcons,
       const data = await api(`/resolve?${new URLSearchParams({ input: raw, source: context.source, ...(hint ? { kind: hint } : {}) })}`);
       if (request !== generation || !current(captured)) return;
       if (data.kind === 'search') { clear(); onSearch(raw); return; }
-      if (!['song', 'playlist'].includes(data.kind) || !['netease', 'qq'].includes(data.source)) throw new Error('暂时无法识别这条音乐链接。');
+      if (!['song', 'playlist'].includes(data.kind) || !sourceIds.includes(data.source)) throw new Error('暂时无法识别这条音乐链接。');
       captured.data = data; phase = 'ready'; render();
     } catch (caught) {
       if (request !== generation || !current(captured)) return;
