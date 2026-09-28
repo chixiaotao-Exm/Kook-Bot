@@ -24,6 +24,11 @@ export class StateStore {
         || !['incidents', 'commands', 'audit'].every(key => Array.isArray(value[key]))) throw new Error('Invalid ops state');
       this.data = value;
       for (const item of this.data.incidents) for (const key of ['notified', 'recoveryNotified']) if (item[key] === 'sending') item[key] = 'uncertain';
+      if(this.data.autoRepair!==undefined){
+        const repair=this.data.autoRepair;
+        if(!repair||typeof repair.states!=='object'||!repair.states||Array.isArray(repair.states)||!Array.isArray(repair.events)||repair.events.length>300)throw Error('Invalid repair state');
+        for(const item of repair.events)if(item.notification==='sending')item.notification='uncertain';
+      }
     } catch (error) { if (error.code !== 'ENOENT') throw new Error('Operations state cannot be loaded safely'); }
     return this;
   }

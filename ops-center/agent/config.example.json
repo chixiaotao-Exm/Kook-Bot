@@ -10,6 +10,6 @@
     { "id": "nginx", "name": "网页反向代理", "unit": "nginx.service", "expected": "running", "restartAllowed": false }
   ],
   "probes": [
-    { "id": "music", "kind": "music", "url": "https://music.example.com/" }
+    { "id": "music", "kind": "music", "url": "https://music.example.com/", "serviceId": "music" }
   ]
 }
