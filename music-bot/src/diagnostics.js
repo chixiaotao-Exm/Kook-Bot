@@ -1,22 +1,24 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { atomicJson, log, UserError } from './util.js';
+import { atomicJson, log } from './util.js';
 import { SOURCE_NAMES } from './music-sources.js';
 
 const LIMIT = 300;
 const levels = new Set(['info', 'warning', 'error']);
 
 export class Diagnostics {
-  constructor(config, manager, music, { now = Date.now, accountIntervalMs = 300000 } = {}) {
-    Object.assign(this, { config, manager, music, now, accountIntervalMs });
+  constructor(config, manager, music, { now = Date.now, accountIntervalMs = 300000, accountTimeoutMs = 25000 } = {}) {
+    Object.assign(this, { config, manager, music, now, accountIntervalMs, accountTimeoutMs });
     this.file = path.join(config.dataDir, 'health-events.json');
     this.events = []; this.accounts = {}; this.previous = new Map(); this.attached = new WeakSet();
     this.writeTail = Promise.resolve(); this.closed = false; this.persistDisabled = false;
     this.accountPending = null; this.lastAccountAttempt = null; this.storageError = '';
     this.accountSources = this.music.sources?.().filter((item) => item.enabled).map((item) => item.id) || ['netease', 'qq'];
     this.accountVersions = Object.fromEntries(this.accountSources.map((source) => [source, 0])); this.recheckAccounts = false;
-    for (const source of this.accountSources) this.accounts[source] = { loggedIn: false, status: 'checking', checkedAt: 0, error: '' };
+    this.accountRequests = new Map();
+    for (const source of this.accountSources) this.accounts[source] = { loggedIn: false, status: 'checking', cookieStatus: 'checking', checkedAt: 0,
+      lastSuccessAt: null, nextCheckAt: this.now(), checkIntervalMs: this.accountIntervalMs, stale: false, error: '' };
   }
   async init() {
     try {
@@ -104,9 +106,28 @@ export class Diagnostics {
   invalidateAccount(source, loggedIn) {
     if (this.closed || !(source in this.accountVersions)) return;
     this.accountVersions[source]++;
-    this.accounts[source] = { loggedIn: Boolean(loggedIn), status: typeof loggedIn === 'boolean' ? loggedIn ? 'logged_in' : 'logged_out' : 'checking', checkedAt: this.now(), error: '' };
+    this.accountRequests.get(source)?.controller.abort();
+    this.accounts[source] = { loggedIn: false, status: loggedIn === false ? 'logged_out' : 'checking', cookieStatus: loggedIn === false ? 'missing' : 'checking',
+      checkedAt: loggedIn === false ? this.now() : 0, lastSuccessAt: null, nextCheckAt: this.now(), checkIntervalMs: this.accountIntervalMs, stale: false, error: '' };
     this.lastAccountAttempt = null;
     if (this.accountPending) this.recheckAccounts = true;
+  }
+  async checkAccount(source) {
+    // An uncooperative provider may outlive our deadline. Keep its slot until
+    // the real call settles so recurring checks cannot pile up hidden requests.
+    if (this.accountRequests.has(source)) throw new Error('ACCOUNT_CHECK_PENDING');
+    const controller = new AbortController(), entry = { controller, version: this.accountVersions[source] };
+    const request = Promise.resolve().then(() => this.music.account(source, { signal: controller.signal }));
+    this.accountRequests.set(source, entry);
+    const settled = request.finally(() => { if (this.accountRequests.get(source) === entry) this.accountRequests.delete(source); });
+    let timer, aborted;
+    const cancellation = new Promise((_, reject) => {
+      aborted = () => reject(new Error('ACCOUNT_CHECK_CANCELLED'));
+      controller.signal.addEventListener('abort', aborted, { once: true });
+      timer = setTimeout(() => { reject(new Error('ACCOUNT_CHECK_TIMEOUT')); controller.abort(); }, this.accountTimeoutMs);
+    });
+    try { return await Promise.race([settled, cancellation]); }
+    finally { clearTimeout(timer); controller.signal.removeEventListener('abort', aborted); }
   }
   async refreshAccounts({ force = false } = {}) {
     if (this.closed) return this.accounts;
@@ -115,16 +136,28 @@ export class Diagnostics {
     if (this.lastAccountAttempt !== null && this.now() - this.lastAccountAttempt < interval) return this.accounts;
     this.lastAccountAttempt = this.now();
     const task = Promise.allSettled(this.accountSources.map(async (source) => {
-      const version = this.accountVersions[source];
+      const version = this.accountVersions[source], previous = this.accounts[source];
+      const nextCheckAt = this.lastAccountAttempt + this.accountIntervalMs;
+      if (previous.cookieStatus === 'missing' && this.accountRequests.has(source) && this.accountRequests.get(source).version !== version) {
+        this.accounts[source] = { ...previous, nextCheckAt }; return;
+      }
+      this.accounts[source] = { ...previous, loggedIn: false, status: 'checking', cookieStatus: 'checking', stale: false, nextCheckAt, error: '' };
       let next;
       try {
-        const account = await this.music.account(source);
-        next = { loggedIn: Boolean(account.loggedIn), status: account.unavailable ? 'unavailable' : account.loggedIn ? 'logged_in' : account.expired ? 'expired' : 'logged_out', checkedAt: this.now(), error: '' };
+        const account = await this.checkAccount(source);
+        if (!account || typeof account !== 'object' || typeof account.loggedIn !== 'boolean'
+          || account.status === 'unknown' || account.status === 'error' || account.cookieStatus === 'unknown') throw new Error('ACCOUNT_CHECK_UNKNOWN');
+        const cookieStatus = account.unavailable ? 'unavailable' : account.loggedIn ? 'valid' : account.expired ? 'expired' : 'missing';
+        next = { loggedIn: cookieStatus === 'valid', status: { valid: 'logged_in', expired: 'expired', missing: 'logged_out', unavailable: 'unavailable' }[cookieStatus],
+          cookieStatus, checkedAt: this.now(), lastSuccessAt: cookieStatus === 'valid' ? this.now() : previous.lastSuccessAt,
+          nextCheckAt, checkIntervalMs: this.accountIntervalMs, stale: false, error: '' };
       } catch (error) {
-        next = { loggedIn: false, status: 'error', checkedAt: this.now(), error: error instanceof UserError ? this.redact(error.message) : '账号状态暂时无法读取。' };
+        next = { loggedIn: false, status: 'error', cookieStatus: 'unknown', checkedAt: this.now(), lastSuccessAt: previous.lastSuccessAt,
+          nextCheckAt, checkIntervalMs: this.accountIntervalMs, stale: false,
+          error: ['ACCOUNT_CHECK_TIMEOUT','ACCOUNT_CHECK_PENDING'].includes(error?.message) ? '账号检测超时，暂无法确认 Cookie 是否有效。' : '账号状态暂时无法读取，未判定 Cookie 失效。' };
       }
       if (this.closed || this.accountVersions[source] !== version) return;
-      const previous = this.accounts[source]; this.accounts[source] = next;
+      this.accounts[source] = next;
       const name = SOURCE_NAMES[source];
       if (['expired', 'error'].includes(next.status) && (previous.status !== next.status || previous.error !== next.error)) {
         this.record({ level: 'warning', kind: 'account_attention', message: `${name}：${next.status === 'expired' ? '登录已失效，请重新扫码。' : next.error}` });
@@ -138,11 +171,16 @@ export class Diagnostics {
     this.accountPending = task; return task;
   }
   snapshot() {
-    const bots = this.sample();
+    const bots = this.sample(), now = this.now();
+    const accounts = Object.fromEntries(Object.entries(this.accounts).map(([source, account]) => {
+      const stale = account.checkedAt > 0 && (now < account.checkedAt || now - account.checkedAt > this.accountIntervalMs + this.accountTimeoutMs + 10000);
+      return [source, stale && account.cookieStatus !== 'checking' ? { ...account, loggedIn: false, status: 'error', cookieStatus: 'unknown', stale: true,
+        error: '账号检测结果已过期，等待重新检测。' } : { ...account, stale: false }];
+    }));
     return { generatedAt: this.now(), summary: { bots: bots.length, online: bots.filter((b) => b.online).length,
       connected: bots.filter((b) => b.connected).length, playing: bots.filter((b) => b.status === 'playing').length,
-      issues: bots.filter((b) => b.issue).length + Object.values(this.accounts).filter((a) => ['expired', 'error'].includes(a.status)).length + (this.storageError ? 1 : 0) },
-      bots, accounts: structuredClone(this.accounts), events: this.events.map((event) => this.safeEvent(event)), storageError: this.storageError,
+      issues: bots.filter((b) => b.issue).length + Object.values(accounts).filter((a) => ['expired', 'error'].includes(a.status)).length + (this.storageError ? 1 : 0) },
+      bots, accounts, events: this.events.map((event) => this.safeEvent(event)), storageError: this.storageError,
       limitations: '状态反映服务器连接与音源读取情况，实际听音以 KOOK 客户端为准。' };
   }
   start() {
@@ -154,5 +192,5 @@ export class Diagnostics {
     }, 10000);
     this.timer.unref?.();
   }
-  async close() { this.closed = true; clearInterval(this.timer); this.timer = null; await this.writeTail; }
+  async close() { this.closed = true; clearInterval(this.timer); this.timer = null; for (const entry of this.accountRequests.values()) entry.controller.abort(); await this.writeTail; }
 }

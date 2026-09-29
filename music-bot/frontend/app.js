@@ -5,7 +5,7 @@ import { createSmartLinks } from './smart-links.js';
 import { createSessionApi } from './session.js';
 import { createRoomSettings } from './room-settings.js';
 import { createLyrics } from './lyrics.js';
-import { createHealth } from './health.js';
+import { createHealth, cookieHealth, cookieTimingHtml } from './health.js';
 import { takeAccessToken } from './access.js';
 import { musicRoomLink } from './room-links.js';
 import { sourceNames, sourceIds, normalizeSource, sourceName, defaultSources, sourceDescriptors, sourceSupports } from './music-sources.js';
@@ -29,6 +29,10 @@ let jointSearch = false;
 let availableSources = defaultSources();
 const sourceBrowsing = Object.fromEntries(sourceIds.map((id) => [id, { category: 'hot', scroll: 0 }]));
 const accounts = {}, accountRequests = Object.fromEntries(sourceIds.map((id) => [id, 0]));
+const accountHealth = {};
+const accountProfilesRequested = new Set();
+const accountProfilesFailed = new Set();
+let accountHealthPending = null, accountHealthTimer, accountHealthError = '', accountHealthChecking = false, accountHealthGeneration = 0;
 let searchRequest = 0, qrRequest = 0, qrSource = 'netease', qrType = 'qq', importSource = 'netease', pendingLoginAction = null;
 let accountGate = false;
 let selectedBotId = initialLocation.get('botId') || localStorage.getItem('selected-bot') || 'default', defaultBotId = 'default', bots = [], botsSignature = '';
@@ -196,7 +200,7 @@ async function loadBots({ reconcile = true } = {}) {
   }
   renderBots();
 }
-function showLogin() { clearTimeout(pollTimer); statusPage.setActive(false); roomSettings.setActive(false); lyricsPage.setActive(false); healthPage.setActive(false); $('app').hidden = true; $('login').hidden = false; csrf = ''; }
+function showLogin() { clearTimeout(pollTimer); clearTimeout(accountHealthTimer); accountHealthGeneration++; accountHealthPending = null; accountHealthChecking = false; statusPage.setActive(false); roomSettings.setActive(false); lyricsPage.setActive(false); healthPage.setActive(false); $('app').hidden = true; $('login').hidden = false; csrf = ''; }
 async function enter() {
   $('login').hidden = true; $('app').hidden = false;
   $('logout').hidden = !passwordRequired && !accessControlled;
@@ -305,6 +309,7 @@ function view(name, { restoreDiscover = false, skipScrollCapture = false } = {})
   if (name === 'room' && !permission('manageRoom')) return toast('房间设置需要房主权限。');
   if (currentView === 'discover' && !skipScrollCapture) sourceBrowsing[currentSource].scroll = window.scrollY;
   currentView = name;
+  clearTimeout(accountHealthTimer);
   if (name !== 'playlist') { playlistRequest++; playlistLoading = false; }
   if (name !== 'search') searchRequest++;
   if (name !== 'discover') discoverRequest++;
@@ -327,7 +332,10 @@ function view(name, { restoreDiscover = false, skipScrollCapture = false } = {})
     if (restoreDiscover && playlists.length) renderDiscover();
     else loadDiscover(currentCategory, restoreDiscover ? discoverScroll : null);
   }
-  if (name === 'account' && permission('manageSite')) void loadAccounts();
+  if (name === 'account' && permission('manageSite')) {
+    for (const source of accountProfilesFailed) accountProfilesRequested.delete(source);
+    accountProfilesFailed.clear(); void loadAccounts();
+  }
   window.scrollTo({ top: restoreDiscover ? discoverScroll : 0, behavior: 'instant' });
 }
 function renderDiscover() {
@@ -481,31 +489,96 @@ function accountIds(source) {
   return source === 'qq' ? { name: 'qq-account-name', status: 'qq-account-status', avatar: 'qq-account-avatar', login: 'qq-qr-button', logout: 'qq-logout', error: 'qq-account-error' }
     : { name: 'account-name', status: 'account-status', avatar: 'account-avatar', login: 'qr-button', logout: 'netease-logout', error: 'netease-account-error' };
 }
-async function loadAccount(source = 'netease') {
+function renderAccountHealth(source) {
+  const ids = accountIds(source), account = accountHealth[source] || (availableSources.find((item) => item.id === source)?.enabled === false
+    ? { cookieStatus: 'unavailable' } : {});
+  const options = { fetchFailed: Boolean(accountHealthError), checking: accountHealthChecking };
+  const status = cookieHealth(account, options), profile = accounts[source];
+  $(ids.name).textContent = profile?.name || sourceNames[source];
+  $(ids.status).textContent = status.label;
+  $(ids.status).classList.toggle('account-expired', ['expired','unknown'].includes(status.status));
+  if (ids.logout) $(ids.logout).hidden = status.status !== 'valid' && !(profile?.loggedIn && ['checking','unknown'].includes(status.status));
+  if (ids.login) $(ids.login).querySelector('span').textContent = status.status === 'valid' ? '更换账号' : status.status === 'expired' ? '重新登录' : '扫码登录';
+  let details = $(`${source}-cookie-health`);
+  if (!details) {
+    details = document.createElement('div'); details.id = `${source}-cookie-health`; details.className = 'account-cookie-health';
+    $(ids.error).before(details);
+  }
+  details.innerHTML = cookieTimingHtml(account, options);
+  const message = accountHealthError || (status.stale && status.status === 'unknown' ? '上次检测已过期，等待后台更新。' : account.error || '');
+  $(ids.error).textContent = message; $(ids.error).hidden = !message || status.status === 'checking';
+}
+function scheduleAccountHealth() {
+  clearTimeout(accountHealthTimer);
+  if (currentView === 'account' && !document.hidden && csrf && permission('manageSite')) {
+    accountHealthTimer = setTimeout(() => void loadAccounts(), 15000);
+  }
+}
+function loadAccounts(force = false) {
+  if (!permission('manageSite')) return Promise.resolve();
+  if (accountHealthPending) return accountHealthPending;
+  const generation = accountHealthGeneration, versions = { ...accountRequests };
+  clearTimeout(accountHealthTimer); accountHealthChecking = force;
+  $('refresh-account').disabled = true;
+  sourceIds.forEach(renderAccountHealth);
+  const task = (async () => {
+    try {
+      const result = await api(`/health${force ? '?refresh=1' : ''}`);
+      if (generation !== accountHealthGeneration) return;
+      if (!result?.accounts || typeof result.accounts !== 'object' || Array.isArray(result.accounts)) throw new Error('未取得账号检测结果。');
+      accountHealthError = '';
+      for (const source of sourceIds) if (versions[source] === accountRequests[source]) {
+        accountHealth[source] = result.accounts[source] || (availableSources.find((item) => item.id === source)?.enabled === false ? { cookieStatus: 'unavailable' } : {});
+        const status = cookieHealth(accountHealth[source]).status;
+        if (['expired', 'missing'].includes(status)) { accountProfilesRequested.delete(source); delete accounts[source]; setImage(accountIds(source).avatar, ''); }
+        else if (status === 'valid' && !accountProfilesRequested.has(source)) {
+          accountProfilesRequested.add(source);
+          void loadAccount(source, { updateHealth: false }).catch(() => {});
+        }
+      }
+    } catch (error) {
+      if (generation === accountHealthGeneration) accountHealthError = `检测结果读取失败：${error.message || '请稍后重试'}。Cookie 状态暂无法确认。`;
+    } finally {
+      if (accountHealthPending === task) accountHealthPending = null;
+      if (generation === accountHealthGeneration) {
+        accountHealthChecking = false; $('refresh-account').disabled = false; sourceIds.forEach(renderAccountHealth); scheduleAccountHealth();
+      }
+    }
+  })();
+  accountHealthPending = task;
+  return task;
+}
+async function loadAccount(source = 'netease', { updateHealth = true } = {}) {
   const ids = accountIds(source), request = ++accountRequests[source];
+  accountProfilesRequested.add(source);
   try {
     const account = await api(sourceRoute('/account', source));
     if (request !== accountRequests[source]) return accounts[source];
     accounts[source] = account;
-    const expired = account.status === 'expired';
-    $(ids.name).textContent = account.loggedIn ? account.name || sourceNames[source] : sourceNames[source];
-    $(ids.status).textContent = account.loggedIn ? '已登录' : expired ? '登录失效' : account.status === 'unconfigured' || account.enabled === false ? '未配置' : '未登录';
-    $(ids.status).classList.toggle('account-expired', expired);
-    if (ids.logout) $(ids.logout).hidden = !account.loggedIn;
-    if (ids.login) $(ids.login).querySelector('span').textContent = account.loggedIn ? '更换账号' : expired ? '重新登录' : '扫码登录';
-    $(ids.error).hidden = true;
+    accountProfilesFailed.delete(source);
+    // Login/logout actions may finish before an older health read. Until the
+    // background check completes, a new login must not reuse a prior success.
+    if (updateHealth) {
+      const prior = accountHealth[source] || {};
+      const cookieStatus = account.unavailable || account.enabled === false ? 'unavailable' : account.loggedIn ? 'checking'
+        : account.status === 'expired' || account.expired ? 'expired' : 'missing';
+      accountHealth[source] = { ...prior, cookieStatus, status: cookieStatus === 'checking' ? 'checking' : account.status,
+        loggedIn: false, stale: false, error: '', checkedAt: cookieStatus === 'checking' ? prior.checkedAt : Date.now() };
+    }
+    renderAccountHealth(source);
     setImage(ids.avatar, account.avatar);
+    if (updateHealth) void loadAccounts();
     return account;
   } catch (error) {
-    if (request === accountRequests[source]) {
+    if (request === accountRequests[source] && !updateHealth) accountProfilesFailed.add(source);
+    if (request === accountRequests[source] && updateHealth) {
       $(ids.name).textContent = sourceNames[source];
-      $(ids.status).textContent = source === 'qishui' && !sourceSupports(availableSources, source, 'play') ? '未配置' : '状态读取失败';
+      $(ids.status).textContent = source === 'qishui' && !sourceSupports(availableSources, source, 'play') ? '未配置' : '暂无法确认';
       $(ids.error).textContent = error.message || '登录状态读取失败，请刷新重试。'; $(ids.error).hidden = false;
     }
     throw error;
   }
 }
-async function loadAccounts() { await Promise.allSettled(sourceIds.map((source) => loadAccount(source))); }
 async function requireAccount(source, task) {
   if (source !== 'qq') return task();
   if (accountGate || pendingLoginAction) return toast('请先完成当前QQ音乐登录操作。');
@@ -740,7 +813,10 @@ $('stay-toggle').onchange = () => { const botId = selectedBotId, stayConnected =
 $('qr-button').onclick = () => { pendingLoginAction = null; void showQR('netease', 'qq'); };
 $('qq-qr-button').onclick = () => { pendingLoginAction = null; void showQR('qq', 'qq'); };
 $('renew-qr').onclick = () => { void showQR(qrSource, qrType); };
-$('refresh-account').onclick = () => run(loadAccounts);
+$('refresh-account').className = 'secondary';
+$('refresh-account').innerHTML = `${icon('refresh-cw')}立即检测`;
+$('refresh-account').title = '立即检测 Cookie 存活状态'; $('refresh-account').setAttribute('aria-label', '立即检测 Cookie 存活状态');
+$('refresh-account').onclick = () => void loadAccounts(true);
 for (const source of ['netease', 'qq']) $(accountIds(source).logout).onclick = () => confirmAction(`退出${sourceNames[source]}账号`, '后续需要重新扫码登录。', () => run(async () => {
   accountRequests[source]++; await api('/account/logout', { source }); await loadAccount(source);
 }));
@@ -748,9 +824,11 @@ $('qr-dialog').addEventListener('close', () => { if (!$('qr-dialog').open) { cle
 $('motion-toggle').onclick = () => setMotion(!motion); $('settings-motion').onchange = () => setMotion($('settings-motion').checked);
 $('immersive-toggle').onclick = () => { immersive = !immersive; document.body.classList.toggle('scene-only', immersive); scene?.setImmersive(immersive); $('immersive-toggle').innerHTML = icon(immersive ? 'minimize' : 'expand'); drawIcons(); };
 document.addEventListener('visibilitychange', () => {
+  clearTimeout(accountHealthTimer);
   statusPage.setActive(currentView === 'status' && !document.hidden && Boolean(csrf));
   lyricsPage.setActive(currentView === 'lyrics' && !document.hidden && Boolean(csrf));
   healthPage.setActive(currentView === 'health' && !document.hidden && Boolean(csrf));
+  if (!document.hidden && csrf && currentView === 'account' && permission('manageSite')) void loadAccounts();
   if (!document.hidden && csrf) refresh();
 });
 let accessRenewal = Promise.resolve();

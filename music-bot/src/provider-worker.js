@@ -23,5 +23,10 @@ parentPort.on('message', async ({ id, name, params }) => {
     }
     const result = await sdk[name](params);
     parentPort.postMessage({ id, ok: true, body: result.body });
-  } catch { parentPort.postMessage({ id, ok: false }); }
+  } catch (error) {
+    // Only this documented session rejection crosses the worker boundary;
+    // upstream bodies can contain credentials and must never be forwarded.
+    if (name === 'user_account' && Number(error?.body?.code) === 301) parentPort.postMessage({ id, ok: true, body: { code: 301 } });
+    else parentPort.postMessage({ id, ok: false });
+  }
 });
