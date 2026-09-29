@@ -4,6 +4,7 @@ import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Diagnostics } from '../src/diagnostics.js';
+import { UserError } from '../src/util.js';
 
 async function fixture(t) {
   const dir = await mkdtemp(path.join(tmpdir(), 'kook-health-')); let clock = 100000;
@@ -71,4 +72,80 @@ test('malformed health history is preserved while current monitoring remains ava
   h.record({ kind: 'new_notice', message: 'Still usable' });
   assert.match(h.snapshot().storageError, /原文件已保留/); await h.close();
   assert.equal(await readFile(f.health.file, 'utf8'), 'not valid json');
+});
+
+test('cookie checks distinguish confirmed validity, expiry, missing login and unavailable sources without copying secrets', async (t) => {
+  const f = await fixture(t);let values = {netease:{loggedIn:true,cookie:'private-cookie',token:'private-token'},qq:{loggedIn:false,expired:true}};
+  f.music.account=async source=>values[source];await f.health.refreshAccounts();
+  let accounts=f.health.snapshot().accounts;
+  assert.equal(accounts.netease.cookieStatus,'valid');assert.equal(accounts.netease.status,'logged_in');assert.equal(accounts.netease.lastSuccessAt,100000);
+  assert.equal(accounts.netease.nextCheckAt,400000);assert.equal(accounts.netease.checkIntervalMs,300000);
+  assert.equal(accounts.qq.cookieStatus,'expired');assert.equal(accounts.qq.lastSuccessAt,null);
+  assert.doesNotMatch(JSON.stringify(accounts),/private-cookie|private-token/);
+  f.advance(300000);values={netease:{loggedIn:false},qq:{loggedIn:false,unavailable:true}};await f.health.refreshAccounts();
+  accounts=f.health.snapshot().accounts;assert.equal(accounts.netease.cookieStatus,'missing');assert.equal(accounts.qq.cookieStatus,'unavailable');
+});
+
+test('network failures and malformed responses stay unknown while retaining the previous successful check', async (t) => {
+  const f=await fixture(t);await f.health.refreshAccounts();const success=f.health.snapshot().accounts.netease.lastSuccessAt;
+  f.advance(300000);f.music.account=async()=>{throw new UserError('cookie=private-cookie sk-secret-private https://upstream/private');};
+  await f.health.refreshAccounts();let account=f.health.snapshot().accounts.netease;
+  assert.equal(account.status,'error');assert.equal(account.cookieStatus,'unknown');assert.equal(account.loggedIn,false);assert.equal(account.lastSuccessAt,success);
+  assert.doesNotMatch(JSON.stringify(f.health.snapshot()),/private-cookie|secret-private|upstream/);
+  const events=f.health.events.length;f.advance(300000);await f.health.refreshAccounts();assert.equal(f.health.events.length,events);
+  f.advance(300000);f.music.account=async()=>({loggedIn:true});await f.health.refreshAccounts();account=f.health.snapshot().accounts.netease;
+  assert.equal(account.cookieStatus,'valid');assert.ok(account.lastSuccessAt>success);assert.ok(f.health.events.some(event=>event.kind==='account_recovered'));
+  for(const result of [null,{}, {loggedIn:'yes'}, {loggedIn:true,status:'unknown'}]){
+    f.advance(300000);f.music.account=async()=>result;await f.health.refreshAccounts();assert.equal(f.health.snapshot().accounts.netease.cookieStatus,'unknown');
+  }
+});
+
+test('one hung source has a bounded deadline and cannot accumulate duplicate provider calls or block healthy sources', async (t) => {
+  const f=await fixture(t);f.health.accountTimeoutMs=15;let slowCalls=0,fastCalls=0,release;
+  const slow=new Promise(resolve=>{release=resolve;});
+  f.music.account=async source=>source==='netease'?(slowCalls++,slow):(fastCalls++,{loggedIn:true});
+  const first=f.health.refreshAccounts(),second=f.health.refreshAccounts();await Promise.all([first,second]);
+  let accounts=f.health.snapshot().accounts;assert.equal(accounts.netease.cookieStatus,'unknown');assert.match(accounts.netease.error,/超时/);
+  assert.equal(accounts.qq.cookieStatus,'valid');assert.equal(slowCalls,1);assert.equal(fastCalls,1);
+  f.advance(300000);await f.health.refreshAccounts();assert.equal(slowCalls,1);assert.equal(fastCalls,2);
+  release({loggedIn:true});await new Promise(resolve=>setImmediate(resolve));assert.equal(f.health.snapshot().accounts.netease.cookieStatus,'unknown');
+  f.advance(300000);f.music.account=async()=>({loggedIn:true});await f.health.refreshAccounts();assert.equal(f.health.snapshot().accounts.netease.cookieStatus,'valid');
+});
+
+test('account refreshes coalesce, rate-limit manual refresh and mark old success stale without calling providers from snapshots', async (t) => {
+  const f=await fixture(t);let calls=0;f.music.account=async()=>{calls++;return {loggedIn:true};};
+  await Promise.all([f.health.refreshAccounts(),f.health.refreshAccounts({force:true})]);assert.equal(calls,2);
+  await f.health.refreshAccounts({force:true});assert.equal(calls,2);
+  f.advance(59999);await f.health.refreshAccounts({force:true});assert.equal(calls,2);
+  f.advance(1);await f.health.refreshAccounts({force:true});assert.equal(calls,4);
+  f.advance(335001);const account=f.health.snapshot().accounts.netease;
+  assert.equal(account.stale,true);assert.equal(account.cookieStatus,'unknown');assert.equal(account.loggedIn,false);assert.equal(account.lastSuccessAt,160000);
+  assert.equal(f.health.snapshot().summary.issues,2);assert.equal(calls,4);
+});
+
+test('login invalidation never declares unverified cookies valid and a late old reply cannot overwrite new credentials', async (t) => {
+  const f=await fixture(t);let release,entered;const gate=new Promise(resolve=>{release=resolve;});const started=new Promise(resolve=>{entered=resolve;});
+  let old=true;f.music.account=async source=>{if(source==='netease'&&old){entered();return gate;}return {loggedIn:true};};
+  const pending=f.health.refreshAccounts();await started;
+  f.health.invalidateAccount('netease',true);assert.equal(f.health.snapshot().accounts.netease.cookieStatus,'checking');assert.equal(f.health.snapshot().accounts.netease.loggedIn,false);
+  old=false;release({loggedIn:false,expired:true});await pending;await f.health.accountPending;
+  assert.equal(f.health.snapshot().accounts.netease.cookieStatus,'valid');assert.equal(f.health.events.some(event=>event.kind==='account_attention'&&event.message.includes('网易')),false);
+});
+
+test('close promptly cancels diagnostics checks and late provider completion cannot mutate account state', async (t) => {
+  const f=await fixture(t);let release;const gate=new Promise(resolve=>{release=resolve;});f.music.account=async()=>gate;
+  const pending=f.health.refreshAccounts();await new Promise(resolve=>setImmediate(resolve));await f.health.close();await pending;
+  const before=structuredClone(f.health.accounts);release({loggedIn:true});await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(f.health.accounts,before);assert.equal(f.health.accountPending,null);
+});
+
+test('an old uncooperative request cannot undo an explicit logout or keep the other sources from rechecking', async (t) => {
+  const f=await fixture(t);f.health.accountTimeoutMs=15;let release,old=true,fast=0;
+  const gate=new Promise(resolve=>{release=resolve;});
+  f.music.account=async source=>source==='netease'&&old?gate:(fast++,{loggedIn:false});
+  const pending=f.health.refreshAccounts();await new Promise(resolve=>setImmediate(resolve));
+  f.health.invalidateAccount('netease',false);await pending;await f.health.accountPending;
+  assert.equal(f.health.snapshot().accounts.netease.cookieStatus,'missing');assert.equal(fast,2);
+  old=false;release({loggedIn:true});await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(f.health.snapshot().accounts.netease.cookieStatus,'missing');
 });

@@ -19,10 +19,19 @@ test('NetEase account distinguishes absent credentials, rejected session and fai
   assert.deepEqual(await music.account(), { loggedIn: false, expired: true });
   assert.equal(calls, 1);
 
+  response = { body: { code: 301 } };
+  assert.deepEqual(await music.account(), { loggedIn: false, expired: true });
+  failure = { body: { code: 301, cookie, message: cookie } };
+  assert.deepEqual(await music.account(), { loggedIn: false, expired: true });
+
   failure = new Error('private-test-session network failure');
   await assert.rejects(music.account(), (error) => error instanceof UserError && !error.message.includes(cookie));
   failure = null; response = { body: { code: 503 } };
   await assert.rejects(music.account(), UserError, 'An upstream error must not be called an expired login');
+  response = { body: { code: 200 } };
+  await assert.rejects(music.account(), UserError, 'A malformed success must not be called an expired login');
+  response = { body: { code: 200, profile: {} } };
+  await assert.rejects(music.account(), UserError, 'An incomplete profile must remain unknown');
 
   response = { body: { code: 200, profile: { userId: 123, nickname: 'User', avatarUrl: '' } } };
   assert.deepEqual(await music.account(), { loggedIn: true, id: '123', name: 'User', avatar: '' });
