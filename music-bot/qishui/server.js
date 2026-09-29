@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { createReadStream } from 'node:fs';
 import { readFile, readdir, stat, unlink } from 'node:fs/promises';
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { QishuiCatalog } from './catalog.js';
@@ -41,20 +41,29 @@ export function createQishuiServer({token,publicUrl,credentialsFile,cacheDir,cat
     })();pending.set(id,operation);try{return await operation}finally{pending.delete(id)}
   }
   async function account(){
-    if(accountCache&&accountCache.until>now())return accountCache.data;
     let data={loggedIn:false};
+    let fingerprint;
     try{
-      const credential=JSON.parse(await readFile(credentialsFile,'utf8'));
+      const content=await readFile(credentialsFile,'utf8');
+      fingerprint=createHash('sha256').update(content).digest('hex');
+      if(accountCache&&accountCache.fingerprint===fingerprint&&accountCache.until>now())return accountCache.data;
+      const credential=JSON.parse(content);
       if(typeof credential.cookie!=='string'||/[\r\n]/.test(credential.cookie))throw Error();
+      if(!credential.cookie.trim())return{loggedIn:false};
       const body=JSON.parse(await boundedFetch('https://api.qishui.com/luna/pc/me?aid=386088',
         {headers:{Cookie:credential.cookie,'User-Agent':'LunaPC/3.8.0(467160162)'},signal:AbortSignal.any([shutdown.signal,AbortSignal.timeout(12000)])},256*1024,fetchImpl));
       const user=body.my_info||body.user||body.me||body.user_info||body.profile||body.data?.user||body.data;
       const id=user?.id||user?.user_id_str||user?.user_id||user?.uid;
-      if(id&&(typeof id==='string'||Number.isSafeInteger(id))){data={loggedIn:true,id:String(id),name:String(user.name||user.nickname||user.screen_name||'汽水音乐账号').slice(0,100)};}
-      else if(body.status_code||body.status_info?.code||body.status_info?.status_code)data={loggedIn:false,expired:true};
+      const codes=[body.status_code,body.status_info?.code,body.status_info?.status_code].filter(value=>value!==undefined);
+      const rejected=codes.some(code=>Number(code)!==0);
+      const loginRejected=/^(?:user\s+)?not\s+log(?:ged\s+)?in$|^login\s+required$|^未登录$|^用户未登录$|^登录(?:已)?(?:过期|失效)$|^请先登录$/i
+        .test(String(body.status_info?.message||body.status_info?.msg||body.message||'').trim());
+      if(rejected&&loginRejected)data={loggedIn:false,expired:true};
+      else if(rejected)throw Error('account_unavailable');
+      else if(id&&(typeof id==='string'&&id.trim()&&id!=='0'||Number.isSafeInteger(id)&&id>0)){data={loggedIn:true,id:String(id),name:String(user.name||user.nickname||user.screen_name||'汽水音乐账号').slice(0,100)};}
       else throw Error('account_unavailable');
-    }catch(error){if([401,403].includes(error.httpStatus))data={loggedIn:false,expired:true};else if(error.code!=='ENOENT')throw error}
-    accountCache={until:now()+30_000,data};return data;
+    }catch(error){if(error.httpStatus===401)data={loggedIn:false,expired:true};else if(error.code!=='ENOENT')throw error}
+    accountCache={until:now()+30_000,fingerprint,data};return data;
   }
   const server=http.createServer(async(req,res)=>{
     res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','no-referrer');

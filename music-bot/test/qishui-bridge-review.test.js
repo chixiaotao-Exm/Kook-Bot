@@ -33,6 +33,36 @@ test('an upstream account outage is not reported as an expired login', async (t)
   assert.ok(response.status >= 500 || body.unavailable === true, 'Account outage must remain distinguishable from logged out');
 });
 
+test('account checks distinguish authentication rejection from rate limits and forbidden network responses', async (t) => {
+  for (const [upstream, expired] of [
+    [() => Response.json({ status_code: 429, message: 'rate limit' }), false],
+    [() => Response.json({ status_code: 500, my_info: { id: ID } }), false],
+    [() => new Response('blocked', { status: 403 }), false],
+    [() => new Response('login required', { status: 401 }), true],
+    [() => Response.json({ status_info: { code: 1001, message: '用户未登录' } }), true],
+  ]) {
+    const f = await fixture(t, { fetchImpl: async () => upstream() });
+    const response = await fetch(`${f.base}/account`, { headers: f.headers }), data = await response.json();
+    assert.equal(data.expired === true, expired);
+    assert.equal(response.status, expired ? 200 : 502);
+  }
+});
+
+test('account cache does not preserve old login state after a cookie is replaced', async (t) => {
+  let calls = 0;
+  const f = await fixture(t, { fetchImpl: async (_url, options) => {
+    calls++;
+    return options.headers.Cookie === 'sessionid=private-fixture' ? Response.json({ my_info: { id: ID } })
+      : new Response('login required', { status: 401 });
+  } });
+  const read = async () => (await fetch(`${f.base}/account`, { headers: f.headers })).json();
+  assert.equal((await read()).loggedIn, true); assert.equal((await read()).loggedIn, true); assert.equal(calls, 1);
+  await writeFile(path.join(f.dir, 'credentials.json'), JSON.stringify({ cookie: 'sessionid=replaced' }));
+  assert.equal((await read()).expired, true); assert.equal(calls, 2);
+  await writeFile(path.join(f.dir, 'credentials.json'), JSON.stringify({ cookie: '' }));
+  assert.equal((await read()).loggedIn, false); assert.equal(calls, 2);
+});
+
 test('closing the bridge cannot publish or orphan a media file prepared concurrently', async (t) => {
   const started = deferred(), completed = deferred();
   const f = await fixture(t, { playback: { async prepare() { started.resolve(); return completed.promise; } } });

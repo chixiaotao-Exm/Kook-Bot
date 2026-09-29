@@ -50,6 +50,7 @@ export class Music {
       if (!body || !accepted.includes(Number(body.code))) throw new Error('Provider response');
       return body;
     } catch (error) {
+      if (name === 'user_account' && accepted.includes(301) && Number(error?.body?.code) === 301) return { code: 301 };
       if (error instanceof UserError) throw error;
       throw new UserError('网易云请求失败，请检查网络或重新扫码登录。');
     }
@@ -102,9 +103,13 @@ export class Music {
   }
   async account() {
     if (!(await this.cookie())) return { loggedIn: false };
-    const body = await this.call('user_account');
+    const body = await this.call('user_account', {}, [200, 301]);
+    if (Number(body.code) === 301) return { loggedIn: false, expired: true };
     const p = body.profile;
-    return p?.userId ? { loggedIn: true, id: String(p.userId), name: p.nickname, avatar: safeImage(p.avatarUrl) } : { loggedIn: false, expired: true };
+    if (!Object.hasOwn(body, 'profile')) throw new UserError('网易云账号检测响应不完整，请稍后重试。');
+    if (p === null) return { loggedIn: false, expired: true };
+    if (!/^[1-9]\d*$/.test(String(p?.userId || ''))) throw new UserError('网易云账号检测响应不完整，请稍后重试。');
+    return { loggedIn: true, id: String(p.userId), name: p.nickname, avatar: safeImage(p.avatarUrl) };
   }
   async discover(category = 'hot') {
     if (category === 'charts') return ((await this.call('toplist')).list || []).slice(0, 20).map(normalizePlaylist);

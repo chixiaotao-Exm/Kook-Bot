@@ -22,12 +22,13 @@ const out = path.resolve('data/screenshots'); fs.mkdirSync(out, { recursive: tru
   const choose = async (source) => { await page.locator(`[data-music-source=${source}]`).click(); };
   const search = async (q) => { await page.locator('#search-input').fill(q); await page.locator('#search-input').press('Enter'); await page.locator('#search-results [data-add]').first().waitFor(); };
   const waitDone = async () => page.waitForFunction(() => !document.body.classList.contains('working'));
+  const waitAccount = async () => page.waitForFunction(() => !document.querySelector('#refresh-account').disabled);
   const waitRows = async (number) => page.waitForFunction((count) => document.querySelectorAll('#playlist-tracks .track-row').length === count, number);
   try {
     await page.goto(base.href, { waitUntil: 'networkidle' }); await page.locator('#app').waitFor({ state: 'visible' });
     assert.equal((await state()).preview, true);
     await page.locator('[data-view=account]').click();
-    await page.locator('#account-status').filter({ hasText: '已登录' }).waitFor();
+    await page.locator('#account-status').filter({ hasText: 'Cookie 有效' }).waitFor();
     if (await page.locator('#qq-logout').isVisible()) { await page.locator('#qq-logout').click(); await page.locator('#confirm-yes').click(); await waitDone(); }
     await page.locator('#qq-account-status').filter({ hasText: '未登录' }).waitFor();
     const baseline = await state();
@@ -71,7 +72,7 @@ const out = path.resolve('data/screenshots'); fs.mkdirSync(out, { recursive: tru
     const afterLoginAdd = await state();
     assert.equal(queueSize(afterLoginAdd) - queueSize(beforeLoginAdd), 1);
     assert.equal(afterLoginAdd.player.queue.at(-1).source, 'qq');
-    assert.equal(await page.locator('#account-status').textContent(), '已登录');
+    assert.equal(await page.locator('#account-status').textContent(), 'Cookie 有效');
     pass('QQ login and WeChat QR selection resume exactly one pending add');
 
     await page.locator('[data-view=discover]').click(); await page.locator('.playlist-open[data-item-source=qq]').first().waitFor();
@@ -106,22 +107,37 @@ const out = path.resolve('data/screenshots'); fs.mkdirSync(out, { recursive: tru
     await page.locator('#qq-logout').click(); await page.locator('#confirm-yes').click(); await waitDone();
     await page.locator('#qq-account-status').filter({ hasText: '未登录' }).waitFor();
     const afterLogout = await state();
-    assert.equal(await page.locator('#account-status').textContent(), '已登录');
+    assert.equal(await page.locator('#account-status').textContent(), 'Cookie 有效');
     assert.deepEqual(afterLogout.player.queue, beforeLogout.player.queue);
     assert.equal(afterLogout.player.current.id, beforeLogout.player.current.id);
-    const failedAccount = async (route) => new URL(route.request().url()).searchParams.get('source') === 'qq' ? route.fulfill({ status: 502, json: { error: 'Preview account outage' } }) : route.continue();
-    await page.route('**/api/account?*', failedAccount); await page.locator('#refresh-account').click(); await waitDone();
+    const failedAccount = async (route) => { const response = await route.fetch(), body = await response.json(); body.accounts.qq = { ...body.accounts.qq, loggedIn: false, status: 'error', cookieStatus: 'unknown', checkedAt: Date.now(), error: 'Preview account outage' }; return route.fulfill({ response, json: body }); };
+    await page.route('**/api/health**', failedAccount); await page.locator('#refresh-account').click(); await waitAccount();
     await page.locator('#qq-account-error').waitFor({ state: 'visible' });
-    assert.equal(await page.locator('#account-status').textContent(), '已登录');
-    await page.unroute('**/api/account?*', failedAccount);
+    assert.equal(await page.locator('#account-status').textContent(), 'Cookie 有效');
+    await page.unroute('**/api/health**', failedAccount);
     pass('QQ logout/failure preserves NetEase account, queue, and current playback');
 
-    const expiredAccount = async (route) => new URL(route.request().url()).searchParams.get('source') === 'qq' ? route.fulfill({ json: { loggedIn: false, status: 'expired' } }) : route.continue();
-    await page.route('**/api/account?*', expiredAccount); await page.locator('#refresh-account').click(); await waitDone();
-    assert.equal(await page.locator('#qq-account-status').textContent(), '登录失效');
+    const expiredAccount = async (route) => { const response = await route.fetch(), body = await response.json(); body.accounts.qq = { ...body.accounts.qq, loggedIn: false, status: 'expired', cookieStatus: 'expired', checkedAt: Date.now(), stale: false, error: '' }; return route.fulfill({ response, json: body }); };
+    await page.route('**/api/health**', expiredAccount); await page.locator('#refresh-account').click(); await waitAccount();
+    assert.equal(await page.locator('#qq-account-status').textContent(), 'Cookie 已失效');
     assert.match(await page.locator('#qq-qr-button').textContent(), /重新登录/);
-    assert.equal(await page.locator('#account-status').textContent(), '已登录');
-    await page.unroute('**/api/account?*', expiredAccount);
+    assert.equal(await page.locator('#account-status').textContent(), 'Cookie 有效');
+    await page.screenshot({ path: path.join(out, 'cookie-health-expired-desktop.png') });
+    await page.unroute('**/api/health**', expiredAccount);
+    const oldAccount = async (route) => { const response = await route.fetch(), body = await response.json(); body.accounts.qq = { ...body.accounts.qq, loggedIn: true, status: 'logged_in', cookieStatus: 'valid', checkedAt: Date.now() - 360000, checkIntervalMs: 300000, stale: false, error: '' }; return route.fulfill({ response, json: body }); };
+    await page.route('**/api/health**', oldAccount); await page.locator('#refresh-account').click(); await waitAccount();
+    assert.equal(await page.locator('#qq-account-status').textContent(), '暂无法确认');
+    await page.screenshot({ path: path.join(out, 'cookie-health-stale-desktop.png') });
+    await page.unroute('**/api/health**', oldAccount);
+    const healthFailure = (route) => route.fulfill({ status: 503, json: { error: 'Preview health outage' } });
+    await page.route('**/api/health**', healthFailure); await page.locator('#refresh-account').click(); await waitAccount();
+    assert.equal(await page.locator('#account-status').textContent(), '暂无法确认');
+    assert.equal(await page.locator('#qq-account-status').textContent(), '暂无法确认');
+    await page.screenshot({ path: path.join(out, 'cookie-health-network-desktop.png') });
+    await page.unroute('**/api/health**', healthFailure); await page.locator('#refresh-account').click(); await waitAccount();
+    assert.equal(await page.locator('#account-status').textContent(), 'Cookie 有效');
+    await page.screenshot({ path: path.join(out, 'cookie-health-valid-desktop.png') });
+    pass('expired cookies, stale successes and network failures remain distinct and never appear valid');
     let releaseQr, qrStarted;
     const pendingQr = new Promise((resolve) => { releaseQr = resolve; });
     const qrReady = new Promise((resolve) => { qrStarted = resolve; });
