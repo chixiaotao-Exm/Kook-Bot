@@ -11,7 +11,7 @@ import { Music } from '../src/music.js';
 import { Player } from '../src/player.js';
 import { Bot, parseCommand } from '../src/bot.js';
 import { audioArgs } from '../src/audio.js';
-import { musicId, validateMediaUrl, UserError, UnavailableError } from '../src/util.js';
+import { musicId, validateMediaUrl, AuthRequiredError, UserError, UnavailableError } from '../src/util.js';
 
 const song = (id) => ({ id: String(id), name: `Song ${id}`, artists: 'Artist', durationMs: 180000 });
 const context = { guildId: 'g1', voiceChannelId: 'v1', textChannelId: 't1' };
@@ -183,6 +183,17 @@ test('unavailable tracks are skipped but transient failures preserve the queue',
   await new Promise((resolve) => setTimeout(resolve, 10)); await player.tail;
   assert.equal(player.current.id, '2'); assert.deepEqual(player.queue.map((x) => x.id), ['3']);
   assert.equal(player.snapshot().status, 'recovering');
+});
+
+test('provider login expiry pauses the current track, preserves progress and asks for re-login', async (t) => {
+  const { player, music, messages } = await fixture(t);
+  const qishui = { ...song(1), source: 'qishui' };
+  music.stream = async () => { throw new AuthRequiredError('汽水音乐账号登录已失效，请重新扫码登录。'); };
+  await player.add(context, [qishui, song(2)]);
+  await new Promise((resolve) => setTimeout(resolve, 10)); await player.tail;
+  assert.equal(player.current.id, '1'); assert.equal(player.snapshot().status, 'paused');
+  assert.equal(player.queue[0].id, '2'); assert.equal(player.snapshot().seconds, 0);
+  assert.match(messages.at(-1), /重新登录/); assert.match(messages.at(-1), /继续/);
 });
 test('a long unavailable playlist yields to a stop request between songs', async (t) => {
   const { player, music } = await fixture(t); let attempts = 0;
