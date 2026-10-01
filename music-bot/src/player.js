@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { randomInt, randomUUID } from 'node:crypto';
-import { atomicJson, label, log, sleep, UnavailableError, UserError } from './util.js';
+import { atomicJson, label, log, sleep, AuthRequiredError, UnavailableError, UserError } from './util.js';
 import { validTrack } from './music-sources.js';
 
 const HISTORY_LIMIT = 50;
@@ -298,7 +298,11 @@ export class Player {
     if (!this.current || this.closed) return;
     try { await this.open(this.current, this.position); await this.save(); }
     catch (error) {
-      if (error instanceof UnavailableError && !this.hasStarted && this.position === 0) {
+      if (error instanceof AuthRequiredError) {
+        this.clearRetry(); this.recoveryError = error.message; this.intent = 'paused';
+        await this.save();
+        await this.say(`汽水音乐账号需要重新登录，已保留《${this.current.name}》和播放进度。重新登录后发送 ${this.config.prefix}继续。`);
+      } else if (error instanceof UnavailableError && !this.hasStarted && this.position === 0) {
         const skipped = this.current; this.current = null; this.position = 0;
         await this.say(`跳过 ${label(skipped)}：${error.message}`); await this.save();
         this.advanceTimer = setTimeout(() => {
