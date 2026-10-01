@@ -1,4 +1,4 @@
-import { UserError, UnavailableError } from './util.js';
+import { AuthRequiredError, UserError, UnavailableError } from './util.js';
 
 const MAX_RESPONSE = 8 * 1024 * 1024;
 const UNAVAILABLE = '汽水音乐接口尚未配置或暂不可用。';
@@ -98,7 +98,7 @@ export class QishuiMusic {
       if (controller.signal.aborted) { void response.body?.cancel().catch(() => {}); throw new Error(); }
       if (!response.ok) {
         void response.body?.cancel().catch(() => {});
-        if ([401, 403].includes(response.status)) throw new UserError('汽水音乐登录或接口授权已失效，请重新登录或检查配置。');
+        if ([401, 403].includes(response.status)) throw new AuthRequiredError('汽水音乐账号登录已失效，请重新扫码登录。');
         if (response.status === 429) throw new UserError('汽水音乐操作过于频繁，请稍后重试。');
         if (response.status === 422) throw new UnavailableError(NO_STREAM);
         throw new UserError('汽水音乐请求失败，请稍后重试。');

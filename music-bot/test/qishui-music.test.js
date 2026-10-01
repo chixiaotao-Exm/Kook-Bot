@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { QishuiMusic, qishuiId, validateQishuiMediaUrl } from '../src/qishui-music.js';
-import { UserError, UnavailableError } from '../src/util.js';
+import { AuthRequiredError, UserError, UnavailableError } from '../src/util.js';
 
 const config = { qishuiApiUrl: 'http://127.0.0.1:18997/internal/qishui', qishuiApiToken: 'test-bridge-secret' };
 const identifier = '7412345678901234567';
@@ -123,6 +123,13 @@ test('stream accepts only matching full unencrypted audio and sends ID without c
   }
   assert.equal(await fixture({ ...media, durationMs: 208000 }).music.stream(sample), mediaUrl);
   await assert.rejects(music.stream({ ...sample, durationMs: 0 }), UnavailableError);
+});
+
+test('authentication rejection is distinct from a song without a full stream', async () => {
+  for (const status of [401, 403]) {
+    const { music } = fixture(() => new Response('login required', { status }));
+    await assert.rejects(music.stream(sample), (error) => error instanceof AuthRequiredError && /重新扫码/.test(error.message));
+  }
 });
 
 test('media capabilities cannot target arbitrary URLs, normalized paths or transmit API tokens', () => {

@@ -8,6 +8,8 @@ export const label = (track) => `${track.name} - ${track.artists}`;
 export const duration = (ms) => `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}`;
 export class UserError extends Error {}
 export class UnavailableError extends UserError {}
+/** The provider rejected the saved login session; preserve the track and ask for re-login. */
+export class AuthRequiredError extends UserError {}
 
 export async function atomicJson(file, value) {
   await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
