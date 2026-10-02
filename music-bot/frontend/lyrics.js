@@ -76,5 +76,5 @@ export function createLyrics({ api, root, drawIcons }) {
   root.querySelector('#lyrics-retry').onclick = () => { loaded = false; void load(); };
   root.querySelector('#lyrics-immerse').onclick = () => setImmersive(!immersive);
   document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && immersive) setImmersive(false); });
-  return { update, setActive(value) { const entering = value && !active; active = value; clearInterval(timer); if (value) { render(); void load(); timer = setInterval(tick, 250); if (entering) revealPanel(); } else setImmersive(false); } };
+  return { update, setActive(value) { const entering = value && !active; active = value; clearInterval(timer); if (value) { render(); void load(); timer = setInterval(tick, 250); if (entering) requestAnimationFrame(revealPanel); } else setImmersive(false); } };
 }
