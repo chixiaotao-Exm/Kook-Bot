@@ -325,3 +325,188 @@ test('partial sources do not accumulate extra heat across retries', async (t) =>
   assert.equal(partial.tracks[0].score, initial.tracks[0].score);
   assert.equal(library.state.entries[0].history.length, 1);
 });
+
+const decision = (id, values = {}) => ({ id, decision: 'keep', version: 'original', trend: 'steady', reason: '按已有曲目资料保留', confidence: 0.95, ...values });
+function selectorFixture(reply) {
+  return { enabled: true, model: 'gpt-6-astra', calls: [], async classify(entries, options) {
+    this.calls.push({ entries: structuredClone(entries), signal: options.signal });
+    return reply ? reply(entries, options) : entries.map((entry) => decision(entry.id));
+  } };
+}
+
+test('AI review changes selection conservatively without deleting songs or replacing rule history', async (t) => {
+  const selector = selectorFixture((entries) => entries.map((entry) => decision(entry.id, {
+    decision: entry.id === '1' ? 'prefer' : 'exclude', confidence: entry.id === '3' ? 0.8 : entry.id === '4' ? 0.64 : 0.95,
+  })));
+  const { library, file } = await fixture(t, { settings: { selector } });
+  const snapshot = await library.collect();
+  assert.equal(selector.calls.length, 1);
+  assert.equal(snapshot.ai.status, 'ready'); assert.equal(snapshot.ai.reviewed, 4); assert.equal(snapshot.ai.ruleOnly, 0);
+  assert.equal(snapshot.ai.excluded, 1); assert.equal(snapshot.ai.preferred, 1); assert.equal(snapshot.ai.downranked, 1);
+  assert.equal(snapshot.total, 4); assert.equal(snapshot.counts.active, 4);
+  assert.equal(snapshot.tracks.find((entry) => entry.id === '3').ai.decision, 'downrank');
+  assert.equal(snapshot.tracks.find((entry) => entry.id === '4').ai.decision, 'keep');
+  assert.equal(snapshot.tracks.find((entry) => entry.id === '1').score - snapshot.tracks.find((entry) => entry.id === '1').ruleScore, 60);
+  assert.deepEqual(library.hot().tracks.map((entry) => entry.id), ['1', '4', '3']);
+  const state = JSON.parse(await readFile(file, 'utf8'));
+  assert.equal(state.entries.length, 4);
+  assert.equal(state.entries.every((entry) => entry.firstSeenAt === base && entry.lastSeenAt === base && entry.history.length === 1), true);
+  assert.equal(state.ai.attempts.length, 1);
+  assert.equal(state.entries.every((entry) => /^[a-f0-9]{64}$/.test(entry.ai.fingerprint)), true);
+});
+
+test('old libraries without AI fields load and review on startup without repeating catalog collection', async (t) => {
+  const { library, settings, file, catalog } = await fixture(t);
+  await library.collect(); await library.close();
+  const old = JSON.parse(await readFile(file, 'utf8'));
+  delete old.ai; for (const entry of old.entries) delete entry.ai;
+  await writeFile(file, JSON.stringify(old));
+  const selector = selectorFixture();
+  const updated = new HotLibrary({ ...settings, selector }); t.after(() => updated.close());
+  const calls = catalog.calls.length;
+  await updated.start();
+  assert.equal(catalog.calls.length, calls); assert.equal(selector.calls.length, 1);
+  assert.equal(updated.snapshot().ai.reviewed, 4);
+});
+
+test('AI claims survive restart and force cannot spend twice for a slot and model', async (t) => {
+  const selector = selectorFixture();
+  const { library, settings, advance } = await fixture(t, { settings: { selector } });
+  await library.collect();
+  await library.reviewAI({ force: true }); await library.collect({ force: true });
+  assert.equal(selector.calls.length, 1);
+  await library.close();
+  const restarted = new HotLibrary(settings); t.after(() => restarted.close());
+  await restarted.start(); assert.equal(selector.calls.length, 1);
+  advance(12 * HOUR); await restarted.collect();
+  assert.equal(selector.calls.length, 1, 'fresh unchanged reviews do not require another paid call');
+  selector.model = 'gpt-6-astra-new';
+  await restarted.reviewAI(); assert.equal(selector.calls.length, 2);
+  selector.model = 'gpt-6-astra';
+  await restarted.reviewAI();
+  assert.equal(selector.calls.length, 3, 'model A has not been reviewed in this newer slot');
+  selector.model = 'gpt-6-astra-new'; await restarted.reviewAI({ force: true });
+  assert.equal(selector.calls.length, 3, 'model toggling cannot replay its prior paid slot');
+});
+
+test('AI requests are bounded to 240 songs, six batches and two concurrent calls with truthful pending counts', async (t) => {
+  let running = 0, maxRunning = 0;
+  const selector = selectorFixture(async (entries) => {
+    running++; maxRunning = Math.max(maxRunning, running);
+    await new Promise((resolve) => setTimeout(resolve, 2)); running--;
+    return entries.map((entry) => decision(entry.id));
+  });
+  const catalog = catalogFixture({ lists: { hot: ['10'], charts: ['10'] }, rows: { 10: Array.from({ length: 500 }, (_, index) => track(index + 1)) } });
+  const { library, advance } = await fixture(t, { catalog, settings: { selector } });
+  let snapshot = await library.collect();
+  assert.equal(maxRunning, 2); assert.equal(selector.calls.length, 6);
+  assert.equal(selector.calls.every((call) => call.entries.length === 40), true);
+  assert.equal(snapshot.ai.reviewed, 240); assert.equal(snapshot.ai.ruleOnly, 260); assert.equal(snapshot.ai.status, 'partial');
+  assert.equal(selector.calls[0].entries[0].id, '1');
+  advance(12 * HOUR); snapshot = await library.collect();
+  assert.equal(selector.calls.length, 12); assert.equal(snapshot.ai.reviewed, 480); assert.equal(snapshot.ai.ruleOnly, 20);
+});
+
+test('expired, changed, or disabled-model decisions stop affecting playback and are not reused', async (t) => {
+  const selector = selectorFixture((entries) => entries.map((entry) => decision(entry.id, { decision: 'exclude' })));
+  const { library, catalog, advance } = await fixture(t, { settings: { selector } });
+  await library.collect(); assert.deepEqual(library.hot().tracks, []);
+  selector.enabled = false;
+  assert.equal(library.hot().tracks.length, 4); assert.equal(library.snapshot().ai.status, 'disabled');
+  assert.equal(library.snapshot().tracks.every((entry) => entry.ai === null), true);
+  selector.enabled = true;
+  catalog.rows['10'][0].name = '歌曲1 新版';
+  await library.collect({ force: true });
+  assert.equal(selector.calls.length, 1);
+  assert.deepEqual(library.hot().tracks.map((entry) => entry.id), ['1']);
+  assert.equal(library.snapshot().tracks.find((entry) => entry.id === '1').ai, null);
+  advance(7 * DAY);
+  assert.equal(library.hot().tracks.length, 4); assert.equal(library.snapshot().ai.ruleOnly, 4);
+  await library.reviewAI(); assert.equal(selector.calls.length, 2);
+  assert.deepEqual(library.hot().tracks, []);
+});
+
+test('provider errors preserve rule playback, never leak diagnostics and are not retried in the same slot', async (t) => {
+  const selector = selectorFixture(() => { throw new Error('SECRET_PROVIDER_KEY'); });
+  const { library, advance, settings } = await fixture(t, { settings: { selector } });
+  const snapshot = await library.collect();
+  assert.equal(snapshot.ai.status, 'fallback'); assert.equal(snapshot.ai.reviewed, 0); assert.equal(snapshot.ai.ruleOnly, 4);
+  assert.equal(library.hot().tracks.length, 4); assert.equal(JSON.stringify(snapshot).includes('SECRET'), false);
+  await library.reviewAI({ force: true }); assert.equal(selector.calls.length, 1);
+  await library.close();
+  const restarted = new HotLibrary(settings); t.after(() => restarted.close());
+  await restarted.start(); assert.equal(selector.calls.length, 1);
+  advance(12 * HOUR); await restarted.reviewAI(); assert.equal(selector.calls.length, 2);
+});
+
+test('AI response IDs, enum values and scores are independently validated and extra fields never enter storage', async (t) => {
+  const selector = selectorFixture(() => [
+    decision('1'), decision('1', { decision: 'exclude' }),
+    decision('2', { decision: 'invented' }), decision('3', { confidence: Infinity }),
+    decision('4', { secret: 'must-not-save', cookie: 'private' }), decision('999'),
+  ]);
+  const { library, file } = await fixture(t, { settings: { selector } });
+  const snapshot = await library.collect();
+  assert.equal(snapshot.ai.reviewed, 1); assert.equal(snapshot.ai.ruleOnly, 3); assert.equal(snapshot.ai.status, 'partial');
+  assert.equal(snapshot.tracks.find((entry) => entry.id === '4').ai.decision, 'keep');
+  assert.equal(snapshot.tracks.find((entry) => entry.id === '1').ai, null);
+  assert.equal((await readFile(file, 'utf8')).includes('must-not-save'), false);
+  assert.equal((await readFile(file, 'utf8')).includes('private'), false);
+});
+
+test('total AI time limit bounds uncooperative providers and ignores late responses', async (t) => {
+  let release;
+  const selector = selectorFixture((entries) => new Promise((resolve) => { release = () => resolve(entries.map((entry) => decision(entry.id, { decision: 'exclude' }))); }));
+  const { library } = await fixture(t, { settings: { selector, aiTimeoutMs: 30, aiRequestTimeoutMs: 1000 } });
+  const begin = Date.now();
+  const snapshot = await library.collect();
+  assert.ok(Date.now() - begin < 1000);
+  assert.equal(selector.calls[0].signal.aborted, true); assert.equal(snapshot.ai.status, 'fallback');
+  assert.match(snapshot.ai.lastError, /时间上限/); assert.equal(library.hot().tracks.length, 4);
+  release(); await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(library.snapshot().ai.reviewed, 0); assert.equal(library.hot().tracks.length, 4);
+});
+
+test('shutdown aborts AI immediately and a persisted running claim cannot trigger duplicate paid work', async (t) => {
+  let release;
+  const selector = selectorFixture((entries) => new Promise((resolve) => { release = () => resolve(entries.map((entry) => decision(entry.id))); }));
+  const { library, file, settings } = await fixture(t, { settings: { selector } });
+  const pending = library.collect();
+  for (let i = 0; i < 100 && !release; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+  assert.ok(release);
+  const running = JSON.parse(await readFile(file, 'utf8'));
+  assert.equal(running.ai.status, 'running'); assert.equal(running.ai.attempts.length, 1);
+  const restartFile = `${file}.restart`;
+  await writeFile(restartFile, JSON.stringify(running));
+  const restarted = new HotLibrary({ ...settings, file: restartFile }); t.after(() => restarted.close());
+  await restarted.start(); assert.equal(selector.calls.length, 1);
+  assert.equal(restarted.snapshot().ai.status, 'fallback');
+  const before = Date.now(); await library.close(); await pending;
+  assert.ok(Date.now() - before < 1000); assert.equal(selector.calls[0].signal.aborted, true);
+  release(); await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(library.snapshot().ai.reviewed, 0);
+});
+
+test('concurrent metadata or playback changes invalidate in-flight decisions without reviving blocked songs', async (t) => {
+  const selector = selectorFixture();
+  const { library, catalog, advance } = await fixture(t);
+  await library.collect();
+  let release;
+  selector.classify = async (entries) => new Promise((resolve) => { release = () => resolve(entries.map((entry) => decision(entry.id, { decision: 'prefer' }))); });
+  library.selector = selector;
+  const review = library.reviewAI();
+  for (let i = 0; i < 100 && !release; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+  assert.ok(release);
+  await library.recordPlayback('2', 'unavailable'); advance(HOUR); await library.recordPlayback('2', 'unavailable');
+  // Simulate a concurrent metadata refresh inside the same serialized store.
+  await library.mutate((draft) => { draft.entries.find((entry) => entry.id === '1').name = 'changed'; });
+  release(); await review;
+  assert.equal(library.snapshot().counts.blocked, 1);
+  assert.equal(library.state.entries.find((entry) => entry.id === '2').ai, null);
+  assert.equal(library.snapshot().tracks.find((entry) => entry.id === '1').ai, null);
+  assert.equal(library.hot().tracks.some((entry) => entry.id === '2'), false);
+  // A later collection preserves both playback and applicable AI metadata.
+  catalog.rows['10'][0].name = 'changed';
+  await library.collect({ force: true });
+  assert.equal(library.snapshot().counts.blocked, 1);
+});
