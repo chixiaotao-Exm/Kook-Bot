@@ -48,6 +48,18 @@
 @media(max-width:390px){.feature-form-grid{grid-template-columns:minmax(0,1fr)}.sidebar .nav-item{width:33px}.sidebar nav{gap:0}.sidebar .brand-mark{width:28px;height:28px}.source-picker button{font-size:10px;gap:4px}.source-picker .source-dot{width:6px;height:6px}}
 .access-notice{display:flex;align-items:center;justify-content:space-between;gap:20px;margin:0 0 22px;padding:15px 17px;border:1px solid #adc7afb3;border-radius:9px;background:#f0f7eac7}.access-notice strong{font-size:13px;color:#315b3f;font-weight:550}.access-notice p{font-size:11px;line-height:1.8;color:#4e7056;margin:5px 0 0}.access-notice a{font-size:11px;white-space:nowrap;flex-shrink:0;text-decoration:none;display:inline-flex;align-items:center;gap:6px}.access-notice a svg{width:13px;height:13px}@media(max-width:800px){.access-notice{display:block;padding:13px 14px}.access-notice>a{margin-top:11px}.access-notice p{font-size:10px}}
 
+/* Reserve line space while the active lyric grows; end gutters allow centering. */
+.lyrics-lines{--lyrics-height:clamp(300px,58vh,680px);height:var(--lyrics-height);min-height:0;max-height:none;padding:calc(var(--lyrics-height)/2 - 1px) 12px;overflow-anchor:none;scroll-behavior:auto;mask-image:linear-gradient(to bottom,transparent,#000 9%,#000 91%,transparent)}
+.lyric-line{padding:16px clamp(8px,2vw,28px);color:#496953;opacity:.62;font-weight:500;transform:none;transition:color .35s,opacity .35s}
+.lyric-line p,.lyric-line.current p{font-size:clamp(26px,2.6vw,36px);line-height:1.65}
+.lyric-line p{font-weight:500;transform:scale(.76);transform-origin:center;transition:transform .45s cubic-bezier(.22,1,.36,1)}
+.lyric-line>span{font-size:14px;line-height:1.8;opacity:.85;transition:opacity .35s}
+.lyric-line.current{color:#193f2b;opacity:1;font-weight:800;transform:none}
+.lyric-line.current p{font-weight:800;transform:scale(1);text-shadow:0 2px 18px #f8fff0a6}
+.lyric-line.current>span{font-weight:650;opacity:1}
+.lyrics-immersive .lyrics-lines{--lyrics-height:max(220px,calc(100dvh - 270px));height:var(--lyrics-height);min-height:0;max-height:none}
+@media(max-width:800px){#view-lyrics{scroll-margin-top:88px}.lyrics-lines{--lyrics-height:clamp(260px,calc(100dvh - 460px),520px);padding-inline:5px}.lyric-line{padding:15px 10px}.lyric-line p,.lyric-line.current p{font-size:26px}.lyric-line>span{font-size:13px}.lyrics-immersive .lyrics-lines{--lyrics-height:max(190px,calc(100dvh - 325px));height:var(--lyrics-height);min-height:0;max-height:none}}
+@media(prefers-reduced-motion:reduce){.lyric-line,.lyric-line p,.lyric-line>span{transition:none}.lyrics-lines{scroll-behavior:auto}}
 /* Third music source keeps the same compact source controls. */
 .source-dot.qishui{background:#9b6bc7}.source-badge.qishui,.dock-song #dock-source .qishui,.playlist-item>.source-badge.qishui{background:#eadff2dc;color:#72508a}.qishui-avatar{background:#e7dff0}.source-picker{flex-wrap:wrap;max-width:100%}@media(max-width:420px){.source-picker button{flex:1 1 40%}}
 .status-connections>.status-runtime{flex-basis:100%;flex-wrap:wrap}.status-runtime strong{font-variant-numeric:tabular-nums}.status-runtime small{font-size:9px;color:#746d45;margin-left:3px}
