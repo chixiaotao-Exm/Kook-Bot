@@ -119,7 +119,9 @@ export class HotLibrary {
     this.initializing ??= (async () => {
       try {
         const info = await stat(this.file);
-        if (!info.isFile() || info.size > 24 * 1024 * 1024) throw new Error('invalid file');
+        // 5000 valid entries can exceed 24 MiB with six Chinese source names
+        // and long CDN covers. Keep room for the bounded public metadata schema.
+        if (!info.isFile() || info.size > 64 * 1024 * 1024) throw new Error('invalid file');
         const value = JSON.parse(await readFile(this.file, 'utf8'));
         if (!validState(value)) throw new Error('invalid state');
         // Drop any unrecognized fields on load, as on collection.

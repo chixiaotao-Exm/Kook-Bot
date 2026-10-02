@@ -284,6 +284,19 @@ test('large successive scans cap the persistent library and partial scans never 
   assert.equal(library.snapshot().runs[0].added, 0);
 });
 
+test('a full library with long valid metadata can reload after exceeding 24 MiB', async (t) => {
+  const { library, file, settings } = await fixture(t);
+  await library.collect(); await library.close();
+  const entry = library.state.entries[0], name = '长'.repeat(160);
+  const state = { ...library.state, entries: Array.from({length:5000},(_,index)=>({ ...entry, id:String(index+1), name, artists:name, album:name,
+    cover:'https://p3-luna.douyinpic.com/'+ 'a'.repeat(1900),sourceCount:6,
+    sources:Array.from({length:6},(_,i)=>({id:String(i+1),name})) })) };
+  const content=JSON.stringify(state);assert.ok(Buffer.byteLength(content)>24*1024*1024);
+  await writeFile(file,content);
+  const reloaded=new HotLibrary(settings);t.after(()=>reloaded.close());await reloaded.init();
+  assert.equal(reloaded.readOnly,false);assert.equal(reloaded.snapshot({limit:1}).counts.total,5000);
+});
+
 test('heat history retains fourteen independent slots and reports changes relative to the previous slot', async (t) => {
   const { library, catalog, advance, settings } = await fixture(t);
   await library.collect();
