@@ -79,6 +79,10 @@ export class MusicSources {
     return (await this.forSource(source).discover(category)).map((p) => tag(p, source));
   }
   async account(source = 'netease') { return { ...await this.forSource(source).account(), source }; }
+  async hotLibrary(page) {
+    const provider = this.providers.qishui;
+    return provider?.configured !== false && provider?.hotLibrary ? provider.hotLibrary(page) : { enabled: false, tracks: [], total: 0, ...page, hasMore: false };
+  }
   async hot(limit, source = 'netease') {
     const result = await this.forSource(source).hot(limit);
     return { ...result, tracks: result.tracks.map((t) => tag(t, source)) };

@@ -58,6 +58,17 @@ test('new read endpoints preserve partial search results, source lyrics and asyn
   assert.equal(short.resolvedShortLink, true); assert.equal(short.track.source, 'qq');
   assert.equal((await request('/api/health')).status, 200);
 });
+
+test('hot library is a session-protected read with bounded pagination and does not trigger collection or playback', async (t) => {
+  const { request, music, runtimes } = await fixture(t), calls = [];
+  music.hotLibrary = async page => { calls.push(page); return { enabled: true, tracks: [], total: 0, ...page, hasMore: false }; };
+  assert.equal((await request('/api/hot-library', undefined, {})).status, 401);
+  assert.deepEqual(await (await request('/api/hot-library?offset=50&limit=25')).json(), { enabled: true, tracks: [], total: 0, offset: 50, limit: 25, hasMore: false });
+  for (const query of ['offset=-1','offset=5001','limit=101','limit=0','offset=1e2','limit=10&limit=20']) assert.equal((await request('/api/hot-library?'+query)).status, 400);
+  assert.deepEqual(calls,[{offset:50,limit:25}]);
+  assert.equal((await request('/api/hot-library',{})).status,400);
+  assert.ok([...runtimes.values()].every(runtime=>runtime.player.current===null&&runtime.player.queue.length===0));
+});
 test('NetEase QR success is committed only after valid credentials are saved and failed saves can retry', async (t) => {
   const { web } = await fixture(t); let providerCalls = 0, writes = 0;
   web.qr = { key: 'test', expires: Date.now() + 999999, status: 'scanned', checkedAt: 0 };

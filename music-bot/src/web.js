@@ -367,6 +367,13 @@ export class WebConsole {
     switch (url.pathname) {
       case '/api/sources': return { sources: this.music.sources?.() || [sourceDescriptor('netease'), sourceDescriptor('qq', Boolean(this.music.forSource)), sourceDescriptor('qishui', false)] };
       case '/api/bots': return { bots: this.bots(), defaultBotId: 'default' };
+      case '/api/hot-library': {
+        const offsetText = url.searchParams.get('offset') ?? '0', limitText = url.searchParams.get('limit') ?? '50';
+        const offset = Number(offsetText), limit = Number(limitText);
+        if (!/^\d+$/.test(offsetText) || !/^\d+$/.test(limitText) || !Number.isSafeInteger(offset) || offset < 0 || offset > 5000
+          || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new UserError('热歌库分页参数无效。');
+        return this.music.hotLibrary ? this.music.hotLibrary({ offset, limit }) : { enabled: false, tracks: [], total: 0, offset, limit, hasMore: false };
+      }
       case '/api/features': {
         const runtime = this.runtime(url.searchParams.get('botId') ?? undefined);
         if (!runtime.features) throw new UserError('机器人尚未就绪，暂时无法读取房间设置。');

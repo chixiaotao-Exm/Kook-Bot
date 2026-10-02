@@ -88,3 +88,23 @@ test('account data never reflects private cookies or upstream diagnostics', asyn
   assert.equal(body.loggedIn, true); assert.equal(body.id, ID);
   assert.doesNotMatch(JSON.stringify(body), /private|never-return|sessionid/);
 });
+
+test('hot endpoint uses the saved library and does not bypass an exhausted or blocked library', async (t) => {
+  let tracks=[{id:ID,name:'Saved song'}],total=1;
+  const f=await fixture(t,{library:{hot:()=>({mode:'hot',name:'抖音热歌库',tracks}),snapshot:page=>({enabled:true,counts:{total},lastSuccessAt:1,tracks,...page}),close:async()=>{}},
+    catalog:{hot:()=>assert.fail('must not reintroduce blocked songs from live catalog'),close(){}}});
+  const get=async route=>(await fetch(f.base+route,{headers:f.headers})).json();
+  assert.equal((await get('/hot?limit=10')).tracks[0].id,ID);
+  tracks=[];assert.deepEqual((await get('/hot?limit=10')).tracks,[]);
+  const library=await get('/library?offset=0&limit=20');assert.equal(library.enabled,true);assert.equal(library.limit,20);
+  assert.equal((await fetch(f.base+'/library')).status,401);
+});
+
+test('playback feedback only marks explicit unavailable tracks and never login or network failures', async (t) => {
+  const calls=[];let code='not_full_track';
+  const f=await fixture(t,{library:{recordPlayback:async(id,result)=>calls.push([id,result]),close:async()=>{}},playback:{prepare:async()=>{throw Object.assign(Error('private'),{code})}}});
+  for(const value of ['not_full_track','media_unavailable','login_required','upstream_unavailable','signer_unavailable','media_key_invalid']){
+    code=value;await fetch(f.base+'/stream',{method:'POST',headers:f.headers,body:JSON.stringify({id:ID})});
+  }
+  assert.deepEqual(calls,[[ID,'unavailable'],[ID,'unavailable']]);
+});
