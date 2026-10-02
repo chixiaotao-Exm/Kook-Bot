@@ -5,6 +5,7 @@ import { createSmartLinks } from './smart-links.js';
 import { createSessionApi } from './session.js';
 import { createRoomSettings } from './room-settings.js';
 import { createLyrics } from './lyrics.js';
+import { createHotLibrary } from './hot-library.js';
 import { createHealth, cookieHealth, cookieTimingHtml } from './health.js';
 import { takeAccessToken } from './access.js';
 import { musicRoomLink } from './room-links.js';
@@ -50,6 +51,7 @@ const roomSettings = createRoomSettings({ root: $('view-room'), api, drawIcons, 
   getSources: () => availableSources,
   getContext: () => ({ id: selectedBotId, name: state?.bot?.name || '当前机器人', available: botAvailable() && permission('manageRoom') }) });
 const lyricsPage = createLyrics({ root: $('view-lyrics'), api, drawIcons });
+const hotLibrary = createHotLibrary({ root: $('hot-library'), api, drawIcons });
 const healthPage = createHealth({ root: $('view-health'), api, drawIcons, onAccount: () => view('account') });
 const statusPage = createBotStatus({ api, drawIcons,
   getSources: () => availableSources,
@@ -149,6 +151,7 @@ function syncSourceCapabilities() {
   $('hot-button').lastChild.textContent = currentSource === 'qishui' ? '抖音热歌' : '热歌榜';
   document.querySelector('[data-category="hot"]').textContent = currentSource === 'qishui' ? '抖音热歌' : '热门';
   document.querySelector('[data-category="charts"]').textContent = currentSource === 'qishui' ? '抖音榜单' : '榜单';
+  document.querySelector('[data-category="library"]').hidden = currentSource !== 'qishui';
   $('heart-button').hidden = !admin || !sourceSupports(availableSources, currentSource, currentSource === 'qq' ? 'mine' : 'heart');
   document.querySelectorAll('[data-category="mine"]').forEach((button) => { button.hidden = !admin || !sourceSupports(availableSources, currentSource, 'mine'); });
 }
@@ -203,7 +206,7 @@ async function loadBots({ reconcile = true } = {}) {
   }
   renderBots();
 }
-function showLogin() { clearTimeout(pollTimer); clearTimeout(accountHealthTimer); accountHealthGeneration++; accountHealthPending = null; accountHealthChecking = false; statusPage.setActive(false); roomSettings.setActive(false); lyricsPage.setActive(false); healthPage.setActive(false); $('app').hidden = true; $('login').hidden = false; csrf = ''; }
+function showLogin() { clearTimeout(pollTimer); clearTimeout(accountHealthTimer); accountHealthGeneration++; accountHealthPending = null; accountHealthChecking = false; statusPage.setActive(false); roomSettings.setActive(false); lyricsPage.setActive(false); hotLibrary.setActive(false); healthPage.setActive(false); $('app').hidden = true; $('login').hidden = false; csrf = ''; }
 async function enter() {
   $('login').hidden = true; $('app').hidden = false;
   $('logout').hidden = !passwordRequired && !accessControlled;
@@ -315,7 +318,7 @@ function view(name, { restoreDiscover = false, skipScrollCapture = false } = {})
   clearTimeout(accountHealthTimer);
   if (name !== 'playlist') { playlistRequest++; playlistLoading = false; }
   if (name !== 'search') searchRequest++;
-  if (name !== 'discover') discoverRequest++;
+  if (name !== 'discover') { discoverRequest++; hotLibrary.setActive(false); }
   document.querySelectorAll('.view').forEach((el) => { el.hidden = el.id !== `view-${name}`; });
   document.querySelectorAll('.nav-item').forEach((el) => el.classList.toggle('active', el.dataset.view === name || (name === 'search' && el.dataset.view === 'player') || (name === 'playlist' && el.dataset.view === 'discover')));
   $('page-title').textContent = ({ player: '正在播放', discover: '发现歌单', playlist: '歌单详情', search: '搜索结果', account: '账号与设置', status: '机器人状态', room: '房间设置', lyrics: '歌词', health: '故障中心' })[name];
@@ -332,7 +335,7 @@ function view(name, { restoreDiscover = false, skipScrollCapture = false } = {})
   healthPage.setActive(name === 'health' && !document.hidden);
   if (name === 'discover') {
     if (jointSearch) { jointSearch = false; renderSources(); }
-    if (restoreDiscover && playlists.length) renderDiscover();
+    if (restoreDiscover && playlists.length && currentCategory !== 'library') renderDiscover();
     else loadDiscover(currentCategory, restoreDiscover ? discoverScroll : null);
   }
   if (name === 'account' && permission('manageSite')) {
@@ -347,10 +350,14 @@ function renderDiscover() {
 }
 async function loadDiscover(category, restoreScroll = null) {
   if (category === 'mine' && (!permission('manageSite') || !sourceSupports(availableSources, currentSource, 'mine'))) { category = 'hot'; }
+  if (category === 'library' && currentSource !== 'qishui') category = 'hot';
   const request = ++discoverRequest, source = currentSource;
   currentCategory = category;
   sourceBrowsing[source].category = category;
   document.querySelectorAll('[data-category]').forEach((b) => { b.classList.toggle('active', b.dataset.category === category); b.setAttribute('aria-selected', String(b.dataset.category === category)); });
+  $('playlist-grid').hidden = category === 'library';
+  hotLibrary.setActive(category === 'library');
+  if (category === 'library') return;
   $('playlist-grid').innerHTML = '<div class="skeleton-row"></div>'.repeat(6);
   try {
     const data = await api(sourceRoute('/discover', source, { category }));

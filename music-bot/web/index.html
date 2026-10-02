@@ -5,10 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#dce8df">
   <title>桃音 · 音乐控制台</title>
-  <link rel="icon" href="/favicon.svg?v=6b98adeb1eba" type="image/svg+xml">
-  <link rel="stylesheet" href="/style.css?v=6b98adeb1eba">
-  <link rel="stylesheet" href="/theme.css?v=6b98adeb1eba">
-  <script type="module" src="/app.js?v=6b98adeb1eba"></script>
+  <link rel="icon" href="/favicon.svg?v=c0e4cebe8877" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css?v=c0e4cebe8877">
+  <link rel="stylesheet" href="/theme.css?v=c0e4cebe8877">
+  <script type="module" src="/app.js?v=c0e4cebe8877"></script>
 </head>
 <body>
   <div class="wallpaper"><img id="wallpaper-image" src="/assets/background.svg" alt="竹青渐变背景"><div class="wallpaper-wash"></div></div>
@@ -68,7 +68,7 @@
         <div class="track-list" id="queue-list"></div>
       </section>
       <section id="view-search" class="view" hidden><div class="section-heading"><div><h2>搜索结果</h2><span id="search-count"></span></div></div><div id="search-results" class="track-list"></div></section>
-      <section id="view-discover" class="view" hidden><div class="section-heading discover-heading"><h2>发现好音乐</h2><div class="segmented" id="discover-tabs" role="tablist"><button role="tab" aria-selected="true" data-category="hot" class="active">热门</button><button role="tab" aria-selected="false" data-category="charts">榜单</button><button role="tab" aria-selected="false" data-category="acg">ACG</button><button role="tab" aria-selected="false" data-category="mine">我的</button></div></div><div id="playlist-grid" class="playlist-grid"></div></section>
+      <section id="view-discover" class="view" hidden><div class="section-heading discover-heading"><h2>发现好音乐</h2><div class="segmented" id="discover-tabs" role="tablist"><button role="tab" aria-selected="true" data-category="hot" class="active">热门</button><button role="tab" aria-selected="false" data-category="charts">榜单</button><button role="tab" aria-selected="false" data-category="acg">ACG</button><button role="tab" aria-selected="false" data-category="mine">我的</button><button role="tab" aria-selected="false" data-category="library" hidden>热歌库</button></div></div><div id="playlist-grid" class="playlist-grid"></div><div id="hot-library" class="hot-library feature-card" role="region" aria-label="抖音热歌库" hidden></div></section>
       <section id="view-playlist" class="view" hidden>
         <button id="playlist-back" class="quiet-button playlist-back"><i data-lucide="arrow-left"></i>返回歌单</button>
         <div class="playlist-summary">

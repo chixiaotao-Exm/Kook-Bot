@@ -176,6 +176,23 @@ export class QishuiMusic {
     limit = bounded(limit, 30, 500); const data = await this.call('hot', { limit });
     return { mode: 'hot', name: text(data.name) || '汽水音乐热歌', tracks: tracks(data.tracks, limit) };
   }
+  async hotLibrary({ offset = 0, limit = 50 } = {}) {
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset > 5000 || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new UserError('热歌库分页参数无效。');
+    const data = await this.call('library', { offset, limit });
+    if (data.enabled === false) return { enabled: false, tracks: [], total: 0, offset, limit, hasMore: false };
+    if (data.enabled !== true || !object(data.counts) || !Number.isSafeInteger(data.total) || data.total < 0 || data.total > 5000
+      || data.offset !== offset || data.limit !== limit || typeof data.hasMore !== 'boolean' || !Array.isArray(data.tracks) || data.tracks.length > limit) throw responseError();
+    const timestamp = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+    const count = value => Number.isSafeInteger(value) && value >= 0 && value <= 5000 ? value : 0;
+    return { enabled: true, collecting: data.collecting === true, lastRunAt: timestamp(data.lastRunAt), lastSuccessAt: timestamp(data.lastSuccessAt),
+      lastError: text(data.lastError, 300), nextRunAt: timestamp(data.nextRunAt), timezone: 'Asia/Shanghai', times: ['09:00','21:00'],
+      counts: Object.fromEntries(['total','active','archived','blocked'].map(key => [key,count(data.counts[key])])),
+      policy: { archiveDays: 14, deleteDays: 45 }, total: data.total, offset, limit, hasMore: data.hasMore,
+      tracks: data.tracks.map(value => ({ ...track(value), score: typeof value.score === 'number' && Number.isFinite(value.score) ? value.score : 0,
+        scoreDelta: typeof value.scoreDelta === 'number' && Number.isFinite(value.scoreDelta) ? value.scoreDelta : null,
+        firstSeenAt: timestamp(value.firstSeenAt), lastSeenAt: timestamp(value.lastSeenAt), sourceCount: count(value.sourceCount),
+        status: ['active','archived','blocked'].includes(value.status) ? value.status : 'active' })) };
+  }
   async account() {
     if (!this.configured) return { loggedIn: false, unavailable: true, status: 'unavailable' };
     const data = await this.call('account');
