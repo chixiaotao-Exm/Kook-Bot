@@ -121,6 +121,15 @@ test('library metadata is paged and contains only safe public fields', async () 
   await assert.rejects(fixture({enabled:true,tracks:[]}).music.hotLibrary(),/无效/);
 });
 
+test('library AI decisions are public summaries without credentials, prompts or raw responses', async () => {
+  const { music }=fixture({enabled:true,counts:{total:1,active:1},total:1,offset:0,limit:50,hasMore:false,
+    ai:{enabled:true,model:'gpt-6-astra',status:'partial',reviewed:1,ruleOnly:0,excluded:0,lastSuccessAt:1234,apiKey:'secret',prompt:'private'},
+    tracks:[{...sample,score:90,ruleScore:30,ai:{decision:'prefer',version:'original',trend:'unknown',reason:'多个歌单同时收录',confidence:.9,reviewedAt:1234,model:'gpt-6-astra',response:'private'}}]});
+  const data=await music.hotLibrary();
+  assert.equal(data.ai.model,'gpt-6-astra');assert.equal(data.ai.reviewed,1);assert.equal(data.tracks[0].ai.decision,'prefer');
+  assert.equal(data.tracks[0].ruleScore,30);assert.doesNotMatch(JSON.stringify(data),/secret|private|apiKey|prompt|response/);
+});
+
 test('stream accepts only matching full unencrypted audio and sends ID without credentials in URL', async () => {
   const { music, calls } = fixture(media);
   assert.equal(await music.stream(sample), mediaUrl);

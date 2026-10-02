@@ -3,11 +3,18 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { createQishuiServer } from '../qishui/server.js';
+import { createQishuiServer, optionalAiSelector } from '../qishui/server.js';
 
 const ID = '7501674235158431760';
 const deferred = () => { let resolve; const promise = new Promise((done) => { resolve = done; }); return { promise, resolve }; };
 const tick = () => new Promise((resolve) => setImmediate(resolve));
+test('optional model configuration failures disable AI without preventing bridge startup',()=>{
+  for(const env of [{QISHUI_AI_BASE_URL:''},{QISHUI_AI_BASE_URL:'http://external.invalid'},{QISHUI_AI_API_KEY:'private malformed key'}]){
+    const selector=optionalAiSelector(env);assert.equal(selector.enabled,false);assert.match(selector.configError,/配置无效/);
+    assert.doesNotMatch(selector.configError,/private|external/);
+  }
+  assert.equal(optionalAiSelector({}).enabled,false);assert.equal(optionalAiSelector({}).configError,undefined);
+});
 async function fixture(t, overrides = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), 'kook-qishui-review-'));
   const credentialsFile = path.join(dir, 'credentials.json'), cacheDir = path.join(dir, 'media');

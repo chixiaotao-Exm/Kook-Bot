@@ -184,11 +184,25 @@ export class QishuiMusic {
       || data.offset !== offset || data.limit !== limit || typeof data.hasMore !== 'boolean' || !Array.isArray(data.tracks) || data.tracks.length > limit) throw responseError();
     const timestamp = value => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
     const count = value => Number.isSafeInteger(value) && value >= 0 && value <= 5000 ? value : 0;
+    const assessment = value => {
+      if (!object(value) || !['prefer','keep','downrank','exclude'].includes(value.decision)) return null;
+      return { decision: value.decision, version: ['original','cover','dj','live','instrumental'].includes(value.version) ? value.version : 'unknown',
+        trend: ['rising','steady','revival'].includes(value.trend) ? value.trend : 'unknown', reason: text(value.reason,100),
+        confidence: typeof value.confidence === 'number' && value.confidence >= 0 && value.confidence <= 1 ? value.confidence : 0,
+        reviewedAt: timestamp(value.reviewedAt), model: text(value.model,80) };
+    };
+    const ai = object(data.ai) ? { enabled: data.ai.enabled === true, model: text(data.ai.model,80),
+      status: ['disabled','pending','running','ready','partial','fallback'].includes(data.ai.status) ? data.ai.status : 'fallback',
+      lastRunAt: timestamp(data.ai.lastRunAt), lastSuccessAt: timestamp(data.ai.lastSuccessAt), lastError: text(data.ai.lastError,300),
+      reviewed: count(data.ai.reviewed), ruleOnly: count(data.ai.ruleOnly), excluded: count(data.ai.excluded) } : undefined;
     return { enabled: true, collecting: data.collecting === true, lastRunAt: timestamp(data.lastRunAt), lastSuccessAt: timestamp(data.lastSuccessAt),
       lastError: text(data.lastError, 300), nextRunAt: timestamp(data.nextRunAt), timezone: 'Asia/Shanghai', times: ['09:00','21:00'],
       counts: Object.fromEntries(['total','active','archived','blocked'].map(key => [key,count(data.counts[key])])),
       policy: { archiveDays: 14, deleteDays: 45 }, total: data.total, offset, limit, hasMore: data.hasMore,
+      ...(ai ? { ai } : {}),
       tracks: data.tracks.map(value => ({ ...track(value), score: typeof value.score === 'number' && Number.isFinite(value.score) ? value.score : 0,
+        ruleScore: typeof value.ruleScore === 'number' && Number.isFinite(value.ruleScore) ? value.ruleScore : value.score,
+        ai: assessment(value.ai),
         scoreDelta: typeof value.scoreDelta === 'number' && Number.isFinite(value.scoreDelta) ? value.scoreDelta : null,
         firstSeenAt: timestamp(value.firstSeenAt), lastSeenAt: timestamp(value.lastSeenAt), sourceCount: count(value.sourceCount),
         status: ['active','archived','blocked'].includes(value.status) ? value.status : 'active' })) };
