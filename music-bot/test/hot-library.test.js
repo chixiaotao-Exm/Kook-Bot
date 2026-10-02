@@ -389,7 +389,7 @@ test('AI claims survive restart and force cannot spend twice for a slot and mode
   assert.equal(selector.calls.length, 3, 'model toggling cannot replay its prior paid slot');
 });
 
-test('AI requests are bounded to 240 songs, six batches and two concurrent calls with truthful pending counts', async (t) => {
+test('AI requests are bounded to 240 songs, 24 ten-song batches and two concurrent calls with truthful pending counts', async (t) => {
   let running = 0, maxRunning = 0;
   const selector = selectorFixture(async (entries) => {
     running++; maxRunning = Math.max(maxRunning, running);
@@ -399,12 +399,12 @@ test('AI requests are bounded to 240 songs, six batches and two concurrent calls
   const catalog = catalogFixture({ lists: { hot: ['10'], charts: ['10'] }, rows: { 10: Array.from({ length: 500 }, (_, index) => track(index + 1)) } });
   const { library, advance } = await fixture(t, { catalog, settings: { selector } });
   let snapshot = await library.collect();
-  assert.equal(maxRunning, 2); assert.equal(selector.calls.length, 6);
-  assert.equal(selector.calls.every((call) => call.entries.length === 40), true);
+  assert.equal(maxRunning, 2); assert.equal(selector.calls.length, 24);
+  assert.equal(selector.calls.every((call) => call.entries.length === 10), true);
   assert.equal(snapshot.ai.reviewed, 240); assert.equal(snapshot.ai.ruleOnly, 260); assert.equal(snapshot.ai.status, 'partial');
   assert.equal(selector.calls[0].entries[0].id, '1');
   advance(12 * HOUR); snapshot = await library.collect();
-  assert.equal(selector.calls.length, 12); assert.equal(snapshot.ai.reviewed, 480); assert.equal(snapshot.ai.ruleOnly, 20);
+  assert.equal(selector.calls.length, 48); assert.equal(snapshot.ai.reviewed, 480); assert.equal(snapshot.ai.ruleOnly, 20);
 });
 
 test('expired, changed, or disabled-model decisions stop affecting playback and are not reused', async (t) => {
