@@ -7,8 +7,13 @@ import { pathToFileURL } from 'node:url';
 import { QishuiCatalog } from './catalog.js';
 import { QishuiPlayback, boundedFetch } from './playback.js';
 import { HotLibrary } from './hot-library.js';
+import { AiSongSelector } from './ai-selector.js';
 
 const equal=(a,b)=>typeof a==='string'&&Buffer.byteLength(a)===Buffer.byteLength(b)&&timingSafeEqual(Buffer.from(a),Buffer.from(b));
+export function optionalAiSelector(env=process.env){
+  try{return new AiSongSelector({baseUrl:env.QISHUI_AI_BASE_URL,apiKey:env.QISHUI_AI_API_KEY,model:'gpt-6-astra'})}
+  catch{return{enabled:false,model:'gpt-6-astra',configError:'智能筛选配置无效，已停用模型并继续规则推荐。'}}
+}
 export function mediaRange(value,size){
   if(value==null)return{start:0,end:size-1,partial:false};
   const m=/^bytes=(\d*)-(\d*)$/.exec(value);
@@ -140,7 +145,8 @@ if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){
   const {QISHUI_API_TOKEN:token,QISHUI_PUBLIC_URL:publicUrl,QISHUI_SIGNER_TOKEN:signerToken}=process.env;
   const credentialsFile=process.env.QISHUI_CREDENTIALS_FILE||'/data/credentials.json',cacheDir='/data/media';
   const catalog=new QishuiCatalog(),playback=new QishuiPlayback({signerUrl:'http://127.0.0.1:19096',signerToken,credentialsFile,cacheDir});
-  const library=new HotLibrary({catalog,file:process.env.QISHUI_HOT_LIBRARY_FILE||'/data/hot-library.json'});await library.init();
+  const selector=optionalAiSelector();
+  const library=new HotLibrary({catalog,selector,file:process.env.QISHUI_HOT_LIBRARY_FILE||'/data/hot-library.json'});await library.init();
   const server=createQishuiServer({token,publicUrl,credentialsFile,cacheDir,catalog,playback,library});
   server.listen(Number(process.env.PORT||19095),'127.0.0.1',()=>library.start());
   for(const signal of ['SIGTERM','SIGINT'])process.on(signal,()=>server.closeBridge().finally(()=>process.exit(0)));
