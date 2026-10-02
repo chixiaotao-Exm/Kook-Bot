@@ -145,8 +145,9 @@ test('playlist loading is bounded by 500 tracks and five provider requests', asy
 });
 
 test('discovery categories map to official playlist search and mine is explicitly unsupported', async () => {
-  const { catalog, calls } = fixture(searchData([{ ...rawPlaylist(), id: Number(playlistId) }, rawPlaylist(), rawPlaylist()], 'playlist'));
-  for (const [category, keyword] of [['hot', '热歌'], ['charts', '排行榜'], ['acg', '动漫 ACG']]) {
+  const playlist = { ...rawPlaylist(), title: '抖音热歌' };
+  const { catalog, calls } = fixture(searchData([{ ...playlist, id: Number(playlistId) }, playlist, playlist], 'playlist'));
+  for (const [category, keyword] of [['hot', '抖音热歌'], ['charts', '抖音热歌榜'], ['acg', '动漫 ACG']]) {
     const rows = await catalog.discover(category);
     assert.equal(rows.length, 1); assert.equal(rows[0].source, 'qishui');
     assert.equal(calls.at(-1).url.pathname, '/luna/search/playlist');
@@ -156,12 +157,84 @@ test('discovery categories map to official playlist search and mine is explicitl
   assert.equal(calls.length, 3);
 });
 
+test('Douyin discovery ranks matching titles and current hits before unrelated, nostalgic, and DJ lists', async () => {
+  const choices = [
+    { ...rawPlaylist(), id: '1', title: '旅行轻音乐', desc: '' },
+    { ...rawPlaylist(), id: '2', title: '抖音热歌丨8090怀旧老歌' },
+    { ...rawPlaylist(), id: '3', title: '抖音热歌丨车载DJ' },
+    { ...rawPlaylist(), id: '4', title: '抖音热歌排行榜' },
+    { ...rawPlaylist(), id: '5', title: '2027抖音爆款热歌' },
+    { ...rawPlaylist(), id: '6', title: '2027抖音流行热歌' },
+    { ...rawPlaylist(), id: '7', title: '流行歌单', desc: '抖音爆款热歌' },
+  ];
+  const { catalog, calls } = fixture(searchData(choices, 'playlist'), { now: () => Date.UTC(2027, 0, 2) });
+  assert.deepEqual((await catalog.discover()).map((item) => item.id), ['5', '6', '4', '3', '2', '7', '1']);
+  assert.equal(calls.length, 1);
+  assert.deepEqual((await catalog.discover('acg')).map((item) => item.id), choices.map((item) => item.id));
+  assert.equal(calls.length, 2);
+});
+
+test('missing Douyin matches fall back once to broad hot search and merge without duplicate playlists', async () => {
+  const generic = { ...rawPlaylist(), id: '1', title: '热门歌曲' };
+  const douyin = { ...rawPlaylist(), id: '2', title: '抖音热歌排行榜' };
+  const { catalog, calls } = fixture((url) => json(searchData(url.searchParams.get('q') === '热歌' ? [generic, douyin] : [generic], 'playlist')));
+  assert.deepEqual((await catalog.discover('charts')).map((item) => item.id), ['2', '1']);
+  assert.deepEqual(calls.map(({ url }) => url.searchParams.get('q')), ['抖音热歌榜', '热歌']);
+  const empty = fixture(searchData([], 'playlist'));
+  await assert.rejects(empty.catalog.hot(), UnavailableError);
+  assert.equal(empty.calls.length, 2);
+});
+
+test('fallback failure keeps initial usable candidates but preserves an error when none are available', async () => {
+  for (const choices of [[], [rawPlaylist()]]) {
+    const { catalog, calls } = fixture((url) => url.searchParams.get('q') === '热歌'
+      ? json({}, 503) : json(searchData(choices, 'playlist')));
+    if (choices.length) assert.equal((await catalog.discover()).length, 1);
+    else await assert.rejects(catalog.discover(), /请求失败/);
+    assert.equal(calls.length, 2);
+  }
+});
+
 test('hot playlists use valid discovery results and return bounded normalized tracks', async () => {
-  const { catalog } = fixture((url) => json(url.pathname.endsWith('/search/playlist')
-    ? searchData([{ id: Number(playlistId), title: 'unsafe' }, rawPlaylist(2)], 'playlist')
+  const { catalog, calls } = fixture((url) => json(url.pathname.endsWith('/search/playlist')
+    ? searchData([{ id: Number(playlistId), title: 'unsafe' }, { ...rawPlaylist(2), title: '抖音热歌' }, { ...rawPlaylist(), id: '42', title: '抖音热歌备选' }], 'playlist')
     : playlistData([rawTrack(), rawTrack('100')], 2)));
   const hot = await catalog.hot(1);
-  assert.deepEqual({ mode: hot.mode, name: hot.name, length: hot.tracks.length }, { mode: 'hot', name: '热门歌曲', length: 1 });
+  assert.deepEqual({ mode: hot.mode, name: hot.name, length: hot.tracks.length }, { mode: 'hot', name: '抖音热歌', length: 1 });
+  assert.equal(calls.length, 2, 'a sufficient first playlist should not fetch other candidates');
+});
+
+test('hot top-ups survive one unavailable playlist and deduplicate up to the requested total', async () => {
+  const { catalog, calls } = fixture((url) => {
+    if (url.pathname.endsWith('/search/playlist')) return json(searchData(
+      ['1', '2', '3', '4'].map((id) => ({ ...rawPlaylist(), id, title: `抖音热歌${id}` })), 'playlist'));
+    const id = url.searchParams.get('playlist_id');
+    if (id === '2') return json({}, 404);
+    const values = id === '1' ? [rawTrack('100'), rawTrack('101')] : [rawTrack('101'), rawTrack('102'), rawTrack('103')];
+    return json({ ...playlistData(values), playlist: { ...rawPlaylist(values.length), id } });
+  });
+  const hot = await catalog.hot(4);
+  assert.deepEqual(hot.tracks.map((track) => track.id), ['100', '101', '102', '103']);
+  assert.equal(hot.name, '抖音热歌精选');
+  assert.deepEqual(calls.slice(1).map(({ url }) => url.searchParams.get('playlist_id')), ['1', '2', '3']);
+});
+
+test('hot top-ups cover first-candidate failures, preserve total failure reason, and cap at 500', async () => {
+  const { catalog, calls } = fixture((url) => {
+    if (url.pathname.endsWith('/search/playlist')) return json(searchData(
+      ['1', '2', '3'].map((id) => ({ ...rawPlaylist(), id, title: '抖音热歌' })), 'playlist'));
+    const id = url.searchParams.get('playlist_id');
+    if (id === '1') return json({}, 503);
+    const values = Array.from({ length: 300 }, (_, index) => rawTrack(String((id === '2' ? 1000 : 1200) + index)));
+    return json({ ...playlistData(values), playlist: { ...rawPlaylist(values.length), id } });
+  });
+  assert.equal((await catalog.hot(500)).tracks.length, 500);
+  assert.equal(calls.length, 4);
+  await assert.rejects(catalog.hot(501), UserError);
+  assert.equal(calls.length, 4);
+  const failed = fixture((url) => url.pathname.endsWith('/search/playlist')
+    ? json(searchData([{ ...rawPlaylist(), title: '抖音热歌' }], 'playlist')) : json({}, 429));
+  await assert.rejects(failed.catalog.hot(), /过于频繁/);
 });
 
 test('upstream errors, redirects, and diagnostics never leak response contents', async () => {
