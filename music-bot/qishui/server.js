@@ -6,6 +6,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { QishuiCatalog } from './catalog.js';
 import { QishuiPlayback, boundedFetch } from './playback.js';
+import { HotLibrary } from './hot-library.js';
 
 const equal=(a,b)=>typeof a==='string'&&Buffer.byteLength(a)===Buffer.byteLength(b)&&timingSafeEqual(Buffer.from(a),Buffer.from(b));
 export function mediaRange(value,size){
@@ -15,7 +16,7 @@ export function mediaRange(value,size){
   let start=m[1]?Number(m[1]):Math.max(0,size-Number(m[2])),end=m[2]&&m[1]?Math.min(size-1,Number(m[2])):size-1;
   return Number.isSafeInteger(start)&&Number.isSafeInteger(end)&&start>=0&&start<size&&end>=start?{start,end,partial:true}:null;
 }
-export function createQishuiServer({token,publicUrl,credentialsFile,cacheDir,catalog,playback,now=Date.now,fetchImpl=fetch}){
+export function createQishuiServer({token,publicUrl,credentialsFile,cacheDir,catalog,playback,library,now=Date.now,fetchImpl=fetch}){
   if(typeof token!=='string'||token.length<32)throw Error('api_token_required');
   const base=new URL(publicUrl);if((base.protocol!=='https:'&&!(base.protocol==='http:'&&['127.0.0.1','localhost','[::1]'].includes(base.hostname)))||base.username||base.password||base.search||base.hash)throw Error('invalid_public_url');
   const prefix=base.pathname.replace(/\/$/,''),caps=new Map(),pending=new Map(),shutdown=new AbortController();
@@ -24,6 +25,9 @@ export function createQishuiServer({token,publicUrl,credentialsFile,cacheDir,cat
   let accountCache=null,active=0;
   const json=(res,status,body)=>{res.writeHead(status,{'Content-Type':'application/json;charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(body))};
   async function prune(){for(const[cap,entry]of caps)if(entry.expires<=now()){caps.delete(cap);await unlink(entry.file).catch(()=>{})}}
+  async function recordPlayback(id,outcome){
+    try { await library?.recordPlayback(id,outcome); } catch { /* A library write failure must not interrupt playback. */ }
+  }
   async function prepared(id){
     await cleaned;
     await prune();
@@ -31,10 +35,16 @@ export function createQishuiServer({token,publicUrl,credentialsFile,cacheDir,cat
     if(pending.has(id))return pending.get(id);
     if(pending.size>=1)throw Object.assign(Error('busy'),{code:'busy'});
     const operation=(async()=>{
-      const item=await playback.prepare(id,{signal:shutdown.signal});
+      let item;
+      try { item=await playback.prepare(id,{signal:shutdown.signal}); }
+      catch(error){
+        if(['not_full_track','media_unavailable'].includes(error.code))await recordPlayback(id,'unavailable');
+        throw error;
+      }
       if(path.dirname(path.resolve(item.file))!==path.resolve(cacheDir))throw Error('invalid_media');
       if(shutdown.signal.aborted){await unlink(item.file).catch(()=>{});throw Error('cancelled')}
       const info=await stat(item.file);if(!info.isFile()||info.size<1||info.size>30*1024*1024)throw Error('invalid_media');
+      await recordPlayback(id,'success');
       while(caps.size>=12){const[cap,old]=caps.entries().next().value;caps.delete(cap);await unlink(old.file).catch(()=>{})}
       const cap=randomBytes(24).toString('hex')+'.mp3';
       const entry={...item,id,bytes:info.size,expires:now()+60*60_000,url:base.origin+prefix+'/media/'+cap};caps.set(cap,entry);return entry;
@@ -92,7 +102,18 @@ export function createQishuiServer({token,publicUrl,credentialsFile,cacheDir,cat
         case '/track':result={track:await catalog.track(q.get('id'))};break;
         case '/playlist':result=await catalog.playlistDetails(q.get('id'),{offset:Number(q.get('offset')||0),limit:Number(q.get('limit')||50)});break;
         case '/discover':result={playlists:await catalog.discover(q.get('category')||'hot')};break;
-        case '/hot':result=await catalog.hot(Number(q.get('limit')||30));break;
+        case '/hot': {
+          const limit=Number(q.get('limit')||30);
+          if(!Number.isSafeInteger(limit)||limit<1||limit>500)throw Error('invalid_limit');
+          const saved=library?.hot(limit),state=library?.snapshot({limit:1});
+          result=saved&&(saved.tracks.length||state?.lastSuccessAt||state?.counts?.total)?saved:await catalog.hot(limit);
+          break;
+        }
+        case '/library': {
+          const offset=Number(q.get('offset')||0),limit=Number(q.get('limit')||50);
+          if(!Number.isSafeInteger(offset)||offset<0||offset>5000||!Number.isSafeInteger(limit)||limit<1||limit>100)throw Error('invalid_page');
+          result=library?library.snapshot({offset,limit}):{enabled:false,tracks:[],total:0,offset,limit,hasMore:false};break;
+        }
         case '/lyrics':result=await catalog.lyrics(q.get('id'));break;
         default:json(res,404,{error:'not_found'});return;
       }
@@ -110,7 +131,7 @@ export function createQishuiServer({token,publicUrl,credentialsFile,cacheDir,cat
   });
   server.headersTimeout=5000;server.requestTimeout=70000;
   const timer=setInterval(()=>{void prune().catch(()=>{})},60_000);timer.unref();
-  server.closeBridge=async()=>{shutdown.abort();clearInterval(timer);catalog.close();server.closeAllConnections();await new Promise(r=>server.close(r));await Promise.allSettled([...pending.values()]);for(const item of caps.values())await unlink(item.file).catch(()=>{});caps.clear()};
+  server.closeBridge=async()=>{shutdown.abort();clearInterval(timer);const closingLibrary=library?.close();catalog.close();server.closeAllConnections();await new Promise(r=>server.close(r));await Promise.allSettled([...pending.values(),closingLibrary]);for(const item of caps.values())await unlink(item.file).catch(()=>{});caps.clear()};
   return server;
 }
 
@@ -119,7 +140,8 @@ if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){
   const {QISHUI_API_TOKEN:token,QISHUI_PUBLIC_URL:publicUrl,QISHUI_SIGNER_TOKEN:signerToken}=process.env;
   const credentialsFile=process.env.QISHUI_CREDENTIALS_FILE||'/data/credentials.json',cacheDir='/data/media';
   const catalog=new QishuiCatalog(),playback=new QishuiPlayback({signerUrl:'http://127.0.0.1:19096',signerToken,credentialsFile,cacheDir});
-  const server=createQishuiServer({token,publicUrl,credentialsFile,cacheDir,catalog,playback});
-  server.listen(Number(process.env.PORT||19095),'127.0.0.1');
+  const library=new HotLibrary({catalog,file:process.env.QISHUI_HOT_LIBRARY_FILE||'/data/hot-library.json'});await library.init();
+  const server=createQishuiServer({token,publicUrl,credentialsFile,cacheDir,catalog,playback,library});
+  server.listen(Number(process.env.PORT||19095),'127.0.0.1',()=>library.start());
   for(const signal of ['SIGTERM','SIGINT'])process.on(signal,()=>server.closeBridge().finally(()=>process.exit(0)));
 }

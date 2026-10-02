@@ -6,6 +6,7 @@
 
 - `catalog.js`：固定汽水官方接口的匿名搜索、歌单及歌词，19 位 ID 保持字符串，目录最多 500 首。
 - 热歌目录优先搜索“抖音热歌”和“抖音热歌榜”，按照标题、简介的相关程度选择歌单；自动补歌与热歌按钮共用此目录，歌单之间去重。这里是汽水搜索出的歌单，不代表抖音官方实时榜单。
+- `hot-library.js`：常驻热歌收集 Agent，北京时间每天 09:00、21:00 读取热歌和榜单中的候选歌单，保存 `/data/hot-library.json`。首次空库立即建立；重启追赶最近一个遗漏时段。失败保留原库，每个时段最多在30分钟后重试一次。
 - `playback.js`：使用自有账号和本地签名器获取授权曲目，拒绝试听或无权限响应；下载到私有短期缓存，FFmpeg 解码为 MP3，并用 ffprobe 验证实际时长。
 - `server.js`：仅绑定回环端口，API 需要强 Bearer Token，音频通过随机、1 小时有效的 capability 路径提供 Range 请求。最多 12 个缓存，启动及定期清理。签名、原音源 URL、Cookie 不传给网页。
 - `signer/`：基于 MIT `sodahub-org/libmssdk` 固定提交 `865f7840d548f88ebd1debf154b2f0f434fee6ed`，修复无 Token 放行、错误回显、目标地址和响应边界。仅 API `/sign` 用于播放。
@@ -24,6 +25,7 @@ QISHUI_API_TOKEN=与音乐机器人相同的令牌
 QISHUI_SIGNER_TOKEN=独立的签名器令牌
 QISHUI_PUBLIC_URL=http://127.0.0.1:19094/_qishui
 QISHUI_CREDENTIALS_FILE=/data/credentials.json
+QISHUI_HOT_LIBRARY_FILE=/data/hot-library.json
 ```
 
 `credentials.json` 由本次账号登录流程写入，包含 `cookie`、`deviceId`、`installId`；目录 0700、文件 0600。账号状态从官方 `/luna/pc/me` 的 `my_info` 查询。上游网络故障与登录失效分别处理。
@@ -45,6 +47,10 @@ API 从 `music-bot` 目录构建：`docker build -f qishui/Dockerfile -t kook-qi
 汽水登录不同于网易云/QQ，目前由管理员在服务器完成，控制台只展示账号状态，不提供会误操作其他平台的扫码/退出按钮。登录原型采用隔离 Chromium 和官方二维码；实际修复包括轮询 `is_frontier=false`，以及从官方 HTTP `Set-Cookie` 回收浏览器未写入 Cookie jar 的会话。只有官方明确 confirmed 并取得本次会话才持久化。若触发官方二次验证，需要人工完成，不能假报成功。
 
 前台可选择汽水、联合搜索、导入歌单、使用热门歌单及自动电台。支持官方完整分享地址 `https://music.douyin.com/qishui/share/track?track_id=...` 和 `/playlist?playlist_id=...`；短链接、我的收藏和心动模式暂未支持。某些曲目版权/账号权益仍不可用，返回明确提示或跳过，不用试听假装整曲。
+
+热歌按钮和热歌自动补充优先读取持久曲库。Agent 只采集歌曲资料和歌单来源，不批量下载音频，也不调用收费模型。最多选择6个不同歌单，每单读取最多500首，按歌曲ID去重，库总量最多5000条。推荐分由来源覆盖、歌单排名和新近出现情况计算，不是平台官方热度。发现页的“热歌库”展示采集状态、上次/下次运行、活跃/停用数量及分页歌曲。
+
+14天未在采集来源再次出现的歌曲停用，45天后清理；仅在完整有效采集后清理，接口故障不会造成大批误删。同一首歌明确无完整音源两次且间隔至少1小时，暂停推荐7天；账号失效、网络错误和签名故障不参与屏蔽。登录资料和原播放队列不随清库删除。曲库损坏时保留原文件并显示异常，空库可暂用实时热门歌单。
 
 ## 来源与验证
 

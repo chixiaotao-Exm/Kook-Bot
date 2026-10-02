@@ -110,6 +110,17 @@ test('discovery, hot songs, account and lyrics use the normalized provider contr
   for (const method of ['qrCreate', 'qrStatus', 'logout']) assert.throws(() => music[method](), /暂不支持/);
 });
 
+test('library metadata is paged and contains only safe public fields', async () => {
+  const { music,calls }=fixture({enabled:true,counts:{total:1,active:1,archived:0,blocked:0},total:1,offset:0,limit:50,hasMore:false,
+    lastSuccessAt:123456,nextRunAt:234567,tracks:[{...sample,score:80,lastSeenAt:123456,sourceCount:3,status:'active',cookie:'private'}],token:'private'});
+  const result=await music.hotLibrary();
+  assert.equal(result.tracks[0].source,'qishui');assert.equal(result.lastSuccessAt,123456);
+  assert.equal(result.timezone,'Asia/Shanghai');assert.deepEqual(result.times,['09:00','21:00']);assert.doesNotMatch(JSON.stringify(result),/private|cookie|token/);
+  assert.equal(calls[0].url.pathname,'/internal/qishui/library');
+  await assert.rejects(music.hotLibrary({offset:-1}),UserError);
+  await assert.rejects(fixture({enabled:true,tracks:[]}).music.hotLibrary(),/无效/);
+});
+
 test('stream accepts only matching full unencrypted audio and sends ID without credentials in URL', async () => {
   const { music, calls } = fixture(media);
   assert.equal(await music.stream(sample), mediaUrl);
