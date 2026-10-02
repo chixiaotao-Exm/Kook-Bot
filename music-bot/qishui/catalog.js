@@ -92,6 +92,16 @@ function distinctValid(values, normalize, maximum) {
   }
   return result;
 }
+const DOUYIN_WORD = /抖音|douyin/i;
+const HOT_WORD = /热歌|热门|热榜|爆款|爆火|流行|排行榜/;
+function playlistHotScore(playlist, year) {
+  const title = playlist.name, description = playlist.description;
+  return (DOUYIN_WORD.test(title) ? 100 : 0) + (DOUYIN_WORD.test(description) ? 20 : 0)
+    + (HOT_WORD.test(title) ? 30 : 0) + (HOT_WORD.test(description) ? 6 : 0)
+    + (title.includes(String(year)) ? 8 : 0)
+    - (/怀旧|经典老歌|老歌|[789]0后|[789]0年代|80[、/· -]?90/.test(title) ? 20 : 0)
+    - (/车载|dj/i.test(title) ? 10 : 0);
+}
 function lyricText(value) {
   const content = typeof value === 'string' ? value : value?.content;
   if (typeof content !== 'string') return '';
@@ -231,17 +241,49 @@ export class QishuiCatalog {
   async discover(category = 'hot') {
     if (category === 'mine') throw new UnavailableError('汽水音乐暂不支持读取我的歌单。');
     if (!['hot', 'charts', 'acg'].includes(category)) throw new UserError('汽水音乐歌单分类无效。');
-    const query = { hot: '热歌', charts: '排行榜', acg: '动漫 ACG' }[category];
-    const data = await this.request('playlists', { q: query, cursor: '0', count: '20' });
-    return distinctValid(searchEntities(data, 'playlist'), normalizePlaylist, 20);
+    const query = { hot: '抖音热歌', charts: '抖音热歌榜', acg: '动漫 ACG' }[category];
+    const search = async (q) => distinctValid(searchEntities(await this.request('playlists', { q, cursor: '0', count: '20' }), 'playlist'), normalizePlaylist, 20);
+    const choices = await search(query);
+    if (category === 'acg') return choices;
+    if (!choices.some((choice) => DOUYIN_WORD.test(`${choice.name} ${choice.description}`))) {
+      // Broad search is a fallback, not an official chart or a fixed list of songs.
+      try {
+        const seen = new Set(choices.map((choice) => choice.id));
+        for (const choice of await search('热歌')) if (!seen.has(choice.id)) { choices.push(choice); seen.add(choice.id); }
+      } catch (error) { if (!choices.length || this.closed) throw error; }
+    }
+    const year = new Date(this.now()).getUTCFullYear();
+    return choices.sort((left, right) => playlistHotScore(right, year) - playlistHotScore(left, year)).slice(0, 20);
   }
   async hot(limit = 30) {
     limit = bounded(limit, 30, MAX_TRACKS);
-    const choices = await this.discover('hot');
-    for (const choice of choices.slice(0, 3)) {
-      const tracks = await this.playlist(choice.id, limit);
-      if (tracks.length) return { mode: 'hot', name: choice.name, tracks };
+    const choices = (await this.discover('hot')).slice(0, 3), tracks = [], seen = new Set(), names = [];
+    let firstError;
+    const load = async (choice) => {
+      try { return await this.playlist(choice.id, limit); }
+      catch (error) { firstError ??= error; return []; }
+    };
+    const append = (choice, rows) => {
+      const before = tracks.length;
+      for (const track of rows) {
+        if (tracks.length >= limit) break;
+        if (!seen.has(track.id)) { tracks.push(track); seen.add(track.id); }
+      }
+      if (tracks.length > before) names.push(choice.name);
+    };
+    if (choices.length) {
+      append(choices[0], await load(choices[0]));
+      // A full first playlist costs one detail request. Fetch any top-ups together
+      // so a missing or sparse playlist does not serially delay the other candidate.
+      if (tracks.length < limit && !this.closed) {
+        const remaining = choices.slice(1);
+        const rows = await Promise.all(remaining.map(load));
+        remaining.forEach((choice, index) => append(choice, rows[index]));
+      }
     }
+    if (this.closed) throw new UserError('汽水音乐目录已关闭。');
+    if (tracks.length) return { mode: 'hot', name: names.length === 1 ? names[0] : names.some((name) => DOUYIN_WORD.test(name)) ? '抖音热歌精选' : '热门歌单精选', tracks };
+    if (firstError) throw firstError;
     throw new UnavailableError('汽水音乐暂未找到可读取的热门歌单。');
   }
   close() { this.closed = true; this.cache.clear(); for (const controller of this.pending) controller.abort(); }
