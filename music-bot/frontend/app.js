@@ -146,6 +146,9 @@ function syncBotLock() {
 }
 function syncSourceCapabilities() {
   const admin = permission('manageSite');
+  $('hot-button').lastChild.textContent = currentSource === 'qishui' ? '抖音热歌' : '热歌榜';
+  document.querySelector('[data-category="hot"]').textContent = currentSource === 'qishui' ? '抖音热歌' : '热门';
+  document.querySelector('[data-category="charts"]').textContent = currentSource === 'qishui' ? '抖音榜单' : '榜单';
   $('heart-button').hidden = !admin || !sourceSupports(availableSources, currentSource, currentSource === 'qq' ? 'mine' : 'heart');
   document.querySelectorAll('[data-category="mine"]').forEach((button) => { button.hidden = !admin || !sourceSupports(availableSources, currentSource, 'mine'); });
 }
