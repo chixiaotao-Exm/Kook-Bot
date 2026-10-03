@@ -96,7 +96,6 @@ test('model cannot replace requested IDs, omit an item, duplicate a result, or i
   for (const result of [
     response([comparison('m1:3')]), response([]), response([comparison(), comparison()]),
     response([comparison()], [{ key: 'fake:1', reason: '相似', evidence: [] }]),
-    response([comparison()], [{ key: 'm1:54', reason: '重复', evidence: [] }]),
   ]) assert.match(await setup(result).service.reply('分析 m1:54'), /暂时不可用/);
   assert.match(await setup(response([comparison()])).service.reply('分析 m1:54 和 m1:3'), /暂时不可用/);
   const result = response([comparison(), comparison('m1:3', { chineseDish: '叉烧' })]);
@@ -104,6 +103,14 @@ test('model cannot replace requested IDs, omit an item, duplicate a result, or i
   assert.match(await service.reply('分析 m1:54 和 m1:3'), /m1:3 · 烤猪肉/);
   assert.match(await service.reply('分析 m1:54 m1:3 m1:1'), /每次最多分析 2 道菜/);
   assert.equal(calls.length, 1);
+});
+
+test('a model recommendation repeating an already compared dish is omitted without discarding the valid analysis', async () => {
+  const result=response([comparison('m1:54',{chineseDish:'糖醋鲤鱼'})],[{key:'m1:54',reason:'重复推荐',evidence:[{field:'name',quote:'糖醋鱼'}]}]);
+  const {service}=setup(result);
+  const text=await service.reply('有没有像糖醋鲤鱼的菜');
+  assert.match(text,/相似度：高/);assert.equal((text.match(/m1:54/g)||[]).length,1);
+  assert.doesNotMatch(text,/暂时不可用|重复推荐/);assert.equal(service.status().lastError,null);
 });
 
 test('each evidence quote must be an exact substring from its own catalog item field', async () => {

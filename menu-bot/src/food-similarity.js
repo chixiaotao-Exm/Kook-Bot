@@ -85,13 +85,16 @@ function validateResult(raw, selected, byKey, kind) {
   });
   if (kind === 'menu' && (comparisons.length !== selected.length || selected.some(item => !seen.has(item.key)))) throw new Error('missing_selection');
   const alternatives = raw.alternatives.map(entry => {
-    if (!entry || !byKey.has(entry.key) || seen.has(entry.key)) throw new Error('invalid_alternative');
+    if (!entry || !byKey.has(entry.key)) throw new Error('invalid_alternative');
+    // The model may repeat an already compared dish as its recommendation.
+    // It adds no new item: keep the validated comparison and omit the duplicate.
+    if (seen.has(entry.key)) return null;
     seen.add(entry.key);
     const item = byKey.get(entry.key);
     const reason = aiText(entry.reason);
     const evidence = sourceEvidence(entry.evidence, item);
     return { item, reason, evidence };
-  });
+  }).filter(Boolean);
   // Without evidence for any comparison there is no grounded basis for ranking
   // alternative dishes, even when their IDs happen to exist in the menu.
   return { comparisons, alternatives: comparisons.some(entry => entry.similarity !== 'unknown')
