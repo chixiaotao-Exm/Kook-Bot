@@ -613,3 +613,42 @@ test('closing aborts an in-flight page update and suppresses queued clicks', asy
   assert.equal(signal.aborted, true); assert.equal(h.updates.length, 1); assert.equal(h.texts.length, 1);
   assert.equal(h.bot.status().active, 0); assert.equal(h.bot.status().pending, 0); assert.equal(h.waiterCalls(), 0);
 });
+
+test('similarity analysis bypasses search cards and uses dedicated progress and result headers', async t => {
+  const texts = [], pages = createSearchPages({ search: createMenuSearch(searchItems) });
+  const search = pages.create.bind(pages); let searchCalls = 0, similarityCalls = 0;
+  pages.create = (...args) => { searchCalls++; return search(...args); };
+  const sendText = async input => { texts.push(input); return { messageId: messageId(9900) }; };
+  sendText.update = async () => {};
+  const waiter = createWaiterService({ items: searchItems,
+    client: { generate: async () => { assert.fail('must not call ordinary waiter AI'); } },
+    similarity: {
+      matches: text => text === '有哪些类似中国菜' || text === '分析 m2:1',
+      status: () => ({ enabled: true }),
+      reply: async (text, { onThinking, signal }) => {
+        similarityCalls++; assert.ok(signal instanceof AbortSignal);
+        if (text.startsWith('分析')) return '请确认菜品编号';
+        await onThinking({ kind: 'similarity', text: 'private-model-output' });
+        return '相似点和差异：仅根据菜单名称推测。';
+      },
+    },
+  });
+  const h = await setup(t, { waiter, sendText, searchPages: pages });
+  await h.bot.handle(event(1, { content: '有哪些类似中国菜' }));
+  assert.equal(searchCalls, 0); assert.equal(similarityCalls, 1); assert.equal(texts.length, 2);
+  assert.ok(texts.every(input => input.title === '中文菜单 · 中国菜相似度'));
+  assert.equal(texts[0].text, '正在用 gpt-6-astra 核对菜单并分析与中国菜的相似点和差异。');
+  assert.doesNotMatch(JSON.stringify(texts), /美元|private-model-output/);
+  assert.match(texts[1].text, /相似点和差异/);
+  h.setNow(h.now() + 3000);
+  await h.bot.handle(event(2, { content: '分析 m2:1', msg_timestamp: h.now() }));
+  assert.equal(searchCalls, 0); assert.equal(similarityCalls, 2);
+  assert.equal(texts[2].title, '中文菜单 · 中国菜相似度');
+  assert.equal(texts[2].text, '请确认菜品编号');
+  h.setNow(h.now() + 3000);
+  await h.bot.handle(event(3, { content: '搜索鱼', msg_timestamp: h.now() }));
+  assert.equal(searchCalls, 1); assert.equal(similarityCalls, 2);
+  assert.equal(texts[3].title, '中文菜单 · 菜品搜索');
+  assert.equal(texts[3].buttons[0].label, '下一页');
+  assert.equal(h.bot.status().failures, 0);
+});

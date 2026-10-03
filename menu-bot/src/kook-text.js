@@ -3,7 +3,7 @@ const UPDATE_URL = 'https://www.kookapp.cn/api/v3/message/update';
 const CHANNEL_ID = /^\d{5,30}$/;
 const MESSAGE_ID = /^(?=.{16,100}$)[a-f0-9]+(?:-[a-f0-9]+)*$/i;
 const BUTTON_VALUE = /^menu-page:[A-Za-z0-9:_-]+$/;
-const TITLES = new Set(['中文菜单 · 计算器', '中文菜单 · 点餐服务员', '中文菜单 · 菜品搜索']);
+const TITLES = new Set(['中文菜单 · 计算器', '中文菜单 · 点餐服务员', '中文菜单 · 菜品搜索', '中文菜单 · 中国菜相似度']);
 const MAX_RESPONSE_BYTES = 32 * 1024;
 
 export class KookTextDeliveryError extends Error {
