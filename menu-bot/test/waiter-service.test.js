@@ -126,3 +126,53 @@ test('bare Chinese dish lists reply with Spanish source names only without AI or
   assert.match(await service.reply('搜索蛋糕'), /菜单搜索/);
   assert.equal(calls.length, 0);
 });
+
+test('similarity requests take priority over search, translation and quoting with a fixed progress kind', async () => {
+  const requests = ['有哪些类似中国菜', '分析 m1:54', '糖醋鱼像什么中国菜', '有没有像宫保鸡丁的菜'];
+  const calls = [], progress = [], controller = new AbortController();
+  const similarity = {
+    matches: text => requests.includes(text),
+    status: () => ({ enabled: true, model: 'gpt-6-astra', lastError: null, lastSuccessAt: 123 }),
+    reply: async (text, options) => {
+      calls.push(text); assert.equal(options.signal, controller.signal);
+      await options.onThinking({ kind: 'untrusted-model-kind', text: 'never-forward-this' });
+      return `菜单相似度：${text}`;
+    },
+  };
+  const service = createWaiterService({ items, similarity,
+    client: { generate: async () => { assert.fail('ordinary model must not receive similarity requests'); } } });
+  for (const text of requests) {
+    assert.equal(service.isSimilarity(text), true);
+    assert.equal(await service.reply(text, { signal: controller.signal, onThinking: value => progress.push(value) }), `菜单相似度：${text}`);
+  }
+  assert.deepEqual(calls, requests);
+  assert.deepEqual(progress, requests.map(() => ({ kind: 'similarity' })));
+  assert.equal(service.isSimilarity(null), false);
+  assert.equal(service.isSimilarity('分析'.repeat(500)), false);
+  assert.match(await service.reply('服务员'), /分析 m1:54[\s\S]*糖醋鱼像什么中国菜[\s\S]*有没有像宫保鸡丁的菜/);
+});
+
+test('similarity health is additive and independent of ordinary waiter status', async () => {
+  const service = createWaiterService({ items, similarity: {
+    matches: () => true, reply: async () => '分析暂不可用',
+    status: () => ({ enabled: true, model: 'gpt-6-astra', lastError: 'ai_unavailable', lastSuccessAt: null }),
+  } });
+  assert.equal(service.status().enabled, false);
+  assert.equal(service.status().model, null);
+  assert.equal(service.status().lastError, null);
+  assert.equal(service.status().similarity.enabled, true);
+  assert.equal(service.status().similarity.lastError, 'ai_unavailable');
+  assert.equal(await service.reply('分析 m1:54'), '分析暂不可用');
+  assert.equal(service.status().lastError, null);
+});
+
+test('ordinary translation, search and cent-based orders never call either AI client', async () => {
+  let calls = 0;
+  const failClient = { generate: async () => { calls++; throw Error('unexpected-ai'); } };
+  const service = createWaiterService({ items, client: failClient, similarityClient: failClient });
+  for (const text of ['猪肉炒饭 薯条', '春卷2份，矿泉水2瓶', '搜索鱼 第2页']) assert.equal(service.isSimilarity(text), false);
+  assert.equal(await service.reply('猪肉炒饭 薯条'), 'ARROZ FRITO CON CERDO\nPAPAS FRITAS');
+  assert.match(await service.reply('春卷2份，矿泉水2瓶'), /合计：\$10\.00/);
+  assert.match(await service.reply('搜索鱼 第2页'), /第 2\/3 页/);
+  assert.equal(calls, 0);
+});
