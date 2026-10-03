@@ -238,7 +238,8 @@ export class MenuBot {
         ? () => this.#sendMenu({ channelId: input.channelId, replyMessageId: input.messageId,
           pageIndices: input.pageIndices }, { signal: sendSignal })
         : async () => {
-          const search = input.kind === 'waiter' ? this.#searchPages?.create(input.waiterText,
+          const isSimilarity = input.kind === 'waiter' && this.#waiter.isSimilarity?.(input.waiterText) === true;
+          const search = input.kind === 'waiter' && !isSimilarity ? this.#searchPages?.create(input.waiterText,
             { channelId: input.channelId, guildId: input.guildId }) : null;
           if (search) {
             const sent = await this.#sendText({ channelId: input.channelId, replyMessageId: input.messageId,
@@ -246,10 +247,13 @@ export class MenuBot {
             if (search.sessionId && !sendSignal.aborted) this.#searchPages.bind(search.sessionId, sent?.messageId);
             return sent;
           }
-          const title = input.kind === 'waiter' ? '中文菜单 · 点餐服务员' : '中文菜单 · 计算器';
+          const title = isSimilarity ? '中文菜单 · 中国菜相似度'
+            : input.kind === 'waiter' ? '中文菜单 · 点餐服务员' : '中文菜单 · 计算器';
           const text = input.kind === 'waiter' ? await this.#waiter.reply(input.waiterText, { signal: sendSignal,
-            onThinking: async () => { await this.#sendText({ channelId: input.channelId, replyMessageId: input.messageId,
-              title, text: '正在用 gpt-6-astra 理解你的点餐需求，随后核对原菜单并计算美元金额。' }, { signal: sendSignal }); } }) : input.calculationText;
+            onThinking: async progress => { await this.#sendText({ channelId: input.channelId, replyMessageId: input.messageId,
+              title, text: isSimilarity && progress?.kind === 'similarity'
+                ? '正在用 gpt-6-astra 核对菜单并分析与中国菜的相似点和差异。'
+                : '正在用 gpt-6-astra 理解你的点餐需求，随后核对原菜单并计算美元金额。' }, { signal: sendSignal }); } }) : input.calculationText;
           sendSignal.throwIfAborted();
           return this.#sendText({ channelId: input.channelId, replyMessageId: input.messageId,
             text, ...(input.kind === 'waiter' ? { title } : {}) }, { signal: sendSignal });

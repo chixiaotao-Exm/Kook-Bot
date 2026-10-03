@@ -162,3 +162,16 @@ test('updates time out and API failures are not retried or leaked', async () => 
     assert.equal(calls, 1);
   }
 });
+
+test('similarity cards accept only the fixed new title and retain plain text rendering', async () => {
+  const calls = [];
+  const send = sender({ fetchImpl: async (_, options) => {
+    calls.push(JSON.parse(options.body)); return json({ code: 0, data: { msg_id: messageId } });
+  } });
+  await send({ ...input, title: '中文菜单 · 中国菜相似度', text: '清蒸鱼 [m2:1]\n相似度：高（菜单名称推测）' });
+  const card = JSON.parse(calls[0].content)[0];
+  assert.equal(card.modules[0].text.content, '中文菜单 · 中国菜相似度');
+  assert.ok(card.modules.every(module => module.text.type === 'plain-text'));
+  await assert.rejects(send({ ...input, title: 'model-generated-title' }), { code: 'INVALID_TITLE' });
+  assert.equal(calls.length, 1);
+});
