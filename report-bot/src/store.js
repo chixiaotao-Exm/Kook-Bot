@@ -46,6 +46,22 @@ export function validateStore(value) {
     const kind = input.kind === 'pending' ? 'unknown' : input.kind;
     data.reports[key] = { at: input.at, kind, message: RESULT_MESSAGES[kind],
       ...(input.author === undefined ? {} : { author: input.author }) };
+    if (input.player !== undefined) {
+      let player; try { player = normalizeNickname(input.player); } catch { fail(); }
+      if (player !== input.player || player.toLowerCase() !== key) fail();
+      data.reports[key].player = player;
+    }
+    if (input.mailRef !== undefined) {
+      if (typeof input.mailRef !== 'string' || !/^KOOK-[a-f0-9]{32}$/.test(input.mailRef)) fail();
+      data.reports[key].mailRef = input.mailRef;
+    }
+    if (input.mail !== undefined) {
+      const mail = input.mail;
+      if (!record(mail) || kind !== 'success' || typeof mail.messageId !== 'string' || !/^\d{1,20}:\d{1,20}$/.test(mail.messageId)
+        || typeof mail.ticketId !== 'string' || !/^\d{3,20}$/.test(mail.ticketId) || !timestamp(mail.receivedAt)
+        || !['pending', 'attempted'].includes(mail.notification)) fail();
+      data.reports[key].mail = { messageId: mail.messageId, ticketId: mail.ticketId, receivedAt: mail.receivedAt, notification: mail.notification };
+    }
   }
   // Older snapshots had no attempt ledger. Retain their channel budget conservatively.
   const attempts = value.attempts ?? Object.values(data.reports).map(item => ({ at: item.at, author: item.author ?? null }));
