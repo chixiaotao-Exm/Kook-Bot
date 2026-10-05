@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { CHANNEL_ID, DAY_MS, DRAFT_TTL_MS, normalizeNickname, draftContent, isAllowedMessage,
+import { CHANNEL_ID, DAY_MS, DRAFT_TTL_MS, normalizeNickname, cardImageUrl, draftContent, isAllowedMessage,
   validId, validMessageId, validEventTime, validAuthorMetadata, RESULT_MESSAGES } from './domain.js';
 import { STORE_LIMITS } from './store.js';
 
@@ -174,6 +174,11 @@ export class ReportBot {
   }
 
   async message(event, signal) {
+    if (event.type === 10) {
+      try {
+        event = { ...event, type: 2, content: cardImageUrl(event.content) };
+      } catch (error) { await this.reply({ text: error.message }, signal); return; }
+    }
     const state = this.store.data, content = event.content.trim();
     if (event.type !== 2 && (content === '帮助' || content === '/帮助')) { await this.reply({ text: HELP }, signal); return; }
     if (event.type !== 2 && /^状态\s/.test(content)) {
