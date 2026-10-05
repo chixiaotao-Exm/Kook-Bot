@@ -65,6 +65,56 @@ test('preview preserves nickname case, strips only the leading tag, and never su
   assert.equal(h.store.data.reports.player_o1.kind, 'success');
 });
 
+test('mail receipt reference is persisted before submission and survives restart', async t => {
+  const h = await setup(t, { mailEnabled: true });
+  const card = await h.preview('Player_01'); await h.handle(h.click(card));
+  const record = h.store.data.reports.player_01;
+  assert.match(record.mailRef, /^KOOK-[a-f0-9]{32}$/);
+  assert.equal(record.player, 'Player_01'); assert.ok(h.submissions[0].input.subject.endsWith('[' + record.mailRef + ']'));
+  const restored = await openStore(h.file); assert.equal(restored.data.reports.player_01.mailRef, record.mailRef);
+  assert.match(h.sends.at(-1).text, /自动核对 Gmail/);
+});
+
+test('official mail confirms unknown once and updates status without another submission', async t => {
+  const h = await setup(t, { mailEnabled: true, submit: async () => ({ kind: 'unknown' }) });
+  const card = await h.preview('Player_01'); await h.handle(h.click(card));
+  const candidate = h.bot.mailCandidates()[0];
+  const receipt = { messageId: '10:200', ticketId: '81234567', receivedAt: h.now() + 1000 };
+  assert.equal(await h.bot.confirmMail(candidate, receipt), true);
+  assert.equal(await h.bot.confirmMail(candidate, receipt), false);
+  assert.equal(h.store.data.reports.player_01.kind, 'success');
+  assert.equal(h.sends.filter(item => item.text.includes('邮箱已确认提交')).length, 1);
+  await h.bot.flushMailNotifications(); assert.equal(h.sends.filter(item => item.text.includes('邮箱已确认提交')).length, 1);
+  h.advance(); await h.handle(h.event('状态 Player_01')); assert.match(h.sends.at(-1).text, /工单 #81234567/);
+  const restored = await openStore(h.file); assert.equal(restored.data.reports.player_01.mail.notification, 'attempted');
+  assert.equal(restored.data.attempts.length, 1);
+});
+
+test('stale mail candidates, not-sent reports and reused ticket IDs cannot confirm another attempt', async t => {
+  const h = await setup(t, { mailEnabled: true });
+  const first = await h.preview('Player_01'); await h.handle(h.click(first));
+  const candidate = h.bot.mailCandidates()[0], receipt = { messageId: '10:200', ticketId: '81234567', receivedAt: h.now() };
+  assert.equal(await h.bot.confirmMail({ ...candidate, at: candidate.at - 1 }, receipt), false);
+  assert.equal(await h.bot.confirmMail({ ...candidate, mailRef: 'KOOK-' + '0'.repeat(32) }, receipt), false);
+  assert.equal(await h.bot.confirmMail(candidate, receipt), true);
+  const second = await h.preview('Player_02'); await h.handle(h.click(second));
+  assert.equal(await h.bot.confirmMail(h.bot.mailCandidates()[0], receipt), false);
+  h.store.data.reports.player_02.kind = 'not_sent'; assert.equal(h.bot.mailCandidates().length, 0);
+});
+
+test('mail notification send timeout is not retried and mail write failure does not claim success', async t => {
+  const h = await setup(t, { mailEnabled: true, submit: async () => ({ kind: 'unknown' }) });
+  const card = await h.preview(); await h.handle(h.click(card)); const candidate = h.bot.mailCandidates()[0];
+  let sends = 0; h.bot.send = async () => { sends++; throw Error('delivery unknown'); };
+  await h.bot.confirmMail(candidate, { messageId: '1:2', ticketId: '12345', receivedAt: h.now() });
+  await h.bot.flushMailNotifications(); assert.equal(sends, 1);
+  const second = await setup(t, { mailEnabled: true, submit: async () => ({ kind: 'unknown' }) });
+  const preview = await second.preview(); await second.handle(second.click(preview));
+  second.store.save = async () => { throw Error('disk'); };
+  assert.equal(await second.bot.confirmMail(second.bot.mailCandidates()[0], { messageId: '1:3', ticketId: '12346', receivedAt: second.now() }), false);
+  assert.equal(second.store.data.reports.player_01.kind, 'unknown'); assert.equal(second.bot.status().ready, false);
+});
+
 test('desktop image-only cards reach OCR and require an initiator confirmation before submission', async t => {
   let imageEvent;
   const h = await setup(t, { ocr: async event => { imageEvent = event; return '[ABC] EXAMPLE_PLAYER'; } });
