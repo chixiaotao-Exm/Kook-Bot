@@ -261,12 +261,14 @@ class BridgeTests(unittest.TestCase):
 
     def test_form_requires_all_real_fields_inside_correct_post_form(self):
         fields = ["request[subject]", "request[description]", "request[anonymous_requester_email]",
-                  "request[custom_fields][5050432733209]", "authenticity_token"]
-        inputs = "".join('<input name="' + field + '">' for field in fields)
+                  "request[custom_fields][5050432733209]"]
+        inputs = "".join('<input name="' + field + '">' for field in fields) + '<input name="request[ticket_form_id]" value="' + FORM_ID + '">'
         for html, expected in [
             ('<form action="/hc/zh-cn/requests" method="post">' + inputs + '</form>', True),
             ('<form action="https://bad.test" method="post">' + inputs + '</form>', False),
             ('<form action="/hc/zh-cn/requests" method="get">' + inputs + '</form>', False),
+            ('<form action="/hc/zh-cn/requests" method="post">' + inputs.replace(FORM_ID, "wrong") + '</form>', False),
+            ('<form action="/hc/zh-cn/requests" method="post">' + inputs.replace('name="request[ticket_form_id]"', 'name="other"') + '</form>', False),
             ('<h1>Just a moment...</h1>' + inputs, False),
         ]:
             parser = FormMarkers()
@@ -279,8 +281,9 @@ class AdapterTests(unittest.TestCase):
         calls = []
         html = '<form method="post" action="/hc/zh-cn/requests">' + ''.join(
             '<input name="' + name + '">' for name in ["request[subject]", "request[description]",
-                "request[anonymous_requester_email]", "request[custom_fields][5050432733209]", "authenticity_token"]) + '</form>'
+                "request[anonymous_requester_email]", "request[custom_fields][5050432733209]"]) + '<input name="request[ticket_form_id]" value="' + FORM_ID + '"></form>'
         driver = types.SimpleNamespace(current_url=__import__("report_browser").FORM_URL,
+                                        page_source=html,
                                         set_script_timeout=lambda value: calls.append(("timeout", value)))
         storage = types.SimpleNamespace(sessions={})
         def create(session_id, proxy):
@@ -321,11 +324,12 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual([], calls)
 
     def test_startup_warms_destructive_upstream_ua_cache_before_report_browser(self):
-        template, calls, _ = self.setup_adapter()
+        template, calls, base_driver = self.setup_adapter()
         service = template.service
         cached = [None]
         class Driver:
             current_url = __import__("report_browser").FORM_URL
+            page_source = base_driver.page_source
             closed = False
             def quit(self):
                 self.closed = True
@@ -365,6 +369,31 @@ class AdapterTests(unittest.TestCase):
             self.assertIs(report, adapter.prepare("first-report-session"))
         self.assertFalse(report.closed)
         self.assertEqual([("initialize_ua", True), ("create_report",)], calls[:2])
+
+    def test_prepare_waits_for_current_dom_instead_of_stale_hydration_html(self):
+        adapter, calls, original_driver = self.setup_adapter()
+        html = original_driver.page_source
+        reads = []
+        class RenderingDriver:
+            current_url = original_driver.current_url
+            @property
+            def page_source(self):
+                reads.append(True)
+                return '<html>Loading request form...</html>' if len(reads) == 1 else html
+            def set_script_timeout(self, value):
+                original_driver.set_script_timeout(value)
+        driver = RenderingDriver()
+        def create(session_id, proxy):
+            adapter.service.SESSIONS_STORAGE.sessions[session_id] = types.SimpleNamespace(driver=driver)
+        adapter.service.SESSIONS_STORAGE.create = create
+        def get(_request):
+            return types.SimpleNamespace(status="ok", solution=types.SimpleNamespace(
+                url=driver.current_url, response="stale hydration only"))
+        adapter.service._cmd_request_get = get
+        with patch.dict(os.environ, {"REPORT_UPSTREAM_PROXY": ""}), patch("report_browser.time.sleep") as sleep:
+            self.assertIs(driver, adapter.prepare("rendered-session"))
+        self.assertEqual(2, len(reads))
+        sleep.assert_called_once_with(0.25)
 
     def test_fetch_passes_private_body_as_argument_and_exact_origin(self):
         adapter, _, _ = self.setup_adapter()

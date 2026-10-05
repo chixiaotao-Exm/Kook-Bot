@@ -92,21 +92,28 @@ class FormMarkers(HTMLParser):
         self.in_form = False
         self.found = False
         self.names = set()
+        self.form_id_matches = False
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
         if tag == "form":
+            self.names.clear()
+            self.form_id_matches = False
             self.in_form = (attrs.get("method", "").lower() == "post" and
                             urljoin(FORM_URL, attrs.get("action", "")) == SUBMIT_URL)
         if self.in_form and tag in {"input", "select", "textarea"}:
             self.names.add(attrs.get("name"))
+            if attrs.get("name") == "request[ticket_form_id]":
+                self.form_id_matches = attrs.get("value") == FORM_ID
 
     def handle_endtag(self, tag):
         if tag == "form" and self.in_form:
             required = {"request[subject]", "request[description]",
                         "request[anonymous_requester_email]",
-                        "request[custom_fields][5050432733209]", "authenticity_token"}
-            self.found = self.found or required <= self.names
+                        "request[custom_fields][5050432733209]", "request[ticket_form_id]"}
+            # Zendesk's current dynamic form obtains CSRF from sessions.json;
+            # it need not render a hidden authenticity_token input.
+            self.found = self.found or (self.form_id_matches and required <= self.names)
             self.in_form = False
             self.names.clear()
 
@@ -192,17 +199,26 @@ class UpstreamBrowser:
         solution = result.solution
         if result.status != "ok" or solution is None or solution.url != FORM_URL:
             raise BridgeError(502, "form_unavailable")
-        html = solution.response
-        if not isinstance(html, str) or len(html.encode("utf-8")) > MAX_RESPONSE:
-            raise BridgeError(502, "form_unavailable")
-        markers = FormMarkers()
-        markers.feed(html)
-        if not markers.found:
-            raise BridgeError(502, "form_unavailable")
         # Do not call storage.get(): it may silently create a replacement browser.
         session = self.service.SESSIONS_STORAGE.sessions.get(session_id)
         if session is None or session.driver.current_url != FORM_URL:
             raise BridgeError(502, "form_unavailable")
+        # FlareSolverr may return before Zendesk's JavaScript renders the form.
+        # Poll fresh DOM briefly instead of trusting the initial hydration text.
+        deadline = time.monotonic() + 8
+        while True:
+            if session.driver.current_url != FORM_URL:
+                raise BridgeError(502, "form_unavailable")
+            html = session.driver.page_source
+            if not isinstance(html, str) or len(html.encode("utf-8")) > MAX_RESPONSE:
+                raise BridgeError(502, "form_unavailable")
+            markers = FormMarkers()
+            markers.feed(html)
+            if markers.found:
+                break
+            if time.monotonic() >= deadline:
+                raise BridgeError(502, "form_unavailable")
+            time.sleep(0.25)
         session.driver.set_script_timeout(11)
         return session.driver
 
