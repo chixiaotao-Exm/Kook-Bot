@@ -29,12 +29,12 @@ async function bounded(operation, signal, timeoutMs) {
 
 export class ReportBot {
   constructor({ store, send, submit, ocr, enabled = false, now = Date.now, resolveAuthor, resolveButtonAuthor,
-    timeouts = {} } = {}) {
+    timeouts = {}, mailEnabled = false } = {}) {
     if (!store?.data || typeof store.save !== 'function' || typeof send !== 'function' || typeof submit !== 'function'
       || typeof now !== 'function' || typeof enabled !== 'boolean'
       || [ocr, resolveAuthor, resolveButtonAuthor].some(fn => fn != null && typeof fn !== 'function'))
       throw new Error('Invalid report bot configuration');
-    Object.assign(this, { store, send, submit, ocr, enabled, now, resolveAuthor, resolveButtonAuthor });
+    Object.assign(this, { store, send, submit, ocr, enabled, now, resolveAuthor, resolveButtonAuthor, mailEnabled });
     this.timeouts = { storage: 5000, identity: 8000, send: 10000, ocr: 85000, submit: 65000, ...timeouts };
     if (Object.values(this.timeouts).some(value => !Number.isInteger(value) || value < 1 || value > 90000))
       throw new Error('Invalid report bot timeouts');
@@ -55,6 +55,48 @@ export class ReportBot {
   }
 
   async close() { this.closed = true; this.controller.abort(); await this.queue; }
+
+  mailCandidates() {
+    if (!this.mailEnabled || !this.ready || this.closed) return [];
+    return Object.entries(this.store.data.reports).filter(([, record]) =>
+      ['success', 'unknown', 'verification'].includes(record.kind) && !record.mail && record.at >= this.now() - 2 * DAY_MS)
+      .map(([key, record]) => ({ ...record, key, player: record.player || key }));
+  }
+
+  confirmMail(candidate, receipt) {
+    const task = this.queue.then(async () => {
+      if (!this.mailEnabled || !this.ready || this.closed) return false;
+      const record = this.store.data.reports[candidate.key];
+      if (!record || record.at !== candidate.at || record.mailRef !== candidate.mailRef || record.mail
+        || !['success', 'unknown', 'verification'].includes(record.kind)) return false;
+      if (Object.values(this.store.data.reports).some(item => item.mail?.messageId === receipt.messageId || item.mail?.ticketId === receipt.ticketId)) return false;
+      const previous = { ...record };
+      Object.assign(record, { kind: 'success', message: RESULT_MESSAGES.success, mail: { ...receipt, notification: 'pending' } });
+      if (!await this.persist()) { this.store.data.reports[candidate.key] = previous; return false; }
+      await this.notifyMail(candidate.key, record);
+      return true;
+    });
+    this.queue = task.catch(() => {});
+    return task;
+  }
+
+  flushMailNotifications() {
+    const task = this.queue.then(async () => {
+      for (const [key, record] of Object.entries(this.store.data.reports)) {
+        if (!this.mailEnabled || !this.ready || this.closed) return;
+        if (record.mail?.notification === 'pending') await this.notifyMail(key, record);
+      }
+    });
+    this.queue = task.catch(() => {});
+    return task;
+  }
+
+  async notifyMail(key, record) {
+    // Persist the attempt before sending: a delivery timeout must not duplicate a notification.
+    record.mail.notification = 'attempted';
+    if (!await this.persist() || this.closed) return;
+    await this.reply({ text: `✅ 邮箱已确认提交\n玩家：${record.player || key}\nPUBG 工单：#${record.mail.ticketId}\n官方邮件确认已收到请求；不代表已判定违规或封禁。` }, this.controller.signal).catch(() => {});
+  }
 
   handle(event, { botId, signal } = {}) {
     if (!this.ready || this.closed || signal?.aborted || this.pending >= 8) return Promise.resolve();
@@ -185,7 +227,8 @@ export class ReportBot {
       try {
         const player = normalizeNickname(content.replace(/^状态\s+/, ''));
         const record = state.reports[player.toLowerCase()];
-        await this.reply({ text: record ? `${player}：${RESULT_MESSAGES[record.kind] ?? RESULT_MESSAGES.unknown}` : `${player}：没有提交记录。` }, signal);
+        const receipt = record?.mail ? `\n邮箱已确认，PUBG 工单 #${record.mail.ticketId}。` : '';
+        await this.reply({ text: record ? `${player}：${RESULT_MESSAGES[record.kind] ?? RESULT_MESSAGES.unknown}${receipt}` : `${player}：没有提交记录。` }, signal);
       } catch { await this.reply({ text: '请发送「状态 玩家昵称」查询。' }, signal); }
       return;
     }
@@ -259,7 +302,8 @@ export class ReportBot {
     // Durable unknown/pending marker and attempt budget MUST precede any official network operation.
     delete state.drafts[id];
     const at = this.now();
-    state.reports[key] = { at, author: draft.author, kind: 'pending', message: RESULT_MESSAGES.pending };
+    const mailInfo = this.mailEnabled ? { player: draft.player, mailRef: 'KOOK-' + randomUUID().replaceAll('-', '') } : {};
+    state.reports[key] = { at, author: draft.author, kind: 'pending', message: RESULT_MESSAGES.pending, ...mailInfo };
     state.attempts.push({ at, author: draft.author });
     if (!await this.persist()) return;
     let result;
@@ -272,19 +316,22 @@ export class ReportBot {
     if (!result && (signal.aborted || this.closed)) result = { kind: 'not_sent' };
     if (!result) {
       this.counts.attempts++;
-      try { result = await bounded(currentSignal => this.submit({ ...draft }, { signal: currentSignal }), signal, this.timeouts.submit); }
+      try { result = await bounded(currentSignal => this.submit({ ...draft,
+        ...(mailInfo.mailRef ? { subject: `${draft.subject} [${mailInfo.mailRef}]` } : {})
+      }, { signal: currentSignal }), signal, this.timeouts.submit); }
       catch { result = { kind: 'unknown' }; }
     }
     // Never echo exception text, official HTML, requester identity, or unvalidated result messages.
     const kind = ['success', 'not_sent', 'verification', 'unknown'].includes(result?.kind) ? result.kind : 'unknown';
-    state.reports[key] = { at, author: draft.author, kind, message: RESULT_MESSAGES[kind] };
+    state.reports[key] = { at, author: draft.author, kind, message: RESULT_MESSAGES[kind], ...mailInfo };
     if (!await this.persist()) {
       // Disk retains the pre-POST pending marker. In memory it must also remain ambiguous.
-      state.reports[key] = { at, author: draft.author, kind: 'unknown', message: RESULT_MESSAGES.unknown };
+      state.reports[key] = { at, author: draft.author, kind: 'unknown', message: RESULT_MESSAGES.unknown, ...mailInfo };
       return;
     }
     if (kind === 'success') this.counts.success++;
     const icon = kind === 'success' ? '✅' : kind === 'not_sent' ? 'ℹ️' : '⚠️';
-    await this.reply({ text: `${icon} ${draft.player}\n${RESULT_MESSAGES[kind]}` }, signal);
+    const mailNote = this.mailEnabled && kind !== 'not_sent' ? '\n将自动核对 Gmail 官方回执，确认后在此频道通知。' : '';
+    await this.reply({ text: `${icon} ${draft.player}\n${RESULT_MESSAGES[kind]}${mailNote}` }, signal);
   }
 }

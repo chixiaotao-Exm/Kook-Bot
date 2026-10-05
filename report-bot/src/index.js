@@ -10,6 +10,7 @@ import {createSender} from './kook.js';
 import {createSubmitter} from './pubg.js';
 import {createBrowserSubmitter} from './browser.js';
 import {createOcr} from './ocr.js';
+import {createGmailReader,GmailMonitor} from './mail-monitor.js';
 
 process.umask(0o077);
 const token=process.env.KOOK_TOKEN?.trim();
@@ -37,17 +38,22 @@ try{lock=await open(lockPath,'wx',0o600)}catch(error){
 }
 await lock.writeFile(String(process.pid));await lock.sync();
 const store=await openStore(path.join(dataDir,'state.json'));
+const mailEnabled=process.env.GMAIL_RECEIPTS_ENABLED==='true';
+if(process.env.GMAIL_RECEIPTS_ENABLED&&!['true','false'].includes(process.env.GMAIL_RECEIPTS_ENABLED))throw Error('Invalid mail configuration');
+if(mailEnabled&&process.env.GMAIL_ADDRESS?.toLowerCase()!==profile.email?.toLowerCase())throw Error('Gmail must match reporter mailbox');
 const resolve=createAuthorResolver({token}),resolveButton=createButtonAuthorResolver({token,channelIds:[CHANNEL_ID]});
 const bot=new ReportBot({store,send:createSender(token),submit,ocr,enabled,
+ mailEnabled,
  timeouts:browserEnabled?{submit:90000}:{},
  resolveAuthor:(id,event)=>resolve({userId:id,guildId:event.extra?.guild_id,signal:event.signal}),
  resolveButtonAuthor:(body)=>resolveButton({userId:body.user_id,channelId:body.target_id,guildId:body.guild_id,signal:body.signal})});
 const gateway=new KookGateway({token,onEvent:(event,context)=>bot.handle(event,context),eventTimeoutMs:120000});
+const mail=mailEnabled?new GmailMonitor({reader:createGmailReader({address:process.env.GMAIL_ADDRESS,password:process.env.GMAIL_APP_PASSWORD}),bot,mailbox:process.env.GMAIL_ADDRESS}):null;
 const server=http.createServer((req,res)=>{
  if(req.method!=='GET'||req.url!=='/health'){res.writeHead(404);res.end();return}
  const state=bot.status(),connection=gateway.snapshot();const ok=state.ready&&connection.connected;
  res.writeHead(ok?200:503,{'Content-Type':'application/json','Cache-Control':'no-store'});
- res.end(JSON.stringify({ok,gateway:{connected:connection.connected===true},chat:{enabled:state.ready},bot:state,ocr:{enabled:Boolean(ocr),model:ocr?'PP-OCRv6':null},submissionEnabled:enabled,submissionTransport:browserEnabled?'flaresolverr-browser':'direct'}));
+ res.end(JSON.stringify({ok,gateway:{connected:connection.connected===true},chat:{enabled:state.ready},bot:state,ocr:{enabled:Boolean(ocr),model:ocr?'PP-OCRv6':null},submissionEnabled:enabled,submissionTransport:browserEnabled?'flaresolverr-browser':'direct',mail:mail?.status()||{enabled:false}}));
 });
 server.headersTimeout=5000;server.requestTimeout=10000;
 await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(port,host,resolve)});
@@ -55,9 +61,10 @@ let closing=false;
 async function shutdown(){
  if(closing)return;closing=true;
  const deadline=setTimeout(()=>process.exit(1),20000);gateway.close();server.closeAllConnections();
- await Promise.allSettled([bot.close(),new Promise(resolve=>server.close(resolve))]);
+ await Promise.allSettled([mail?.close(),bot.close(),new Promise(resolve=>server.close(resolve))]);
  await lock.close();await unlink(lockPath).catch(()=>{});clearTimeout(deadline);process.exit(0);
 }
 process.on('SIGINT',shutdown);process.on('SIGTERM',shutdown);
 await gateway.start();console.log(JSON.stringify({event:'report_bot_started',channelId:CHANNEL_ID,submissionEnabled:enabled,ocrEnabled:Boolean(ocr)}));
+mail?.start();
 setInterval(()=>{},60000);
