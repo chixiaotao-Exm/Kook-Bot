@@ -37,3 +37,11 @@ systemd示例见 `deploy/kook-report-bot.service`，运行用户 `kook-report`�
 ## 验证范围
 
 自动化测试使用模拟接口，覆盖频道和用户权限、重放/重复点击、提交前写盘、超时与崩溃回执、Cookie会话、重定向、字段转义及OCR结果校验。正式提交能否被PUBG接受，以首次用户确认后的官方回执为准；测试不会制造真实举报。
+
+## 可选 FlareSolverr 浏览器通道
+
+`browser/` 在固定版本 FlareSolverr 上增加仅供本机使用的适配器。浏览器先访问官方表单，随后在同一浏览器内获取 CSRF 并发送一次同源请求。没有直接调用 FlareSolverr 的 `request.post`，也不会把它固定返回的 200 当成官方成功。POST 使用手动重定向；若发生重定向，只 GET 固定官方首页核对成功提示，绝不重放 POST。
+
+适配器需要 `REPORT_BROWSER_TOKEN`（64位随机十六进制）和可选的 `REPORT_UPSTREAM_PROXY`。使用带 `-sid-会话ID-t-` 用户名格式的 SOCKS5 代理时，每次准备新的举报会话生成随机 SID，同次任务的所有连接保持 SID 不变。新 SID 是否分配不同出口由代理供应商决定，不能保证每次 IP 唯一；代理故障时不回退直连。代理凭据仅保存在私密环境文件，不传给 KOOK、日志或 Git。
+
+构建 `docker build -t kook-report-browser ./browser`，以环境文件注入配置，并仅映射 `127.0.0.1:8191:8191`。机器人配置 `REPORT_BROWSER_URL=http://127.0.0.1:8191` 与相同 `REPORT_BROWSER_TOKEN` 后启用。浏览器限制为一个任务，过期自动销毁；独立容器设置内存、进程数和重启策略。遇到官方人工验证、代理故障或结果未知仍停止，不自动更换 SID 重发。
