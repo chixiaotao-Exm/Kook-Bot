@@ -24,7 +24,7 @@ const submit=createSubmitter(profile,enabled);
 const ocr=process.env.PADDLEOCR_TOKEN?createOcr({token:process.env.PADDLEOCR_TOKEN,endpoint:process.env.PADDLEOCR_ENDPOINT,model:process.env.PADDLEOCR_MODEL||'PP-OCRv6'}):null;
 await mkdir(dataDir,{recursive:true,mode:0o700});
 // The systemd flock and PID lock prevent two gateways sharing submission state.
-const lockPath=path.join(dataDir,'process.lock');let lock;
+const lockPath=process.env.LOCK_FILE?path.resolve(process.env.LOCK_FILE):path.join(dataDir,'process.lock');let lock;
 try{lock=await open(lockPath,'wx',0o600)}catch(error){
  if(error.code!=='EEXIST')throw error;
  const pid=Number(await readFile(lockPath,'utf8'));

@@ -11,6 +11,7 @@ WorkingDirectory=/opt/kook-report-bot
 EnvironmentFile=/opt/kook-report-bot/.env
 RuntimeDirectory=kook-report
 RuntimeDirectoryMode=0700
+Environment=LOCK_FILE=/run/kook-report/process.lock
 ExecStart=/usr/bin/flock -n /run/kook-report/instance.lock /usr/bin/node /opt/kook-report-bot/src/index.js
 Restart=on-failure
 RestartSec=5
