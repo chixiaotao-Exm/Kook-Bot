@@ -23,6 +23,11 @@ jobs:
           cache-dependency-path: report-bot/package-lock.json
       - run: npm ci --ignore-scripts
       - run: npm test
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install bottle==0.13.4
+      - run: python -m unittest discover -s browser -p 'test_*.py' -v
 
   menu-bot:
     runs-on: ubuntu-latest
