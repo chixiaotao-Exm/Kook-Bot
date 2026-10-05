@@ -1,0 +1,31 @@
+[Unit]
+Description=KOOK PUBG report assistant
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kook-report
+Group=kook-report
+WorkingDirectory=/opt/kook-report-bot
+EnvironmentFile=/opt/kook-report-bot/.env
+RuntimeDirectory=kook-report
+RuntimeDirectoryMode=0700
+Environment=LOCK_FILE=/run/kook-report/process.lock
+ExecStart=/usr/bin/flock -n /run/kook-report/instance.lock /usr/bin/node /opt/kook-report-bot/src/index.js
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=25
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/kook-report-bot/data
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+UMask=0077
+MemoryMax=256M
+TasksMax=48
+
+[Install]
+WantedBy=multi-user.target
