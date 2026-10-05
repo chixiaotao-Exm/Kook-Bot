@@ -1,0 +1,9 @@
+{
+  "name": "kook-pubg-report-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.16" },
+  "scripts": { "start": "node --env-file-if-exists=.env src/index.js", "test": "node --test", "import-profile": "node src/import-profile.js" },
+  "dependencies": { "tough-cookie": "^6.0.0" }
+}

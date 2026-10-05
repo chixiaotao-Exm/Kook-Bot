@@ -8,6 +8,22 @@ permissions:
   contents: read
 
 jobs:
+  report-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: report-bot
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: report-bot/package-lock.json
+      - run: npm ci --ignore-scripts
+      - run: npm test
+
   menu-bot:
     runs-on: ubuntu-latest
     timeout-minutes: 5
