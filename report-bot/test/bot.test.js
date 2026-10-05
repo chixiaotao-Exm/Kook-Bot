@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { ReportBot } from '../src/bot.js';
+import { createOcr } from '../src/ocr.js';
 import { openStore, validateStore } from '../src/store.js';
 import { CHANNEL_ID, DAY_MS, DRAFT_TTL_MS, normalizeNickname, RESULT_MESSAGES } from '../src/domain.js';
 
@@ -64,6 +65,59 @@ test('preview preserves nickname case, strips only the leading tag, and never su
   assert.equal(h.store.data.reports.player_o1.kind, 'success');
 });
 
+test('desktop image-only cards reach OCR and require an initiator confirmation before submission', async t => {
+  let imageEvent;
+  const h = await setup(t, { ocr: async event => { imageEvent = event; return '[ABC] OVERSEAS_YOSHI'; } });
+  const url = 'https://img.kookapp.cn/assets/nickname.png';
+  const content = JSON.stringify([{ theme: 'invisible', size: 'lg', modules: [{ type: 'container', elements: [{ type: 'image', src: url, width: 165, height: 39 }] }] }]);
+  const card = await h.preview(content, { type: 10 });
+  assert.equal(imageEvent.type, 2); assert.equal(imageEvent.content, url);
+  assert.equal(imageEvent.author_id, USER); assert.equal(imageEvent.target_id, CHANNEL_ID);
+  assert.match(card.text, /举报昵称：OVERSEAS_YOSHI/); assert.equal(h.submissions.length, 0);
+  await h.handle(h.click(card, 'confirm', { user_id: OTHER })); assert.equal(h.submissions.length, 0);
+  await h.handle(h.click(card)); assert.equal(h.submissions.length, 1);
+});
+
+test('ambiguous or malformed image cards request a single image without running OCR', async t => {
+  let calls = 0;
+  const h = await setup(t, { ocr: async () => { calls++; return 'Player_01'; } });
+  const image = { type: 'image', src: 'https://img.kookapp.cn/assets/nickname.png' };
+  const module = { type: 'container', elements: [image] };
+  for (const input of ['{', 'null', '{}', '[]', JSON.stringify([null]),
+    JSON.stringify([{ modules: [module] }, { modules: [module] }]),
+    JSON.stringify([{ modules: [module, { type: 'section', text: { content: 'Player_02' } }] }]),
+    JSON.stringify([{ modules: [{ ...module, elements: [image, image] }] }]),
+    JSON.stringify([{ modules: [{ ...module, elements: [{ type: 'image', src: '' }] }] }])]) {
+    h.advance(); await h.handle(h.event(input, { type: 10 }));
+    assert.match(h.sends.at(-1).text, /一次发送一张/);
+  }
+  assert.equal(calls, 0); assert.equal(h.submissions.length, 0); assert.equal(h.store.data.previews.length, 0);
+});
+
+test('image cards retain channel and bot-author filtering', async t => {
+  let calls = 0;
+  const h = await setup(t, { ocr: async () => { calls++; return 'Player_01'; } });
+  const content = JSON.stringify([{ type: 'card', modules: [{ type: 'image-group', elements: [{ type: 'image', src: 'https://img.kookapp.cn/assets/a.png' }] }] }]);
+  await h.handle(h.event(content, { type: 10, target_id: OTHER }));
+  await h.handle(h.event(content, { type: 10, extra: { guild_id: GUILD, author: { id: USER, bot: true } } }));
+  assert.equal(calls, 0); assert.equal(h.sends.length, 0);
+  await h.preview(content, { type: 10 }); assert.equal(calls, 1);
+});
+
+test('image cards retain OCR URL and multiple-attachment guards before network access', async t => {
+  let calls = 0;
+  const h = await setup(t, { ocr: createOcr({ token: 'test', fetchImpl: async () => { calls++; throw Error('unexpected network'); } }) });
+  const card = src => JSON.stringify([{ modules: [{ type: 'container', elements: [{ type: 'image', src }] }] }]);
+  await h.handle(h.event(card('https://evil.example/image.png'), { type: 10 }));
+  h.advance();
+  await h.handle(h.event(card('https://img.kookapp.cn/assets/a.png'), { type: 10, extra: {
+    guild_id: GUILD, author: { id: USER, bot: false }, attachments: [{ url: 'a' }, { url: 'b' }]
+  } }));
+  assert.equal(calls, 0); assert.equal(h.sends.length, 2);
+  for (const reply of h.sends) assert.match(reply.text, /图片识别失败/);
+  assert.equal(Object.keys(h.store.data.drafts).length, 0); assert.equal(h.submissions.length, 0);
+});
+
 test('pending target marker and attempt budget are durably saved before the submitter is invoked', async t => {
   let h;
   h = await setup(t, { submit: async draft => {
@@ -118,7 +172,7 @@ test('message scope and explicit author conflicts are rejected before identity/O
   const h = await setup(t, { resolveAuthor: async () => { lookups++; return { id: USER, bot: false }; },
     ocr: async () => { ocr++; return 'Player_01'; } });
   const invalid = [
-    { channel_type: 'PERSON' }, { target_id: '1234567890000' }, { type: 10 },
+    { channel_type: 'PERSON' }, { target_id: '1234567890000' }, { type: 3 },
     { author_id: BOT }, { author_id: '__proto__' }, { msg_id: '__proto__' },
     { msg_timestamp: h.now() - 300001 }, { msg_timestamp: h.now() + 60001 },
     { extra: { author: { id: OTHER, bot: false } } }, { extra: { author: { bot: true } } },

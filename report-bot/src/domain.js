@@ -17,6 +17,23 @@ export function normalizeNickname(raw) {
   return value;
 }
 
+// KOOK desktop uploads can arrive as type 10 image-only cards instead of type 2.
+// Never choose one image from a gallery or treat arbitrary card text as a nickname.
+export function cardImageUrl(content) {
+  const invalid = () => { throw new Error('请一次发送一张只含昵称的图片，或发送「举报 正确昵称」。'); };
+  if (typeof content !== 'string' || content.length > 4096) return invalid();
+  let cards;
+  try { cards = JSON.parse(content); } catch { return invalid(); }
+  if (!Array.isArray(cards) || cards.length !== 1) return invalid();
+  const card = cards[0];
+  if (!card || (card.type !== undefined && card.type !== 'card') || !Array.isArray(card.modules) || card.modules.length !== 1) return invalid();
+  const module = card.modules[0];
+  if (!module || !['container', 'image-group'].includes(module.type) || !Array.isArray(module.elements) || module.elements.length !== 1) return invalid();
+  const image = module.elements[0];
+  if (image?.type !== 'image' || typeof image.src !== 'string' || !image.src.trim() || image.src.length > 2048) return invalid();
+  return image.src;
+}
+
 export function draftContent(player) {
   return {
     subject: `请求核查玩家 ${player} 的游戏行为`,
@@ -40,7 +57,7 @@ export function validAuthorMetadata(author, userId) {
 }
 
 export function isAllowedMessage(event, botId) {
-  return event?.channel_type === 'GROUP' && event.target_id === CHANNEL_ID && [1, 2, 9].includes(event.type)
+  return event?.channel_type === 'GROUP' && event.target_id === CHANNEL_ID && [1, 2, 9, 10].includes(event.type)
     && validId(event.author_id) && validId(botId) && event.author_id !== botId
     && validAuthorMetadata(event.extra?.author, event.author_id)
     && validMessageId(event.msg_id) && typeof event.content === 'string' && event.content.length <= 4096;
