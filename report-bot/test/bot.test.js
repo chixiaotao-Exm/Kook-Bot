@@ -5,8 +5,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { ReportBot } from '../src/bot.js';
 import { createOcr } from '../src/ocr.js';
-import { openStore, validateStore, STORE_LIMITS } from '../src/store.js';
-import { CHANNEL_ID, DAY_MS, DRAFT_TTL_MS, normalizeNickname, RESULT_MESSAGES } from '../src/domain.js';
+import { openStore, validateStore } from '../src/store.js';
+import { CHANNEL_ID, DAY_MS, normalizeNickname, RESULT_MESSAGES } from '../src/domain.js';
 
 const USER = '1234567890123', OTHER = '1234567890124', BOT = '9999999999999', GUILD = '7654321098765';
 const messageId = number => `aabbccdd-1234-4321-aabb-${String(number).padStart(12, '0')}`;
@@ -262,7 +262,7 @@ test('unresolved button identity and absent identity dependency cannot submit', 
   assert.equal(h.submissions.length, 0);
 });
 
-test('cancel is immediate and durable even inside the per-user cooldown', async t => {
+test('cancel is immediate and durable after a preview', async t => {
   const h = await setup(t); const card = await h.preview();
   await h.handle(h.click(card, 'cancel'));
   assert.deepEqual(Object.keys(h.store.data.drafts), []);
@@ -282,15 +282,26 @@ test('modify nickname invalidates old buttons and only a new preview can be conf
   assert.equal(h.submissions.length, 1); assert.equal(h.submissions[0].input.player, 'Correct_Name');
 });
 
-test('new previews replace only the sender drafts and expired cards are unusable', async t => {
+test('multiple previews stay independently confirmable and do not expire after a day', async t => {
   const h = await setup(t), first = await h.preview();
   const other = await h.preview('OtherPlayer', { author_id: OTHER, extra: { author: { id: OTHER, bot: false } } });
   const second = await h.preview('NewPlayer');
-  assert.equal(Object.keys(h.store.data.drafts).length, 2);
-  h.advance(); await h.handle(h.click(first)); assert.equal(h.submissions.length, 0);
-  h.advance(DRAFT_TTL_MS); await h.handle(h.click(second));
+  assert.equal(Object.keys(h.store.data.drafts).length, 3);
+  h.advance(); await h.handle(h.click(first)); assert.equal(h.submissions.length, 1);
+  h.advance(DAY_MS); await h.handle(h.click(second));
   await h.handle(h.click(other, 'confirm', { user_id: OTHER, user_info: { id: OTHER, bot: false } }));
-  assert.equal(h.submissions.length, 0);
+  assert.equal(h.submissions.length, 3);
+});
+
+test('editing multiple previews replaces one draft per correction without dropping the others', async t => {
+  const h = await setup(t), first = await h.preview('FirstPlayer'), second = await h.preview('SecondPlayer');
+  await h.handle(h.click(first, 'edit')); await h.handle(h.click(second, 'edit'));
+  const one = await h.preview('FirstCorrected');
+  assert.equal(Object.values(h.store.data.drafts).filter(d => d.editing).length, 1);
+  const two = await h.preview('SecondCorrected');
+  assert.equal(Object.keys(h.store.data.drafts).length, 2);
+  await h.handle(h.click(one)); await h.handle(h.click(two));
+  assert.deepEqual(h.submissions.map(x => x.input.player), ['FirstCorrected', 'SecondCorrected']);
 });
 
 test('preview mode cannot invoke the real submitter and adds no submission history', async t => {
@@ -358,19 +369,16 @@ test('same-user confirmed retries are not limited to five daily submissions', as
   assert.doesNotMatch(h.sends.at(-1).text, /提交上限/);
 });
 
-test('persistent global one-second and user three-second cooldowns reject bursts across fresh message IDs', async t => {
+test('distinct same-second messages are processed without global or per-user cooldowns after restart', async t => {
   const h = await setup(t);
   await h.handle(h.event('FirstPlayer'));
   await h.handle(h.event('SecondPlayer', { author_id: OTHER, extra: { author: { id: OTHER, bot: false } } }));
-  assert.equal(h.sends.length, 1);
-  h.advance(1000);
+  assert.equal(h.sends.length, 2);
   await h.handle(h.event('SecondPlayer', { author_id: OTHER, extra: { author: { id: OTHER, bot: false } } }));
-  assert.equal(h.sends.length, 2);
-  h.bot.store = await openStore(h.file);
-  h.advance(1000); await h.handle(h.event('ThirdPlayer'));
-  assert.equal(h.sends.length, 2);
-  h.advance(1000); await h.handle(h.event('ThirdPlayer'));
   assert.equal(h.sends.length, 3);
+  h.bot.store = await openStore(h.file);
+  await h.handle(h.event('ThirdPlayer'));
+  assert.equal(h.sends.length, 4);
 });
 
 test('pre-submit storage failure prevents official traffic and fails readiness closed', async t => {
@@ -421,26 +429,25 @@ test('existing daily attempt history never blocks another explicit submission, i
   await h.handle(h.click(card)); assert.equal(h.submissions.length, 2);
 });
 
-test('full attempt history rolls forward without becoming a replacement submission quota', async t => {
+test('attempt history can grow beyond the former capacity without blocking submission', async t => {
   const h = await setup(t);
-  h.store.data.attempts = Array.from({ length: STORE_LIMITS.attempts }, () => ({ at: h.now() - 1000, author: OTHER }));
+  h.store.data.attempts = Array.from({ length: 2000 }, () => ({ at: h.now() - 1000, author: OTHER }));
   const card = await h.preview(); await h.handle(h.click(card));
   assert.equal(h.submissions.length, 1); assert.equal(h.bot.status().ready, true);
   const disk = await openStore(h.file);
-  assert.equal(disk.data.attempts.length, STORE_LIMITS.attempts);
+  assert.equal(disk.data.attempts.length, 2001);
   assert.deepEqual(disk.data.attempts.at(-1), { at: h.now(), author: USER });
   assert.equal(disk.data.reports.player_01.kind, 'success');
 });
 
-test('preview/OCR hourly budget blocks external OCR before work and recovers after expiry', async t => {
+test('legacy hourly preview history never blocks another OCR request', async t => {
   let ocrCalls = 0;
   const h = await setup(t, { ocr: async (_event, { signal }) => { assert.ok(signal instanceof AbortSignal); ocrCalls++; return 'FromImage'; } });
   h.store.data.previews = Array.from({ length: 60 }, () => h.now());
   await h.handle(h.event('https://cdn.example.invalid/nickname.png', { type: 2 }));
-  assert.equal(ocrCalls, 0); assert.match(h.sends.at(-1).text, /60 次预览/);
-  h.advance(60 * 60_000 + 1);
-  await h.handle(h.event('https://cdn.example.invalid/nickname.png', { type: 2 }));
   assert.equal(ocrCalls, 1); assert.match(h.sends.at(-1).text, /举报昵称：FromImage/);
+  await h.handle(h.event('https://cdn.example.invalid/nickname.png', { type: 2 }));
+  assert.equal(ocrCalls, 2); assert.match(h.sends.at(-1).text, /举报昵称：FromImage/);
   assert.equal(h.submissions.length, 0);
 });
 
@@ -452,17 +459,38 @@ test('multi-line OCR and ambiguous clan strings never become report targets', as
   for (const raw of ['[CLANPlayer', '[A][B]Player', 'one two', 'ab', 'a\u0000b']) assert.throws(() => normalizeNickname(raw));
 });
 
-test('queue is bounded at eight and shutdown aborts OCR and drains queued work without sending', async t => {
+test('queue accepts more than eight tasks and shutdown cancels pending work without sending', async t => {
   let started; const gate = new Promise(resolve => { started = resolve; });
   let signal;
   const h = await setup(t, { ocr: async (_event, options) => { signal = options.signal; started(); return new Promise(() => {}); } });
   const work = h.handle(h.event('https://cdn.example.invalid/nickname.png', { type: 2 }));
   await gate;
   const queued = Array.from({ length: 20 }, () => h.handle(h.event('QueuedPlayer')));
-  assert.equal(h.bot.status().pending, 8);
+  assert.equal(h.bot.status().pending, 21);
   await h.bot.close(); await Promise.all([work, ...queued]);
   assert.equal(signal.aborted, true); assert.equal(h.bot.status().pending, 0);
   assert.equal(h.bot.status().active, 0); assert.equal(h.sends.length, 0); assert.equal(h.submissions.length, 0);
+});
+
+test('fresh messages remain processable after waiting in a long task queue', async t => {
+  let begin, finish; const started = new Promise(resolve => { begin = resolve; });
+  const h = await setup(t, { ocr: async () => { begin(); return new Promise(resolve => { finish = resolve; }); } });
+  const first = h.handle(h.event('https://img.kookapp.cn/test.png', { type: 2 })); await started;
+  const queued = h.handle(h.event('QueuedPlayer')); h.advance(10 * 60_000);
+  finish('ImagePlayer'); await Promise.all([first, queued]);
+  assert.equal(h.sends.filter(item => item.buttons).length, 2);
+  const delayed = h.event('GatewayQueued', { msg_timestamp: h.now() - 10 * 60_000 });
+  await h.handle(delayed, { receivedAt: delayed.msg_timestamp });
+  assert.match(h.sends.at(-1).text, /GatewayQueued/);
+});
+
+test('more than two hundred pending previews remain usable after restart', async t => {
+  const h = await setup(t); let first;
+  for (let i = 0; i < 201; i++) { const card = await h.preview('Player_' + i); first ||= card; }
+  assert.equal(Object.keys(h.store.data.drafts).length, 201);
+  h.bot.store = await openStore(h.file); h.advance(DAY_MS);
+  await h.handle(h.click(first)); assert.equal(h.submissions[0].input.player, 'Player_0');
+  assert.equal(Object.keys(h.bot.store.data.drafts).length, 200);
 });
 
 test('shutdown during official operation records unknown durably and cannot resume a late promise', async t => {
@@ -499,20 +527,21 @@ test('uncertain storage timeout fails closed even if its delayed operation event
   assert.equal(h.sends.length, 1);
 });
 
-test('unexpired seen capacity refuses new work instead of dropping replay protection', async t => {
+test('seen history beyond the former capacity accepts new work without losing replay protection', async t => {
   const h = await setup(t);
   for (let index = 0; index < 2000; index++) h.store.data.seen[messageId(10000 + index)] = h.now();
-  await h.handle(h.event()); assert.equal(h.sends.length, 0); assert.equal(Object.keys(h.store.data.seen).length, 2000);
-  h.advance(DAY_MS); await h.handle(h.event()); assert.equal(h.sends.length, 1);
+  const input = h.event(); await h.handle(input); await h.handle(input);
+  assert.equal(h.sends.length, 1); assert.equal(Object.keys(h.store.data.seen).length, 2001);
+  h.advance(DAY_MS); await h.handle(h.event()); assert.equal(h.sends.length, 2);
   assert.equal(Object.keys(h.store.data.seen).length, 1);
 });
 
-test('unknown records protected within 24h are never evicted to make room for another target', async t => {
+test('new targets work beyond the former record capacity while retaining older unknown results', async t => {
   const h = await setup(t);
   for (let index = 0; index < 2000; index++) h.store.data.reports[`player_${index}`] = { at: h.now(), kind: 'unknown', message: RESULT_MESSAGES.unknown };
   const card = await h.preview('NewTarget'); h.advance(); await h.handle(h.click(card));
-  assert.equal(h.submissions.length, 0); assert.equal(Object.keys(h.store.data.reports).length, 2000);
-  assert.match(h.sends.at(-1).text, /容量已满/);
+  assert.equal(h.submissions.length, 1); assert.equal(Object.keys(h.store.data.reports).length, 2001);
+  assert.equal(h.store.data.reports.player_0.kind, 'unknown');
 });
 
 test('case-insensitive reserved property nickname is handled as data without prototype pollution', async t => {
@@ -525,7 +554,7 @@ test('case-insensitive reserved property nickname is handled as data without pro
   assert.equal(restored.data.reports.__proto__.kind, 'success');
 });
 
-test('store rejects corrupt or oversized schema instead of silently resetting dedupe records', async t => {
+test('store rejects corrupt data instead of silently resetting dedupe records', async t => {
   const h = await setup(t);
   for (const contents of ['{bad json', '{}', 'null', JSON.stringify({ seen: [], drafts: {}, reports: {} }),
     JSON.stringify({ seen: {}, drafts: {}, reports: { player: { kind: 'surprise', at: h.now() } } })]) {
