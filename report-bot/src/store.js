@@ -63,7 +63,7 @@ export function validateStore(value) {
       data.reports[key].mail = { messageId: mail.messageId, ticketId: mail.ticketId, receivedAt: mail.receivedAt, notification: mail.notification };
     }
   }
-  // Older snapshots had no attempt ledger. Retain their channel budget conservatively.
+  // Older snapshots had no attempt ledger. Reconstruct recent submission history.
   const attempts = value.attempts ?? Object.values(data.reports).map(item => ({ at: item.at, author: item.author ?? null }));
   if (!Array.isArray(attempts) || attempts.length > STORE_LIMITS.attempts) fail();
   for (const item of attempts) {

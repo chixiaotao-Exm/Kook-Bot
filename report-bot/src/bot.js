@@ -289,19 +289,16 @@ export class ReportBot {
       return;
     }
     this.prune(this.now());
-    if (state.attempts.length >= 20 || state.attempts.filter(item => item.author === draft.author).length >= 5) {
-      this.counts.rejected++;
-      await this.reply({ text: '已达到提交上限：本频道每 24 小时最多 20 次，每位成员最多 5 次。请稍后再试。' }, signal); return;
-    }
     if (!Object.hasOwn(state.reports, key) && Object.keys(state.reports).length >= STORE_LIMITS.reports) {
       this.counts.rejected++; await this.reply({ text: '提交记录容量已满，当前暂停提交，请联系管理员。' }, signal); return;
     }
-    // Durable unknown/pending marker and attempt budget MUST precede any official network operation.
+    // Persist the pending marker and bounded attempt history before official network operations.
     delete state.drafts[id];
     const at = this.now();
     const mailInfo = this.mailEnabled ? { player: draft.player, mailRef: 'KOOK-' + randomUUID().replaceAll('-', '') } : {};
     state.reports[key] = { at, author: draft.author, kind: 'pending', message: RESULT_MESSAGES.pending, ...mailInfo };
     state.attempts.push({ at, author: draft.author });
+    if (state.attempts.length > STORE_LIMITS.attempts) state.attempts.splice(0, state.attempts.length - STORE_LIMITS.attempts);
     if (!await this.persist()) return;
     let result;
     try {
