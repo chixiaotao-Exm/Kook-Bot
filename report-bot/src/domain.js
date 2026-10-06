@@ -1,6 +1,5 @@
 export const CHANNEL_ID = '7913196554480263';
 export const DAY_MS = 24 * 60 * 60_000;
-export const DRAFT_TTL_MS = 15 * 60_000;
 export const MAX_EVENT_AGE_MS = 5 * 60_000;
 export const validId = value => typeof value === 'string' && /^\d{5,30}$/.test(value);
 export const validMessageId = value => typeof value === 'string' && /^(?=.{16,100}$)[a-f0-9]+(?:-[a-f0-9]+)*$/i.test(value);

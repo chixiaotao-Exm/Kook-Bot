@@ -3,9 +3,6 @@ const ID = /^\d{5,30}$/;
 const RESPONSE_LIMIT = 32 * 1024;
 const CACHE_LIMIT = 256;
 const CACHE_TTL = 5 * 60_000;
-const FAILURE_TTL = 10_000;
-const MAX_CONCURRENT = 2;
-const MAX_PER_MINUTE = 30;
 
 /** Button events can omit user_info and the guild; derive the guild from the allowlisted channel. */
 export function createButtonAuthorResolver({ token, channelIds, fetchImpl = fetch, now = Date.now } = {}) {
@@ -74,7 +71,6 @@ export function createAuthorResolver({ token, fetchImpl = fetch, now = Date.now,
     throw new Error('Invalid KOOK identity configuration');
   }
   const cache = new Map(), pending = new Map();
-  let recent = [];
   const remember = (key, value, ttl) => {
     cache.delete(key);
     cache.set(key, { value, expires: now() + ttl });
@@ -111,11 +107,10 @@ export function createAuthorResolver({ token, fetchImpl = fetch, now = Date.now,
     if (pending.has(key)) {
       const value = await pending.get(key); return value ? { ...value } : null;
     }
-    recent = recent.filter(at => at > time - 60_000);
-    if (pending.size >= MAX_CONCURRENT || recent.length >= MAX_PER_MINUTE) return null;
-    recent.push(time);
     const task = lookup(userId, guildId).then(value => {
-      remember(key, value, value ? CACHE_TTL : FAILURE_TTL); return value;
+      // Cache verified identities only: a transient lookup failure must not block a fresh request.
+      if (value) remember(key, value, CACHE_TTL);
+      return value;
     }).finally(() => pending.delete(key));
     pending.set(key, task);
     const value = await task;

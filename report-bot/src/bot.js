@@ -1,10 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { CHANNEL_ID, DAY_MS, DRAFT_TTL_MS, normalizeNickname, cardImageUrl, draftContent, isAllowedMessage,
+import { CHANNEL_ID, DAY_MS, normalizeNickname, cardImageUrl, draftContent, isAllowedMessage,
   validId, validMessageId, validEventTime, validAuthorMetadata, RESULT_MESSAGES } from './domain.js';
-import { STORE_LIMITS } from './store.js';
 
 const abortError = () => Object.assign(new Error('cancelled'), { code: 'cancelled' });
-const HELP = '发送昵称或只含昵称的截图，机器人移除完整的开头战队标签并生成举报预览。\n只有发起人可以确认、修改或取消自己的预览，15 分钟后到期。\n修改：点击「修改昵称」后发送新昵称，或重新发送「举报 正确昵称」。\n状态：发送「状态 昵称」。\n图片会发往配置的 PaddleOCR 云服务识别。\n每次确认最多提交一次；未知结果不会自动重试。';
+const HELP = '发送昵称或只含昵称的截图，机器人移除完整的开头战队标签并生成举报预览。\n只有发起人可以确认、修改或取消自己的预览，预览不会按时间过期。\n修改：点击「修改昵称」后发送新昵称，或重新发送「举报 正确昵称」。\n状态：发送「状态 昵称」。\n图片会发往配置的 PaddleOCR 云服务识别。\n每次确认最多提交一次；未知结果不会自动重试。';
 
 // A late, uncancellable operation never gets to mutate state or release a second submission.
 async function bounded(operation, signal, timeoutMs) {
@@ -98,9 +97,9 @@ export class ReportBot {
     await this.reply({ text: `✅ 邮箱已确认提交\n玩家：${record.player || key}\nPUBG 工单：#${record.mail.ticketId}\n官方邮件确认已收到请求；不代表已判定违规或封禁。` }, this.controller.signal).catch(() => {});
   }
 
-  handle(event, { botId, signal } = {}) {
-    if (!this.ready || this.closed || signal?.aborted || this.pending >= 8) return Promise.resolve();
-    const input = this.parse(event, botId);
+  handle(event, { botId, signal, receivedAt = this.now() } = {}) {
+    if (!this.ready || this.closed || signal?.aborted) return Promise.resolve();
+    const input = this.parse(event, botId, receivedAt);
     if (!input) return Promise.resolve();
     this.pending++;
     const operationSignal = signal ? AbortSignal.any([signal, this.controller.signal]) : this.controller.signal;
@@ -110,8 +109,8 @@ export class ReportBot {
     return this.queue;
   }
 
-  parse(event, botId) {
-    if (!validId(botId) || !validMessageId(event?.msg_id) || !validEventTime(event?.msg_timestamp, this.now())) return null;
+  parse(event, botId, receivedAt = this.now()) {
+    if (!validId(botId) || !validMessageId(event?.msg_id) || !validEventTime(event?.msg_timestamp, receivedAt)) return null;
     const body = event.type === 255 && event.extra?.type === 'message_btn_click' ? event.extra.body : null;
     if (body) {
       if (body.target_id !== CHANNEL_ID || !validId(body.user_id) || body.user_id === botId
@@ -130,22 +129,16 @@ export class ReportBot {
 
   matchesDraft(draft, body) {
     return draft && !draft.editing && draft.author === body.user_id && draft.channelId === CHANNEL_ID
-      && draft.cardId === body.msg_id && draft.expires > this.now();
+      && draft.cardId === body.msg_id;
   }
 
   prune(now) {
     const state = this.store.data;
     for (const [id, at] of Object.entries(state.seen)) if (at <= now - DAY_MS) delete state.seen[id];
-    for (const [id, draft] of Object.entries(state.drafts)) if (draft.expires <= now) delete state.drafts[id];
-    for (const [id, at] of Object.entries(state.rate.users)) if (at <= now - 5 * 60_000) delete state.rate.users[id];
     state.attempts = state.attempts.filter(item => item.at > now - DAY_MS);
-    state.previews = state.previews.filter(at => at > now - 60 * 60_000);
+    // Discard obsolete rate/quota bookkeeping from older deployments.
+    state.previews = []; state.rate = { globalAt: null, users: Object.create(null) };
     for (const [key, record] of Object.entries(state.reports)) if (record.at <= now - 30 * DAY_MS) delete state.reports[key];
-    // Retain recent results for status queries and receipt matching.
-    const reports = Object.entries(state.reports).sort((a, b) => a[1].at - b[1].at);
-    while (reports.length >= STORE_LIMITS.reports && reports[0][1].at <= now - DAY_MS) {
-      delete state.reports[reports.shift()[0]];
-    }
   }
 
   async persist() {
@@ -166,11 +159,10 @@ export class ReportBot {
   }
 
   async process(input, signal) {
-    if (!this.ready || this.closed || signal.aborted || !validEventTime(input.event.msg_timestamp, this.now())) return;
+    if (!this.ready || this.closed || signal.aborted) return;
     this.prune(this.now());
     const state = this.store.data;
     if (Object.hasOwn(state.seen, input.event.msg_id)) return;
-    if (Object.keys(state.seen).length >= STORE_LIMITS.seen) { this.counts.rejected++; return; }
     if (input.kind === 'button' && !this.matchesDraft(state.drafts[input.id], input.body)) return;
     if (input.verify) {
       const resolver = input.kind === 'button' ? this.resolveButtonAuthor : this.resolveAuthor;
@@ -183,18 +175,7 @@ export class ReportBot {
       } catch { return; }
       if (author?.id !== input.user || author?.bot !== false || signal.aborted || this.closed) return;
     }
-    if (!validEventTime(input.event.msg_timestamp, this.now())) return;
     state.seen[input.event.msg_id] = this.now();
-    if (!await this.persist() || signal.aborted || this.closed) return;
-    const now = this.now();
-    // Own-card actions must work immediately after a preview is shown. The
-    // single-use draft, receipt and daily submit budget still guard side effects.
-    const interactive = input.kind === 'button';
-    if (!interactive && ((state.rate.globalAt !== null && now < state.rate.globalAt + 1000)
-      || (Object.hasOwn(state.rate.users, input.user) && now < state.rate.users[input.user] + 3000))) {
-      this.counts.rejected++; return;
-    }
-    state.rate.globalAt = now; state.rate.users[input.user] = now;
     if (!await this.persist() || signal.aborted || this.closed) return;
     this.active++; this.counts.received++;
     try {
@@ -246,12 +227,6 @@ export class ReportBot {
         return;
       }
     }
-    if (state.previews.length >= 60) {
-      this.counts.rejected++; await this.reply({ text: '本频道近一小时已处理 60 次预览，请稍后再试。' }, signal); return;
-    }
-    // Reserve the OCR/preview budget before external work and across process restarts.
-    state.previews.push(this.now());
-    if (!await this.persist() || signal.aborted || this.closed) return;
     if (event.type === 2) {
       if (!this.ocr) { await this.reply({ text: '图片识别尚未配置。请直接发送「举报 玩家昵称」。' }, signal); return; }
       try { raw = await bounded(currentSignal => this.ocr(event, { signal: currentSignal }), signal, this.timeouts.ocr); }
@@ -261,16 +236,16 @@ export class ReportBot {
     let player;
     try { player = normalizeNickname(raw); }
     catch (error) { await this.reply({ text: error.message }, signal); return; }
-    for (const [id, draft] of Object.entries(state.drafts)) if (draft.author === event.author_id) delete state.drafts[id];
-    if (Object.keys(state.drafts).length >= STORE_LIMITS.drafts) { this.counts.rejected++; return; }
+    const editing = Object.entries(state.drafts).find(([, draft]) => draft.author === event.author_id && draft.editing);
+    if (editing) delete state.drafts[editing[0]];
     const id = randomUUID();
     const draft = { player, raw: raw.trim(), author: event.author_id, channelId: CHANNEL_ID,
       guildId: validId(event.extra?.guild_id) ? event.extra.guild_id : null,
-      expires: this.now() + DRAFT_TTL_MS, ...draftContent(player) };
+      expires: null, ...draftContent(player) };
     state.drafts[id] = draft;
     if (!await this.persist() || signal.aborted || this.closed) return;
     const cardId = await this.reply({
-      text: `${this.enabled ? '举报预览' : '预览模式 · 尚未开启真实提交'}\n识别原文：${draft.raw}\n举报昵称：${player}\n\n标题：${draft.subject}\n\n${draft.description}\n\n只有本次发起人可以确认。请先核对昵称；此预览 15 分钟后失效。`,
+      text: `${this.enabled ? '举报预览' : '预览模式 · 尚未开启真实提交'}\n识别原文：${draft.raw}\n举报昵称：${player}\n\n标题：${draft.subject}\n\n${draft.description}\n\n只有本次发起人可以确认。请先核对昵称。`,
       buttons: [{ label: this.enabled ? '确认举报' : '确认预览', value: `report:confirm:${id}` },
         { label: '修改昵称', value: `report:edit:${id}` }, { label: '取消', value: `report:cancel:${id}` }]
     }, signal);
@@ -281,7 +256,7 @@ export class ReportBot {
 
   async confirm(id, signal) {
     const state = this.store.data, draft = state.drafts[id];
-    if (!draft || draft.editing || draft.expires <= this.now() || !draft.cardId || signal.aborted || this.closed || !this.ready) return;
+    if (!draft || draft.editing || !draft.cardId || signal.aborted || this.closed || !this.ready) return;
     const key = draft.player.toLowerCase();
     if (!this.enabled) {
       delete state.drafts[id];
@@ -289,16 +264,12 @@ export class ReportBot {
       return;
     }
     this.prune(this.now());
-    if (!Object.hasOwn(state.reports, key) && Object.keys(state.reports).length >= STORE_LIMITS.reports) {
-      this.counts.rejected++; await this.reply({ text: '提交记录容量已满，当前暂停提交，请联系管理员。' }, signal); return;
-    }
-    // Persist the pending marker and bounded attempt history before official network operations.
+    // Persist the pending marker and attempt history before official network operations.
     delete state.drafts[id];
     const at = this.now();
     const mailInfo = this.mailEnabled ? { player: draft.player, mailRef: 'KOOK-' + randomUUID().replaceAll('-', '') } : {};
     state.reports[key] = { at, author: draft.author, kind: 'pending', message: RESULT_MESSAGES.pending, ...mailInfo };
     state.attempts.push({ at, author: draft.author });
-    if (state.attempts.length > STORE_LIMITS.attempts) state.attempts.splice(0, state.attempts.length - STORE_LIMITS.attempts);
     if (!await this.persist()) return;
     let result;
     try {
