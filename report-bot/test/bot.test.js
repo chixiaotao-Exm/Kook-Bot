@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { ReportBot } from '../src/bot.js';
 import { createOcr } from '../src/ocr.js';
-import { openStore, validateStore } from '../src/store.js';
+import { openStore, validateStore, STORE_LIMITS } from '../src/store.js';
 import { CHANNEL_ID, DAY_MS, DRAFT_TTL_MS, normalizeNickname, RESULT_MESSAGES } from '../src/domain.js';
 
 const USER = '1234567890123', OTHER = '1234567890124', BOT = '9999999999999', GUILD = '7654321098765';
@@ -168,7 +168,7 @@ test('image cards retain OCR URL and multiple-attachment guards before network a
   assert.equal(Object.keys(h.store.data.drafts).length, 0); assert.equal(h.submissions.length, 0);
 });
 
-test('pending target marker and attempt budget are durably saved before the submitter is invoked', async t => {
+test('pending target marker and attempt history are durably saved before the submitter is invoked', async t => {
   let h;
   h = await setup(t, { submit: async draft => {
     const saved = JSON.parse(await readFile(h.file, 'utf8'));
@@ -293,7 +293,7 @@ test('new previews replace only the sender drafts and expired cards are unusable
   assert.equal(h.submissions.length, 0);
 });
 
-test('preview mode cannot invoke the real submitter and consumes no official attempt budget', async t => {
+test('preview mode cannot invoke the real submitter and adds no submission history', async t => {
   const h = await setup(t, { enabled: false }); const card = await h.preview(); h.advance();
   await h.handle(h.click(card));
   assert.equal(h.submissions.length, 0); assert.equal(h.store.data.attempts.length, 0);
@@ -325,7 +325,7 @@ test('uncaught submitter failure is unknown, never definitely not_sent, and neve
   assert.doesNotMatch(h.sends.at(-1).text, /private@example/);
 });
 
-test('definite not_sent can be retried only with another confirmed preview and counts against daily budget', async t => {
+test('definite not_sent can be retried only with another confirmed preview and retains attempt history', async t => {
   const h = await setup(t, { submit: async () => ({ kind: 'not_sent' }) });
   const card = await h.preview(); h.advance(); await h.handle(h.click(card));
   h.advance(); await h.handle(h.click(card)); assert.equal(h.bot.status().attempts, 1);
@@ -349,13 +349,13 @@ test('same-user manual retry uses a new receipt reference and rejects stale mail
   assert.equal(h.store.data.attempts.length, 2);
 });
 
-test('same-name manual retries still consume the per-user daily submission budget', async t => {
+test('same-user confirmed retries are not limited to five daily submissions', async t => {
   const h = await setup(t);
   for (let attempt = 0; attempt < 6; attempt++) {
     const card = await h.preview('Player_01'); await h.handle(h.click(card));
   }
-  assert.equal(h.submissions.length, 5); assert.equal(h.store.data.attempts.length, 5);
-  assert.match(h.sends.at(-1).text, /提交上限/);
+  assert.equal(h.submissions.length, 6); assert.equal(h.store.data.attempts.length, 6);
+  assert.doesNotMatch(h.sends.at(-1).text, /提交上限/);
 });
 
 test('persistent global one-second and user three-second cooldowns reject bursts across fresh message IDs', async t => {
@@ -409,18 +409,27 @@ test('failure to send the processing notice proves official submission never sta
   assert.equal(h.submissions.length, 0); assert.equal(h.store.data.reports.player_01.kind, 'not_sent');
 });
 
-test('per-user fifth-attempt boundary and rolling channel twentieth-attempt boundary are persisted', async t => {
+test('existing daily attempt history never blocks another explicit submission, including after restart', async t => {
   const h = await setup(t);
   h.store.data.attempts = Array.from({ length: 5 }, () => ({ at: h.now(), author: USER }));
   let card = await h.preview(); h.advance(); await h.handle(h.click(card));
-  assert.equal(h.submissions.length, 0); assert.match(h.sends.at(-1).text, /提交上限/);
-  h.store.data.attempts = Array.from({ length: 19 }, () => ({ at: h.now(), author: OTHER }));
+  assert.equal(h.submissions.length, 1); assert.equal(h.store.data.attempts.length, 6);
+  h.store.data.attempts = Array.from({ length: 20 }, () => ({ at: h.now(), author: OTHER }));
+  await h.store.save(); h.bot.store = await openStore(h.file);
   card = await h.preview(); h.advance(); await h.handle(h.click(card));
-  assert.equal(h.submissions.length, 1); assert.equal(h.store.data.attempts.length, 20);
-  card = await h.preview('AnotherPlayer'); h.advance(); await h.handle(h.click(card));
-  assert.equal(h.submissions.length, 1);
-  h.advance(DAY_MS); card = await h.preview('AnotherPlayer'); h.advance(); await h.handle(h.click(card));
-  assert.equal(h.submissions.length, 2); assert.equal(h.store.data.attempts.length, 1);
+  assert.equal(h.submissions.length, 2); assert.equal(h.bot.store.data.attempts.length, 21);
+  await h.handle(h.click(card)); assert.equal(h.submissions.length, 2);
+});
+
+test('full attempt history rolls forward without becoming a replacement submission quota', async t => {
+  const h = await setup(t);
+  h.store.data.attempts = Array.from({ length: STORE_LIMITS.attempts }, () => ({ at: h.now() - 1000, author: OTHER }));
+  const card = await h.preview(); await h.handle(h.click(card));
+  assert.equal(h.submissions.length, 1); assert.equal(h.bot.status().ready, true);
+  const disk = await openStore(h.file);
+  assert.equal(disk.data.attempts.length, STORE_LIMITS.attempts);
+  assert.deepEqual(disk.data.attempts.at(-1), { at: h.now(), author: USER });
+  assert.equal(disk.data.reports.player_01.kind, 'success');
 });
 
 test('preview/OCR hourly budget blocks external OCR before work and recovers after expiry', async t => {
