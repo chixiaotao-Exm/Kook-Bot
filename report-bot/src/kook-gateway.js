@@ -35,8 +35,8 @@ export class KookGateway {
     clearTimeoutImpl = clearTimeout, apiTimeoutMs = 10000, handshakeTimeoutMs = 6000,
     heartbeatMs = 30000, heartbeatJitterMs = 5000, pongTimeoutMs = 6000,
     pingRetryBaseMs = 2000, reconnectBaseMs = 2000, resumeBaseMs = 8000, reconnectMaxMs = 60000,
-    eventTimeoutMs = 45000, sequenceGapMs = 10000, maxFrameBytes = 512 * 1024, maxBufferedEvents = 100,
-    maxBufferedBytes = 4 * 1024 * 1024 } = {}) {
+    eventTimeoutMs = 45000, sequenceGapMs = 10000, maxFrameBytes = 512 * 1024, maxBufferedEvents = Infinity,
+    maxBufferedBytes = Infinity } = {}) {
     if (typeof token !== 'string' || !token.trim() || /[\r\n]/.test(token)) throw new Error('KOOK token is required');
     if (typeof onEvent !== 'function') throw new Error('KOOK event handler is required');
     if (typeof Socket !== 'function') throw new Error('WebSocket requires Node.js 22 or newer');
@@ -268,7 +268,7 @@ export class KookGateway {
       }
     }
     if (full()) throw new GatewayFailure('event_buffer_full');
-    this.pending.set(sn, { data, bytes }); this.pendingBytes += bytes;
+    this.pending.set(sn, { data, bytes, receivedAt: this.now() }); this.pendingBytes += bytes;
     this.deliverNext();
   }
 
@@ -293,7 +293,7 @@ export class KookGateway {
     this.later('event', () => { controller.abort(); finish(false); }, this.eventTimeoutMs);
     const handled = Promise.resolve().then(() => {
       if (controller.signal.aborted || !this.running || epoch !== this.sequenceEpoch) return;
-      return this.onEvent(entry.data, { signal: controller.signal, botId: this.botId });
+      return this.onEvent(entry.data, { signal: controller.signal, botId: this.botId, receivedAt: entry.receivedAt });
     })
       .then(() => true, () => false);
     // Handler errors/timeouts are consumed; consumers must handle their own user-facing errors.
