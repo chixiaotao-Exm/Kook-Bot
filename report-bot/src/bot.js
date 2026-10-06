@@ -141,7 +141,7 @@ export class ReportBot {
     state.attempts = state.attempts.filter(item => item.at > now - DAY_MS);
     state.previews = state.previews.filter(at => at > now - 60 * 60_000);
     for (const [key, record] of Object.entries(state.reports)) if (record.at <= now - 30 * DAY_MS) delete state.reports[key];
-    // Never evict a still-protected target in order to admit more reports.
+    // Retain recent results for status queries and receipt matching.
     const reports = Object.entries(state.reports).sort((a, b) => a[1].at - b[1].at);
     while (reports.length >= STORE_LIMITS.reports && reports[0][1].at <= now - DAY_MS) {
       delete state.reports[reports.shift()[0]];
@@ -282,14 +282,11 @@ export class ReportBot {
   async confirm(id, signal) {
     const state = this.store.data, draft = state.drafts[id];
     if (!draft || draft.editing || draft.expires <= this.now() || !draft.cardId || signal.aborted || this.closed || !this.ready) return;
-    const key = draft.player.toLowerCase(), previous = state.reports[key];
+    const key = draft.player.toLowerCase();
     if (!this.enabled) {
       delete state.drafts[id];
       if (await this.persist()) await this.reply({ text: `${draft.player}：预览已确认，当前未开启真实提交，未发送举报。` }, signal);
       return;
-    }
-    if (previous && previous.kind !== 'not_sent' && this.now() - previous.at < DAY_MS) {
-      await this.reply({ text: `${draft.player} 已有 24 小时内的提交记录：${RESULT_MESSAGES[previous.kind] ?? RESULT_MESSAGES.unknown} 不会重复发送。` }, signal); return;
     }
     this.prune(this.now());
     if (state.attempts.length >= 20 || state.attempts.filter(item => item.author === draft.author).length >= 5) {

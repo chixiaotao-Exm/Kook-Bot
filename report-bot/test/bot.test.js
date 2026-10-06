@@ -301,7 +301,7 @@ test('preview mode cannot invoke the real submitter and consumes no official att
 });
 
 for (const outcome of ['success', 'verification', 'unknown']) {
-  test(`${outcome} outcomes block case-insensitive target duplicates for 24h across users and restart`, async t => {
+  test(`${outcome} outcomes allow a fresh confirmed preview for the same nickname after restart`, async t => {
     const h = await setup(t, { submit: async () => ({ kind: outcome, message: 'do not echo private@example.test' }) });
     const card = await h.preview('Player_Name'); h.advance(); await h.handle(h.click(card));
     assert.equal(h.store.data.reports.player_name.kind, outcome);
@@ -309,7 +309,10 @@ for (const outcome of ['success', 'verification', 'unknown']) {
     h.bot.store = persisted;
     const again = await h.preview('pLaYeR_nAmE', { author_id: OTHER, extra: { author: { id: OTHER, bot: false } } });
     h.advance(); await h.handle(h.click(again, 'confirm', { user_id: OTHER, user_info: { id: OTHER, bot: false } }));
-    assert.equal(h.bot.status().attempts, 1); assert.match(h.sends.at(-1).text, /不会重复发送/);
+    assert.equal(h.bot.status().attempts, 2); assert.equal(persisted.data.attempts.length, 2);
+    assert.doesNotMatch(h.sends.at(-1).text, /已有 24 小时内/);
+    await h.handle(h.click(again, 'confirm', { user_id: OTHER, user_info: { id: OTHER, bot: false } }));
+    assert.equal(h.bot.status().attempts, 2);
     assert.ok(h.sends.every(item => !item.text.includes('private@example.test')));
   });
 }
@@ -330,16 +333,29 @@ test('definite not_sent can be retried only with another confirmed preview and c
   assert.equal(h.bot.status().attempts, 2); assert.equal(h.store.data.attempts.length, 2);
 });
 
-test('target protection ends at 24h only after an explicit fresh confirmation', async t => {
-  const h = await setup(t); let card = await h.preview(); h.advance(); await h.handle(h.click(card));
-  const attemptedAt = h.store.data.reports.player_01.at;
-  h.advance(DAY_MS - (h.now() - attemptedAt) - 8001);
-  card = await h.preview('PLAYER_01'); h.advance(); await h.handle(h.click(card));
-  assert.equal(h.submissions.length, 1);
-  h.advance(2); await h.handle(h.click(card));
-  // The failed duplicate click also has its own user cooldown.
-  h.advance(); await h.handle(h.click(card));
-  assert.equal(h.submissions.length, 2);
+test('same-user manual retry uses a new receipt reference and rejects stale mail confirmation', async t => {
+  const h = await setup(t, { mailEnabled: true });
+  const original = await h.preview(); await h.handle(h.click(original));
+  const previous = h.bot.mailCandidates()[0];
+  const again = await h.preview('PLAYER_01');
+  assert.equal(h.submissions.length, 1); // Preparing a retry alone never submits it.
+  await h.handle(h.click(original)); assert.equal(h.submissions.length, 1);
+  await h.handle(h.click(again)); assert.equal(h.submissions.length, 2);
+  const latest = h.bot.mailCandidates()[0];
+  assert.notEqual(latest.mailRef, previous.mailRef);
+  assert.ok(latest.at - previous.at < DAY_MS);
+  assert.equal(await h.bot.confirmMail(previous, { messageId: '1:200', ticketId: '12345', receivedAt: h.now() }), false);
+  assert.equal(h.store.data.reports.player_01.mail, undefined);
+  assert.equal(h.store.data.attempts.length, 2);
+});
+
+test('same-name manual retries still consume the per-user daily submission budget', async t => {
+  const h = await setup(t);
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const card = await h.preview('Player_01'); await h.handle(h.click(card));
+  }
+  assert.equal(h.submissions.length, 5); assert.equal(h.store.data.attempts.length, 5);
+  assert.match(h.sends.at(-1).text, /提交上限/);
 });
 
 test('persistent global one-second and user three-second cooldowns reject bursts across fresh message IDs', async t => {
@@ -369,7 +385,7 @@ test('pre-submit storage failure prevents official traffic and fails readiness c
   h.advance(); await h.handle(h.event('FreshPlayer')); assert.equal(h.sends.length, 1);
 });
 
-test('result-save failure keeps durable pending, restores unknown on restart and blocks resubmission', async t => {
+test('result-save failure keeps durable pending and restores unknown without replaying a submission', async t => {
   const h = await setup(t); const card = await h.preview();
   const save = h.store.save.bind(h.store);
   h.store.save = async () => {
