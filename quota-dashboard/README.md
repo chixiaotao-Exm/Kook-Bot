@@ -80,7 +80,7 @@ sudo apt-get install fontconfig fonts-noto-cjk
 | `BROADCAST_TIMES` | 每日播报时刻，逗号分隔；留空默认每小时 00、30 分 |
 | `BROADCAST_TIME_ZONE` | 播报时区，默认 `Asia/Shanghai` |
 | `ARK717_QUERY_KEY` | 可选上游个人查询 Key，仅发送到固定上游域名 |
-| `ARK717_ACCOUNT_ID` | 将上游结果映射到对应 Sub2API 账号 ID |
+| `ARK717_ACCOUNT_ID` | 配置 `ARK717_QUERY_KEY` 时必填，将上游结果映射到对应 Sub2API 账号 ID；不提供默认账号 |
 
 播报计划首次运行后保存在 `data/broadcast.json`。此后修改环境变量不会覆盖现有计划，请通过看板的 `?manage=1` 入口修改。当前播报仅包含 OpenAI 账号；网页仍展示全部可见平台。
 

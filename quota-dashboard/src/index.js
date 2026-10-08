@@ -26,7 +26,7 @@ const config = {
 };
 if (!config.adminApiKey) throw new Error('SUB2API_ADMIN_KEY is required');
 const providers = process.env.ARK717_QUERY_KEY ? [new NewApiAccountSource({ baseUrl: 'https://api.ark717.com', queryKey: process.env.ARK717_QUERY_KEY,
-  accountId: process.env.ARK717_ACCOUNT_ID || '4201' })] : [];
+  accountId: process.env.ARK717_ACCOUNT_ID })] : [];
 let activeQuota;
 const sourceClient = new Sub2apiClient({ baseUrl: config.sub2apiUrl, adminApiKey: config.adminApiKey, accountOverlay: accounts => activeQuota?.apply(accounts) || accounts });
 const activeClient = new ActiveQuotaClient({ baseUrl: config.sub2apiUrl, adminApiKey: config.adminApiKey });
