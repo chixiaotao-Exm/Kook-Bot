@@ -2,6 +2,7 @@
   "name": "kook-github-notification-bridge",
   "version": "1.0.0",
   "private": true,
+  "license": "AGPL-3.0-or-later",
   "type": "module",
   "engines": { "node": ">=22.16.0" },
   "scripts": {

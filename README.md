@@ -48,4 +48,10 @@ AI 对话机器人同样在子目录中执行 `npm ci` 和 `npm test`。GitHub A
 
 ## 许可
 
-本仓库尚未指定整体开源许可证。第三方依赖遵循各自许可，特别是 QQ 音乐 Python 依赖的 `GPL-3.0-or-later`，详见 [QQ 接口说明](music-bot/qq/README.md)。
+Copyright (C) 2026 chixiaotao-Exm and contributors.
+
+除另有明确许可声明的第三方代码、依赖和素材外，本仓库自有代码使用 **GNU Affero General Public License v3.0 or later（`AGPL-3.0-or-later`）**。你可以按照自由软件基金会发布的 AGPL 第 3 版或任何后续版本的条款使用、修改和分发；完整条款见 [LICENSE](LICENSE)。软件按原样提供，不附带任何担保。
+
+AGPL 允许商业使用和收费。修改版本通过网络向用户提供服务时，应按许可证向这些用户显著提供免费取得对应源码的方式；对应源码不包括你的 Token、密码或用户私密数据。
+
+第三方组件保留原许可证和版权声明，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。其中汽水签名器子目录继续使用其原 MIT 许可，QQ 音乐依赖使用 GPL；餐厅菜单图片与数据、平台音乐和封面等第三方内容不由本仓库的 AGPL 重新授权，详见[菜单素材说明](menu-bot/assets/LICENSES.md)与[音乐素材说明](music-bot/web/assets/LICENSES.md)。

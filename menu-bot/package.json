@@ -2,6 +2,7 @@
   "name": "kook-chinese-menu-bot",
   "version": "1.0.0",
   "private": true,
+  "license": "AGPL-3.0-or-later",
   "type": "module",
   "engines": { "node": ">=22.16" },
   "scripts": { "start": "node --env-file-if-exists=.env src/index.js", "test": "node --test" }
