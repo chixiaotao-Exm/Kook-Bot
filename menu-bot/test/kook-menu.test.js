@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createMenuSender, KookMenuDeliveryError } from '../src/kook-menu.js';
 
-const CHANNEL = '9000000000000103';
+const CHANNEL = '1234567890123456';
 const MESSAGE = '09cac271-1111-2222-3333-123456789abc';
 const SECRET = 'private-token-never-reflect';
 const flush = () => new Promise(resolve => setImmediate(resolve));

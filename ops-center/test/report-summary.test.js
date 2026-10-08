@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildScheduledSummary } from '../src/report-summary.js';
 import { createKookSender } from '../src/kook.js';
+import { OPS_CHANNELS } from './fixtures/channels.js';
 
 const NOW = Date.parse('2026-09-24T12:34:56Z');
 const iso = offset => new Date(NOW + offset).toISOString();
@@ -110,7 +111,7 @@ test('packing preserves all ordinary monitors and marks unavoidable overflow wit
     bots: Array.from({ length: 40 }, (_, n) => ({ name: '😀"\\'.repeat(50), state: i === 19 && n === 39 ? 'offline' : 'online' })) })) }, 'infra', NOW);
   assert.equal(huge.theme, 'danger'); assert.match(content(huge), /其余记录/);
   assert.ok(huge.lines.length <= 12); assert.ok(huge.lines.every(line => line.length <= 500 && line.isWellFormed()));
-  const sent = []; const send = createKookSender({ token: 'fixture-only', publicUrl: 'https://api.example.test/ops/', fetchImpl: async (_url, init) => {
+  const sent = []; const send = createKookSender({ token: 'fixture-only', channelIds: OPS_CHANNELS, publicUrl: 'https://api.example.test/ops/', fetchImpl: async (_url, init) => {
     sent.push(init); return Response.json({ code: 0, data: { msg_id: 'a'.repeat(32) } });
   } });
   await send(report); await send(huge); assert.equal(sent.length, 2);

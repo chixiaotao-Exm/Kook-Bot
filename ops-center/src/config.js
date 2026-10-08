@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { configuredChannels } from './channels.js';
 
 const ID = /^[a-z][a-z0-9_-]{0,39}$/;
 function requireValue(ok, message) { if (!ok) throw new Error(message); }
@@ -8,7 +9,7 @@ function label(value) { requireValue(typeof value === 'string' && value.trim().l
 function unique(items) { requireValue(new Set(items.map(item => item.id)).size === items.length, 'Duplicate identifier'); return items; }
 export function validateConfig(raw, env = process.env) {
   requireValue(raw && typeof raw === 'object' && !Array.isArray(raw), 'Invalid configuration');
-  const publicUrl = new URL(env.PUBLIC_URL || 'https://api.example.com/ops/');
+  const publicUrl = new URL(env.PUBLIC_URL || 'https://example.com/ops/');
   requireValue(['http:', 'https:'].includes(publicUrl.protocol) && !publicUrl.username && !publicUrl.password && !publicUrl.search && !publicUrl.hash && publicUrl.pathname.endsWith('/'), 'Invalid public URL');
   const sub2apiUrl = new URL(env.SUB2API_URL || 'http://127.0.0.1:8080/');
   requireValue(['http:', 'https:'].includes(sub2apiUrl.protocol) && !sub2apiUrl.username && !sub2apiUrl.password, 'Invalid administrator origin');
@@ -55,9 +56,10 @@ export function validateConfig(raw, env = process.env) {
   }));
   const token = env.KOOK_TOKEN?.trim() || '';
   requireValue(!token || /^\S{1,512}$/.test(token), 'Invalid KOOK token');
+  const channelIds = configuredChannels({ infra: env.KOOK_INFRA_CHANNEL_ID ?? '', web: env.KOOK_WEB_CHANNEL_ID ?? '' }, { required: Boolean(token) });
   return { host, port, publicUrl: publicUrl.href, sub2apiUrl: sub2apiUrl.href, hosts, monitors, token, localHostId,
     publicManagement: env.PUBLIC_MANAGEMENT === 'true',
-    channelIds: { infra: '9000000000000101', web: '9000000000000102' },
+    channelIds,
     dataDir: path.resolve(env.DATA_DIR || './data'), queryEnabled: env.KOOK_QUERY_ENABLED !== 'false',
     intervalMs: 60000, hostStaleMs: 120000, monitorStaleMs: 150000 };
 }

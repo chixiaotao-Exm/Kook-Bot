@@ -15,7 +15,7 @@ import {createGmailReader,GmailMonitor} from './mail-monitor.js';
 process.umask(0o077);
 const token=process.env.KOOK_TOKEN?.trim();
 if(!token||!/^[^\s\x00-\x1f\x7f]{1,512}$/.test(token))throw Error('Invalid KOOK configuration');
-if(process.env.KOOK_CHANNEL_ID&&process.env.KOOK_CHANNEL_ID!==CHANNEL_ID)throw Error('Channel configuration not allowed');
+if(!/^\d{5,30}$/.test(process.env.KOOK_CHANNEL_ID?.trim()||'')||/^0+$/.test(CHANNEL_ID))throw Error('KOOK_CHANNEL_ID is required');
 if(process.env.PUBG_SUBMIT_ENABLED&&!['true','false'].includes(process.env.PUBG_SUBMIT_ENABLED))throw Error('Invalid submission mode');
 const enabled=process.env.PUBG_SUBMIT_ENABLED==='true',dataDir=path.resolve(process.env.DATA_DIR||'data');
 const host=process.env.HOST||'127.0.0.1',port=Number(process.env.PORT||18992);

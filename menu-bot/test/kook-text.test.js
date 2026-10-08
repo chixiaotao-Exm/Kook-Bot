@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createTextSender } from '../src/kook-text.js';
 
-const channelId = '9000000000000103', messageId = '09cac271-1111-2222-3333-123456789abc';
+const channelId = '1234567890123456', messageId = '09cac271-1111-2222-3333-123456789abc';
 const json = value => new Response(JSON.stringify(value));
 const input = { channelId, replyMessageId: messageId, text: '12 + 14 × 2 = 40' };
 const sender = overrides => createTextSender({ token: 'private-token', channelIds: [channelId], ...overrides });
