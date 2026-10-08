@@ -16,7 +16,7 @@ const snapshot = () => ({ updatedAt: iso(0), hosts: [{ id: 'host-1', name: '中�
   history: [{ at: iso(-1000), cpuPercent: 20, memoryPercent: 40, diskPercent: 30 }, { at: iso(0), cpuPercent: 23, memoryPercent: 45, diskPercent: 31 }],
 }], monitors: [{ id: 'web-1', name: '额度看板', url: 'https://api.example.test/quota/', state: 'up', maintenance: false,
   checkedAt: iso(0), latencyMs: 180, httpStatus: 200, tlsDays: 60, history: [{ at: iso(0), ok: true, latencyMs: 180 }] }],
-  incidents: [], commands: [], notification: { enabled: true, botName: '思维2', infraChannel: '9000000000000101', webChannel: '9000000000000102' }, queryBot: { connected: true } });
+  incidents: [], commands: [], notification: { enabled: true, botName: '思维2', infraChannel: '1111111111111111', webChannel: '2222222222222222' }, queryBot: { connected: true } });
 const response = (data, status = 200) => Response.json(data, { status });
 async function settle(check = () => true) {
   for (let count = 0; count < 100; count++) { await new Promise(resolve => setImmediate(resolve)); if (check()) return; }

@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createKookSender, KookDeliveryError, OPS_CHANNELS } from '../src/kook.js';
+import { createKookSender, KookDeliveryError } from '../src/kook.js';
+import { OPS_CHANNELS } from './fixtures/channels.js';
 
 const TOKEN = 'fixture-token-private', ID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
 const note = changes => ({ category: 'infra', title: '服务异常', lines: ['服务待恢复'], theme: 'danger', ...changes });
-const config = extra => ({ token: TOKEN, publicUrl: 'https://api.example.com/ops/', ...extra });
+const config = extra => ({ token: TOKEN, channelIds: OPS_CHANNELS, publicUrl: 'https://api.example.com/ops/', ...extra });
 const ok = () => Response.json({ code: 0, data: { msg_id: ID } });
 
 test('category selects only the two authorized channels and sends plain text cards once', async () => {
@@ -29,12 +30,24 @@ test('sender removes keys, configured token, mentions, URLs and unsafe control c
   assert.doesNotMatch(JSON.stringify(body), /fixture-token-private|private-secret|privatesecret|privatefixture|secretpass|private\.example|member@example|\(met\)|<@|@all|@here|\u202e/);
 });
 
+test('sender captures custom configured destinations and rejects missing, duplicate or extra channels', async () => {
+  const channelIds = { infra: '3333333333333333', web: '4444444444444444' }, calls = [];
+  const send = createKookSender(config({ channelIds, fetchImpl: async (_url, init) => { calls.push(JSON.parse(init.body)); return ok(); } }));
+  channelIds.infra = '5555555555555555';
+  await send(note()); await send(note({ category: 'web' }));
+  assert.deepEqual(calls.map(call => call.target_id), ['3333333333333333', '4444444444444444']);
+  for (const invalid of [undefined, null, {}, [], { infra: OPS_CHANNELS.infra },
+    { infra: OPS_CHANNELS.infra, web: OPS_CHANNELS.infra }, { ...OPS_CHANNELS, other: '3333333333333333' }]) {
+    assert.throws(() => createKookSender(config({ channelIds: invalid })), KookDeliveryError);
+  }
+});
+
 test('input and channel overrides are rejected before sending', async () => {
   let calls = 0; const send = createKookSender(config({ fetchImpl: () => { calls++; return ok(); } }));
   for (const patch of [{ category: 'other' }, { targetId: OPS_CHANNELS.infra }, { theme: 'custom' }, { lines: Array(13).fill('x') },
     { title: 'a'.repeat(101) }, { lines: ['a'.repeat(501)] }]) await assert.rejects(send(note(patch)), error => error.code === 'INPUT');
   assert.equal(calls, 0);
-  assert.throws(() => createKookSender(config({ channelIds: { ...OPS_CHANNELS, web: '123456789' } })), KookDeliveryError);
+  assert.throws(() => createKookSender(config({ channelIds: { ...OPS_CHANNELS, web: 'not-a-channel' } })), KookDeliveryError);
   assert.throws(() => createKookSender(config({ publicUrl: 'https://user:secret@example.test' })), KookDeliveryError);
 });
 

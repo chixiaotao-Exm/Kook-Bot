@@ -92,7 +92,7 @@ test('invalid output, model price in notes, partial output and cancellation are 
 });
 
 test('configuration permits optional AI and pins requested model', () => {
-  const base = { KOOK_TOKEN: 'private-token', KOOK_CHANNEL_IDS: '9000000000000103' };
+  const base = { KOOK_TOKEN: 'private-token', KOOK_CHANNEL_IDS: '1234567890123456' };
   assert.equal(loadConfig(base).ai, undefined);
   assert.equal(loadConfig({ ...base, OPENAI_API_KEY: 'private-test-key' }).ai.apiKey, 'private-test-key');
   assert.throws(() => loadConfig({ ...base, OPENAI_MODEL: 'other' }));

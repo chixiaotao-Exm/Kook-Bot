@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createKookImageSender, KookImageDeliveryError } from '../src/kook-image-sender.js';
 
 const token = 'PRIVATE_BOT_TOKEN';
-const channelId = '9000000000000104';
+const channelId = '1234567890123456';
 const api = 'https://www.kookapp.cn/api/v3/';
 const png = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000b49444154789c636000020000050001a5f645400000000049454e44ae426082', 'hex');
 const image = (overrides = {}) => ({ buffer: png, mimeType: 'image/png', width: 1, height: 1, ...overrides });

@@ -1,4 +1,5 @@
-export const CHANNEL_ID = '9000000000000105';
+// The entry point requires a private channel setting; the zero ID is inert in library tests.
+export const CHANNEL_ID = process.env.KOOK_CHANNEL_ID?.trim() || '0000000000000000';
 export const DAY_MS = 24 * 60 * 60_000;
 export const MAX_EVENT_AGE_MS = 5 * 60_000;
 export const validId = value => typeof value === 'string' && /^\d{5,30}$/.test(value);

@@ -1,5 +1,6 @@
 import { KookGateway } from './kook-gateway.js';
-import { OPS_CHANNELS, createKookSender, safeOpsText } from './kook.js';
+import { createKookSender, safeOpsText } from './kook.js';
+import { configuredChannels } from './channels.js';
 
 const ID = /^\d{5,30}$/;
 const RECEIPT = /^[a-f0-9-]{16,100}$/i;
@@ -97,13 +98,13 @@ export class OpsQueryBot {
   #tail = Promise.resolve(); #controller = new AbortController(); #seen = new Map(); #users = new Map(); #recent = [];
   #identities = new Map(); #identityRecent = [];
   #running = false; #closed = false; #waiting = 0; #counts = { queries: 0, replies: 0, failures: 0 }; #lastError = null; #lastReplyAt = null;
-  constructor({ token, channelIds = OPS_CHANNELS, getSnapshot, sendReply, publicUrl = 'https://api.example.com/ops/', logger = () => {},
+  constructor({ token, channelIds, getSnapshot, sendReply, publicUrl = 'https://example.com/ops/', logger = () => {},
     fetchImpl = fetch, now = Date.now, Gateway = KookGateway, gatewayOptions = {}, resolveAuthor } = {}) {
-    if (typeof token !== 'string' || !/^\S{1,512}$/.test(token) || Object.keys(OPS_CHANNELS).some(key => channelIds?.[key] !== OPS_CHANNELS[key])
+    if (typeof token !== 'string' || !/^\S{1,512}$/.test(token)
       || typeof getSnapshot !== 'function' || sendReply !== undefined && typeof sendReply !== 'function'
       || typeof logger !== 'function' || typeof now !== 'function' || typeof Gateway !== 'function') throw Error('Invalid ops query configuration');
-    this.#token = token; this.#channels = { ...OPS_CHANNELS }; this.#getSnapshot = getSnapshot; this.#now = now; this.#fetch = fetchImpl;
-    this.#send = sendReply || createKookSender({ token, channelIds, publicUrl, fetchImpl }); this.#logger = logger; this.#resolveAuthor = resolveAuthor;
+    this.#token = token; this.#channels = configuredChannels(channelIds); this.#getSnapshot = getSnapshot; this.#now = now; this.#fetch = fetchImpl;
+    this.#send = sendReply || createKookSender({ token, channelIds: this.#channels, publicUrl, fetchImpl }); this.#logger = logger; this.#resolveAuthor = resolveAuthor;
     this.#gateway = new Gateway({ ...gatewayOptions, token, fetchImpl, logger: event => this.#log(event),
       onEvent: (event, options) => this.handle(event, options) });
   }

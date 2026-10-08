@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { OpsQueryBot } from '../src/kook-query.js';
-import { OPS_CHANNELS } from '../src/kook.js';
+import { OPS_CHANNELS } from './fixtures/channels.js';
 
 const NOW = Date.parse('2026-09-24T12:00:00Z');
 const event = (number = 1, text = '状态', changes = {}) => ({ type: 1, channel_type: 'GROUP', target_id: OPS_CHANNELS.infra,
@@ -19,7 +19,7 @@ async function fixture(t, options = {}) {
     async start() { this.connected = true; }
     close() { this.connected = false; }
   }
-  const bot = new OpsQueryBot({ token: 'fixture-token', getSnapshot: () => { reads++; return sample(); },
+  const bot = new OpsQueryBot({ token: 'fixture-token', channelIds: OPS_CHANNELS, getSnapshot: () => { reads++; return sample(); },
     sendReply: async payload => { sent.push(payload); return { messageId: 'a'.repeat(32) }; },
     logger: value => logs.push(value), now: () => wall, Gateway, ...options });
   await bot.start(); t.after(() => bot.close());
@@ -44,6 +44,20 @@ test('only exact human commands in authorized group channels can query or receiv
     event(7, '状态', { extra: { author: { id: 'wrong-user', bot: false } } }),
     event(8, '状态', { extra: { author: { bot: 'false' } } }), event(9, '状态', { msg_timestamp: NOW - 300001 })]) await f.bot.handle(evt);
   assert.equal(f.reads(), 0); assert.deepEqual(f.sent, []);
+});
+
+test('query captures custom channel configuration and does not follow later mutation', async t => {
+  const channelIds = { infra: '3333333333333333', web: '4444444444444444' };
+  const f = await fixture(t, { channelIds });
+  channelIds.infra = '5555555555555555';
+  await f.bot.handle(event(1, '状态', { target_id: channelIds.infra }));
+  await f.bot.handle(event(2, '状态'));
+  assert.equal(f.sent.length, 0);
+  await f.bot.handle(event(3, '状态', { target_id: '3333333333333333' }));
+  assert.equal(f.sent.length, 1); assert.equal(f.sent[0].category, 'infra');
+  f.advance(3001);
+  await f.bot.handle(event(4, '状态', { target_id: '4444444444444444' }));
+  assert.equal(f.sent.length, 2); assert.equal(f.sent[1].category, 'web');
 });
 
 test('repair status is read-only and does not claim restart execution means recovery', async t => {

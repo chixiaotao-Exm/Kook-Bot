@@ -14,7 +14,7 @@ const engine = new OpsEngine({ config, store, probe: probeMonitor, send });
 const reports = new ReportScheduler({ store, getSnapshot: () => engine.snapshot(), send });
 engine.reportStatus = () => reports.snapshot();
 const query = config.token && config.queryEnabled ? new OpsQueryBot({ token: config.token, channelIds: config.channelIds,
-  getSnapshot: () => engine.snapshot(), sendReply: send, logger: () => {} }) : null;
+  publicUrl: config.publicUrl, getSnapshot: () => engine.snapshot(), sendReply: send, logger: () => {} }) : null;
 if (query) engine.queryBotStatus = () => query.status();
 const server = new OpsServer({ config, engine });
 await server.start(); engine.start(); if (query) await query.start();
