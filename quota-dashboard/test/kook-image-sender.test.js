@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createKookImageSender, KookImageDeliveryError } from '../src/kook-image-sender.js';
 
 const token = 'PRIVATE_BOT_TOKEN';
-const channelId = '7887470271136485';
+const channelId = '1234567890123456';
 const api = 'https://www.kookapp.cn/api/v3/';
 const png = Buffer.from('89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000b49444154789c636000020000050001a5f645400000000049454e44ae426082', 'hex');
 const image = (overrides = {}) => ({ buffer: png, mimeType: 'image/png', width: 1, height: 1, ...overrides });
@@ -17,7 +17,7 @@ test('uploads PNG multipart files and sends one uncropped image container with a
   const send = sender(async (url, options) => {
     calls.push({ url, options });
     return url.endsWith('asset/create') ? uploaded(`${calls.length}.png`) : sent();
-  }, { dashboardUrl: 'https://api.chixiaotao.cn/quota/?secret=PRIVATE#PRIVATE' });
+  }, { dashboardUrl: 'https://api.example.com/quota/?secret=PRIVATE#PRIVATE' });
   assert.deepEqual(await send('PRIVATE_RAW_SUMMARY', { images: [image({ alt: 'PRIVATE_ALT', id: 'PRIVATE_ID' }), image()] }), { messageId: 'safe-message-id' });
   assert.deepEqual(calls.map(call => call.url), [`${api}asset/create`, `${api}asset/create`, `${api}message/create`]);
   for (const call of calls) {
@@ -41,7 +41,7 @@ test('uploads PNG multipart files and sends one uncropped image container with a
   assert.equal(cards[0].modules[0].type, 'container');
   assert.equal(cards[0].modules[0].elements.length, 2);
   const button = cards[0].modules[1].elements[0];
-  assert.equal(button.click, 'link'); assert.equal(button.value, 'https://api.chixiaotao.cn/quota/');
+  assert.equal(button.click, 'link'); assert.equal(button.value, 'https://api.example.com/quota/');
   assert.doesNotMatch(message.content, /PRIVATE|secret|file:|data:/);
 });
 

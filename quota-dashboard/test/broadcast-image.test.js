@@ -124,12 +124,12 @@ test('uses only whitelisted text and never emits credential, script, external im
   data.accounts[0].name = '<script>alert(1)</script> & sk-0123456789abcdef0123456789abcdef';
   data.accounts[0].planLabel = 'https://evil.test/secret?token=abc';
   data.accounts[0].error = 'raw-private-error';
-  await renderer.render(data, { dashboardUrl: 'https://api.chixiaotao.cn/quota/?key=private-query#secret' });
+  await renderer.render(data, { dashboardUrl: 'https://api.example.com/quota/?key=private-query#secret' });
   const svg = svgs[0].text;
   assert.match(svg, /&lt;script&gt;/);
   assert.match(svg, /\[已隐藏\]/);
   assert.match(svg, /查询异常/);
-  assert.match(svg, /api.chixiaotao.cn/);
+  assert.match(svg, /api.example.com/);
   assert.doesNotMatch(svg, /private-top-secret|not-for-render|do-not-include-note|raw-private-error|private-query|0123456789|evil\.test/);
   assert.doesNotMatch(svg, /<script|<image|<foreignObject|@font-face|href=|onload=/);
   const urls = [...svg.matchAll(/url\(([^)]+)\)/g)].map(match => match[1]);

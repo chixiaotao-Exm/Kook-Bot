@@ -12,7 +12,7 @@ const envelope = (songs = [choice()]) => ({ status: 'completed', model: 'gpt-6-a
 ] });
 const response = (raw = envelope(), init = {}) => new Response(JSON.stringify(raw), { status: 200, ...init });
 const client = (fetchImpl = async () => response(), options = {}) => new AiSongSelector({
-  baseUrl: 'https://api.chixiaotao.cn/', apiKey: 'private-test-key', fetchImpl, now: () => 3000, ...options,
+  baseUrl: 'https://api.example.com/', apiKey: 'private-test-key', fetchImpl, now: () => 3000, ...options,
 });
 const failure = (code) => (error) => error instanceof AiSongSelectorError && error.code === code && !/private-test-key|UPSTREAM SECRET/.test(error.message);
 
@@ -23,7 +23,7 @@ test('validates completed Responses output and sends strict metadata-only schema
   assert.equal(selector.model, 'gpt-6-astra');
   const input = { ...song(), cookie: 'SECRET COOKIE', url: 'https://secret.example/media', opaque: { token: 'SECRET TOKEN' } };
   assert.deepEqual(await selector.classify([input]), [choice()]);
-  assert.equal(request.url, 'https://api.chixiaotao.cn/v1/responses');
+  assert.equal(request.url, 'https://api.example.com/v1/responses');
   assert.equal(request.redirect, 'manual');
   assert.equal(request.headers.authorization, 'Bearer private-test-key');
   assert.ok(request.signal instanceof AbortSignal);

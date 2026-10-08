@@ -139,7 +139,7 @@ function decisions(raw, model, ids) {
 export class AiSongSelector {
   #url; #key; #model; #fetch; #timeoutMs; #now;
 
-  constructor({ baseUrl = 'https://api.chixiaotao.cn', apiKey = '', model = 'gpt-6-astra', fetchImpl = globalThis.fetch,
+  constructor({ baseUrl = 'https://api.example.com', apiKey = '', model = 'gpt-6-astra', fetchImpl = globalThis.fetch,
     timeoutMs = 90000, now = Date.now } = {}) {
     this.#url = endpoint(baseUrl);
     if (typeof apiKey !== 'string' || (apiKey !== '' && (apiKey.length < 8 || apiKey.length > 512 || /[\s\x00-\x1f\x7f]/.test(apiKey)))

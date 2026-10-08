@@ -1,5 +1,6 @@
+import { configuredChannels } from './channels.js';
+
 const ENDPOINT = 'https://www.kookapp.cn/api/v3/message/create';
-export const OPS_CHANNELS = Object.freeze({ infra: '4052889739856202', web: '7255160236021294' });
 const MAX_BYTES = 32 * 1024;
 const MESSAGE_ID = /^(?=.{16,100}$)[a-f0-9]+(?:-[a-f0-9]+)*$/i;
 const THEMES = new Set(['danger', 'success', 'warning', 'info']);
@@ -53,16 +54,16 @@ async function readResponse(response, signal) {
 }
 
 /** A single attempt, bound to the two authorized channels. Unknown delivery is never replayed here. */
-export function createKookSender({ token, channelIds = OPS_CHANNELS, publicUrl, fetchImpl = fetch, timeoutMs = 8000 } = {}) {
-  let link;
-  try { link = new URL(publicUrl); } catch { throw failure('CONFIG', 'rejected'); }
-  if (typeof token !== 'string' || !/^\S{1,512}$/.test(token) || Object.keys(OPS_CHANNELS).some(key => channelIds?.[key] !== OPS_CHANNELS[key])
+export function createKookSender({ token, channelIds, publicUrl, fetchImpl = fetch, timeoutMs = 8000 } = {}) {
+  let link, channels;
+  try { link = new URL(publicUrl); channels = configuredChannels(channelIds); } catch { throw failure('CONFIG', 'rejected'); }
+  if (typeof token !== 'string' || !/^\S{1,512}$/.test(token)
     || typeof fetchImpl !== 'function' || !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 10000
     || link.protocol !== 'https:' || link.username || link.password || link.search || link.hash || link.href.length > 500) throw failure('CONFIG', 'rejected');
   return async function send(notification, { signal } = {}) {
     if (!notification || typeof notification !== 'object' || Array.isArray(notification)
       || Object.keys(notification).some(key => !['category', 'title', 'lines', 'theme'].includes(key))
-      || !Object.hasOwn(OPS_CHANNELS, notification.category) || !THEMES.has(notification.theme)
+      || !Object.hasOwn(channels, notification.category) || !THEMES.has(notification.theme)
       || typeof notification.title !== 'string' || notification.title.length > 100 || !notification.title.trim()
       || !Array.isArray(notification.lines) || notification.lines.length > 12
       || notification.lines.some(line => typeof line !== 'string' || line.length > 500)
@@ -75,7 +76,7 @@ export function createKookSender({ token, channelIds = OPS_CHANNELS, publicUrl, 
       ...notification.lines.map(clean).filter(Boolean).map(content => ({ type: 'section', text: plain(content) })),
       { type: 'context', elements: [plain(`运维中心：${link.href}`)] },
     ] }];
-    const content = JSON.stringify(card), body = JSON.stringify({ type: 10, target_id: OPS_CHANNELS[notification.category], content });
+    const content = JSON.stringify(card), body = JSON.stringify({ type: 10, target_id: channels[notification.category], content });
     if (content.length > 8000 || Buffer.byteLength(body) > MAX_BYTES) throw failure('INPUT', 'rejected');
     const controller = new AbortController(); let timer, abort, started = false;
     const interrupted = new Promise((_, reject) => {

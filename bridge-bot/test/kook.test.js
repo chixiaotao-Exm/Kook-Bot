@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createKookSender, DeliveryError } from '../src/kook.js';
 
 const messageId = '02f43956-814e-407b-9289-de7b9ba8c3f0';
-const token = 'fixture-only-bot-token', channelId = '7887470271136485';
+const token = 'fixture-only-bot-token', channelId = '1234567890123456';
 const notification = patch => ({ key: 'a'.repeat(64), kind: 'pr', title: 'PR #10 已打开',
   lines: ['仓库：chixiaotao-Exm/Kook-Bot', '作者：fixture-user'], theme: 'info',
   url: 'https://github.com/chixiaotao-Exm/Kook-Bot/pull/10', ...patch });

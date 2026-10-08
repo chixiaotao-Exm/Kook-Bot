@@ -9,7 +9,7 @@
     "repairBindings": [{ "probeId": "quota", "serviceId": "quota" }]
   }],
   "monitors": [
-    { "id": "quota", "name": "额度网页", "url": "https://api.chixiaotao.cn/quota/", "expectedStatus": 200 },
+    { "id": "quota", "name": "额度网页", "url": "https://api.example.com/quota/", "expectedStatus": 200 },
     { "id": "quota-health", "name": "额度服务健康", "url": "http://127.0.0.1:18998/health", "expectedStatus": 200, "jsonPath": "status", "jsonEquals": "ok", "repairTarget": { "hostId": "main", "serviceId": "quota" } }
   ]
 }

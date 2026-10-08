@@ -17,7 +17,7 @@ async function fixture(t, { publicAccess = true, fail = false } = {}) {
   let now = Date.parse('2026-09-22T00:59:00Z'), renders = 0;
   const requests = [];
   const imageRenderer = { async render() { renders++; if (fail) throw new Error('PRIVATE_KEY'); return { images: [image], accountCount: 1, generatedAt: new Date(now).toISOString() }; }, getImage: id => id === imageId ? image : null };
-  const send = createKookImageSender({ token: 'fixture-bot', channelId: '7887470271136485', fetchImpl: async (url, options) => {
+  const send = createKookImageSender({ token: 'fixture-bot', channelId: '1234567890123456', fetchImpl: async (url, options) => {
     requests.push({ url, options });
     return Response.json(url.endsWith('asset/create') ? { code: 0, data: { url: 'https://img.kookapp.cn/assets/fixture.png' } } : { code: 0, data: { msg_id: 'fixture-image-message' } });
   } });

@@ -41,8 +41,8 @@ test('asset metadata rejects a tenth page, duplicate names and out-of-range file
   }
 });
 test('configuration requires a token and explicit channel allowlist and stays on loopback', () => {
-  const env = { KOOK_TOKEN: 'fixture-only-token', KOOK_CHANNEL_IDS: '4380882890465110' };
-  const value = loadConfig(env); assert.equal(value.host, '127.0.0.1'); assert.equal(value.port, 18995); assert.deepEqual(value.channelIds, ['4380882890465110']);
+  const env = { KOOK_TOKEN: 'fixture-only-token', KOOK_CHANNEL_IDS: '1234567890123456' };
+  const value = loadConfig(env); assert.equal(value.host, '127.0.0.1'); assert.equal(value.port, 18995); assert.deepEqual(value.channelIds, ['1234567890123456']);
   assert.throws(() => loadConfig({ ...env, HOST: '0.0.0.0' }));
   assert.throws(() => loadConfig({ ...env, KOOK_CHANNEL_IDS: '' }));
   assert.throws(() => loadConfig({ ...env, KOOK_TOKEN: 'invalid\nvalue' }));

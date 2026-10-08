@@ -179,7 +179,7 @@ test('abort before and during refresh prevents later calls', async () => {
 });
 
 test('configuration and IDs cannot redirect the administrator key or target reset actions', async () => {
-  for (const baseUrl of ['https://api.chixiaotao.cn', 'http://localhost:8080', 'http://127.0.0.1:8081', 'http://127.0.0.1:8080/path', 'http://key@127.0.0.1:8080', 'http://127.0.0.1:8080/?x=1'])
+  for (const baseUrl of ['https://api.example.com', 'http://localhost:8080', 'http://127.0.0.1:8081', 'http://127.0.0.1:8080/path', 'http://key@127.0.0.1:8080', 'http://127.0.0.1:8080/?x=1'])
     assert.throws(() => new ActiveQuotaClient({ baseUrl, adminApiKey: 'test' }), error => error.code === 'CONFIG');
   const { client, calls } = fixture();
   for (const value of ['1/../../quota/reset', '1?reset=true', '0', -1, 1.5, Number.MAX_SAFE_INTEGER + 1, '9223372036854775808'])

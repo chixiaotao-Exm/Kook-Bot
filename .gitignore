@@ -9,11 +9,28 @@ ops-center/agent/config.json
 *.pem
 *.har
 *.key
+*.p12
+*.pfx
+*.jks
+id_rsa
+id_ed25519
+.netrc
+.secrets/
+credentials.json
+token.json
+cookies.txt
+cookies.json
+*.sqlite
+*.sqlite3
+*.db
 **/data/
 **/release/
 **/output/
 **/DEPLOYED.md
 **/VERIFICATION.md
+**/DEPLOYMENT-*.md
+# Local-only deployment helpers; project deploy/ templates remain tracked.
+/deploy/
 
 # Installed dependencies, Python caches, and temporary files
 node_modules/

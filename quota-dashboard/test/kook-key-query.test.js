@@ -7,7 +7,7 @@ import { KookKeyQueryBot, parseKeyQuery, formatKeyUsageReply } from '../src/kook
 import { KeyUsageClient, KeyUsageError } from '../src/key-usage.js';
 import { createKookQueryReply } from '../src/kook-query-reply.js';
 
-const SELF = '380108001', CHANNEL = '7887470271136485', USER = '1122334455';
+const SELF = '380108001', CHANNEL = '1234567890123456', USER = '1122334455';
 const KEY = 'sk-fixture_never_production_1234';
 const NOW = Date.parse('2026-09-20T15:00:00Z');
 const message = (overrides = {}) => ({ channel_type: 'GROUP', type: 9, target_id: CHANNEL, author_id: USER,

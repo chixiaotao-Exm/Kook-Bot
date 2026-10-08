@@ -2,6 +2,7 @@
 import {CHANNEL_ID} from './domain.js';
 const token=process.env.KOOK_TOKEN?.trim();
 if(!token)throw Error('KOOK token missing');
+if(!/^\d{5,30}$/.test(process.env.KOOK_CHANNEL_ID?.trim()||'')||/^0+$/.test(CHANNEL_ID))throw Error('KOOK_CHANNEL_ID is required');
 for(const route of ['user/me','channel/view?target_id='+CHANNEL_ID]){
  const r=await fetch('https://www.kookapp.cn/api/v3/'+route,{headers:{Authorization:'Bot '+token},redirect:'error',signal:AbortSignal.timeout(12000)});
  const j=await r.json();if(!r.ok||j.code!==0)throw Error('KOOK connection check failed');
