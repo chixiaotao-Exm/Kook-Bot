@@ -124,6 +124,39 @@ class GmailReaderTests(unittest.TestCase):
         self.assertEqual(len(result["messages"]), 50)
         self.assertTrue(result["truncated"])
 
+    def test_pages_cover_more_than_fifty_messages_without_replaying_new_arrivals(self):
+        client = FakeIMAP()
+        client.messages = {str(number): mail_bytes() for number in range(1, 121)}
+        result, _ = self.run_reader(client)
+        seen = [message["id"] for message in result["messages"]]
+        self.assertEqual(result["nextCursor"], "7788:71")
+        client.messages["121"] = mail_bytes()
+        while result["nextCursor"]:
+            result, _ = self.run_reader(client, {"sinceMs": STAMP - 1000, "cursor": result["nextCursor"]})
+            seen.extend(message["id"] for message in result["messages"])
+        self.assertEqual(len(seen), 120)
+        self.assertEqual(len(set(seen)), 120)
+        self.assertNotIn("7788:121", seen)
+        self.assertEqual(seen[-1], "7788:1")
+
+    def test_pagination_advances_even_when_a_page_has_only_oversized_messages(self):
+        client = FakeIMAP()
+        client.messages = {str(number): mail_bytes() for number in range(1, 4)}
+        client.sizes["3"] = reader.MAX_MESSAGE_BYTES + 1
+        result, _ = self.run_reader(client, {"sinceMs": STAMP - 1000, "limit": 1})
+        self.assertEqual(result["messages"], [])
+        self.assertTrue(result["skipped"])
+        self.assertEqual(result["nextCursor"], "7788:3")
+        result, _ = self.run_reader(client, {"sinceMs": STAMP - 1000, "limit": 1, "cursor": result["nextCursor"]})
+        self.assertEqual(result["messages"][0]["id"], "7788:2")
+
+    def test_cursor_rejects_a_changed_uidvalidity_before_search(self):
+        client = FakeIMAP()
+        with self.assertRaisesRegex(reader.ReaderError, "^mailbox_changed$"):
+            self.run_reader(client, {"sinceMs": STAMP, "cursor": "8899:7"})
+        self.assertFalse(any(command[0] == "search" for command in client.commands))
+        self.assertTrue(client.logged_out)
+
     def test_size_checked_before_body_and_large_messages_skipped(self):
         client = FakeIMAP()
         client.sizes["7"] = reader.MAX_MESSAGE_BYTES + 1
@@ -210,7 +243,9 @@ class GmailReaderTests(unittest.TestCase):
     def test_invalid_request_no_connection(self):
         for request in ({}, [], {"sinceMs": True}, {"sinceMs": -1}, {"sinceMs": float("inf")},
                         {"sinceMs": STAMP, "limit": 51}, {"sinceMs": STAMP, "limit": True},
-                        {"sinceMs": STAMP, "limit": 0}):
+                        {"sinceMs": STAMP, "limit": 0}, {"sinceMs": STAMP, "cursor": "1:2\r\nINBOX"},
+                        {"sinceMs": STAMP, "cursor": "0:1"}, {"sinceMs": STAMP, "cursor": "1:0"},
+                        {"sinceMs": STAMP, "cursor": []}, {"sinceMs": STAMP, "cursor": "1:" + "1" * 21}):
             with self.subTest(request=request), self.assertRaisesRegex(reader.ReaderError, "^invalid_config$"):
                 reader.read_receipts(request, ENV, lambda *_a, **_k: self.fail("must not connect"))
 
@@ -244,7 +279,7 @@ class GmailReaderTests(unittest.TestCase):
         client = FakeIMAP()
         client.messages = {}
         result, _ = self.run_reader(client)
-        self.assertEqual(result, {"messages": [], "truncated": False})
+        self.assertEqual(result, {"messages": [], "truncated": False, "skipped": False, "nextCursor": None})
 
     def test_missing_validity_fails_closed(self):
         client = FakeIMAP()

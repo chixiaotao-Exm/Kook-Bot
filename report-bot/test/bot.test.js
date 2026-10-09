@@ -679,31 +679,49 @@ test('known not-sent results remain distinct from successful accounts in the bat
 });
 
 for (const kind of ['verification', 'unknown']) {
-  test(`a ${kind} result stops remaining accounts without retrying earlier accounts`, async t => {
+  test(`a ${kind} result continues remaining accounts without retrying any account`, async t => {
     let count = 0;
     const h = await setup(t, { getReporters: async () => accounts(), submit: async () => ({ kind: count++ ? kind : 'success' }) });
     const card = await h.preview(); await h.handle(h.click(card));
-    assert.equal(count, 2); assert.equal(h.store.data.attempts.length, 2);
-    assert.deepEqual(h.store.data.reports.player_01.results.map(item => item.kind), ['success', kind, 'not_sent']);
-    assert.match(h.sends.at(-1).text, /已停止本批后续提交/);
-    await h.handle(h.click(card)); assert.equal(count, 2);
+    assert.equal(count, 3); assert.equal(h.store.data.attempts.length, 3);
+    assert.deepEqual(h.store.data.reports.player_01.results.map(item => item.kind), ['success', kind, kind]);
+    assert.doesNotMatch(h.sends.at(-1).text, /已停止本批后续提交/);
+    await h.handle(h.click(card)); assert.equal(count, 3);
   });
 }
 
-test('shutdown or timeout preserves the active account as unknown and never starts remaining accounts', async t => {
+test('a timeout continues the batch, while shutdown cancels all remaining accounts', async t => {
   for (const shutdown of [true, false]) {
-    let started, finish, count = 0;
+    let started, count = 0; const finishes = [];
     const gate = new Promise(resolve => { started = resolve; });
     const h = await setup(t, { getReporters: async () => accounts(), timeouts: { submit: shutdown ? 1000 : 15 },
-      submit: async () => { if (!count++) return { kind: 'success' }; started(); return new Promise(resolve => { finish = resolve; }); } });
+      submit: async () => { if (!count++) return { kind: 'success' }; started(); return new Promise(resolve => { finishes.push(resolve); }); } });
     const card = await h.preview(); const work = h.handle(h.click(card)); await gate;
     if (shutdown) await h.bot.close();
-    await work; finish({ kind: 'success' }); await tick();
+    await work; for (const finish of finishes) finish({ kind: 'success' }); await tick();
     const disk = await openStore(h.file);
-    assert.equal(count, 2); assert.equal(disk.data.reports.player_01.finished, true);
-    assert.deepEqual(disk.data.reports.player_01.results.map(item => item.kind), ['success', 'unknown', 'not_sent']);
+    assert.equal(count, shutdown ? 2 : 3); assert.equal(disk.data.reports.player_01.finished, true);
+    assert.deepEqual(disk.data.reports.player_01.results.map(item => item.kind), ['success', 'unknown', shutdown ? 'not_sent' : 'unknown']);
     assert.deepEqual(Object.keys(disk.data.drafts), []);
   }
+});
+
+test('all fifty accounts are attempted once before any of their receipts become eligible for reconciliation', async t => {
+  const fifty = parseReporters(Array.from({ length: 50 }, (_, index) =>
+    `${76561198000000001n + BigInt(index)}\tReporter_${index}`).join('\n'), fixedSettings);
+  const submitted = new Set(); let h;
+  h = await setup(t, { getReporters: async () => fifty, mailEnabled: true, submit: async (_draft, { profile }) => {
+    assert.equal(h.bot.mailCandidates().length, 0);
+    assert.equal(submitted.has(profile.steam), false); submitted.add(profile.steam);
+    return { kind: 'unknown' };
+  } });
+  const card = await h.preview(); await h.handle(h.click(card));
+  assert.equal(submitted.size, 50); assert.equal(h.store.data.attempts.length, 50);
+  assert.equal(h.bot.mailCandidates().length, 50);
+  assert.equal(new Set(h.bot.mailCandidates().map(item => item.mailRef)).size, 50);
+  assert.match(h.sends.at(-1).text, /统一核对 50 次/);
+  assert.match(h.sends.at(-1).text, /结果未知 50/);
+  await h.handle(h.click(card)); assert.equal(h.store.data.attempts.length, 50);
 });
 
 test('each account has an independent mail reference and receipt, including after restart', async t => {

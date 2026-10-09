@@ -113,30 +113,52 @@ function validatedMessage(message, { recipient, allowedSenders, at, now, legacy 
   return receipt ? { ...receipt, message, receivedAt } : null;
 }
 
-/** Correlate authenticated acknowledgement/detail emails using a unique official ticket. */
-export function matchReceipts(messages, record, { mailbox, allowedSenders = DEFAULT_SENDERS, now = Date.now() } = {}) {
-  if (!Array.isArray(messages) || messages.length > 50 || !record || !REPORT_KINDS.has(record.kind) || !NICKNAME.test(record.player ?? '')) return null;
+/** Correlate pages without retaining email bodies. Ambiguity on a later page still rejects the match. */
+export function createReceiptMatcher(record, { mailbox, allowedSenders = DEFAULT_SENDERS, now = Date.now() } = {}) {
+  const invalid = { add() {}, result: () => null };
+  if (!record || !REPORT_KINDS.has(record.kind) || !NICKNAME.test(record.player ?? '')) return invalid;
   const at = integerTime(record.at);
   const currentTime = integerTime(now);
   const recipient = address(mailbox);
   const legacy = record.mailRef === undefined || record.mailRef === null;
-  if (!at || !currentTime || !recipient || !Array.isArray(allowedSenders) || (!legacy && (typeof record.mailRef !== 'string' || !MAIL_REF.test(record.mailRef)))) return null;
-  const trusted = messages.map(message => validatedMessage(message, { recipient, allowedSenders, at, now: currentTime, legacy })).filter(Boolean);
-  const correlated = trusted.filter(({ message }) => {
-    if (legacy) return tokenPresent(message.subject, record.player);
-    const text = `${message.subject}\n${message.bodyText}`;
-    return referencePresent(text, record.mailRef) && tokenPresent(text, record.player);
-  });
-  if (correlated.some(item => item.tickets.size > 1)) return null;
-  const tickets = new Set(correlated.flatMap(item => [...item.tickets]));
-  if (tickets.size !== 1) return null;
-  const [ticketId] = tickets;
-  const acknowledgements = trusted.filter(item => item.acknowledged && item.tickets.size === 1 && item.tickets.has(ticketId));
-  if (!acknowledgements.length) return null;
-  // Prefer the earliest authenticated receipt. A later unrelated reply cannot become the proof.
-  const acknowledgement = acknowledgements.sort((a, b) => a.receivedAt - b.receivedAt)[0];
-  const detail = correlated.filter(item => item.tickets.has(ticketId)).sort((a, b) => a.receivedAt - b.receivedAt)[0];
-  return { messageId: acknowledgement.message.id, ticketId, receivedAt: Math.max(acknowledgement.receivedAt, detail.receivedAt) };
+  if (!at || !currentTime || !recipient || !Array.isArray(allowedSenders) || (!legacy && (typeof record.mailRef !== 'string' || !MAIL_REF.test(record.mailRef)))) return invalid;
+  const acknowledgements = new Map(), details = new Map(), tickets = new Set();
+  let ambiguous = false;
+  return {
+    add(messages) {
+      if (!Array.isArray(messages) || messages.length > 50) { ambiguous = true; return; }
+      for (const message of messages) {
+        const item = validatedMessage(message, { recipient, allowedSenders, at, now: currentTime, legacy });
+        if (!item) continue;
+        const [ticketId] = item.tickets;
+        if (item.acknowledged && item.tickets.size === 1
+          && (!acknowledgements.has(ticketId) || acknowledgements.get(ticketId).receivedAt > item.receivedAt))
+          acknowledgements.set(ticketId, { messageId: message.id, receivedAt: item.receivedAt });
+        const text = `${message.subject}\n${message.bodyText}`;
+        const correlated = legacy ? tokenPresent(message.subject, record.player)
+          : referencePresent(text, record.mailRef) && tokenPresent(text, record.player);
+        if (!correlated) continue;
+        if (item.tickets.size > 1) { ambiguous = true; continue; }
+        if (item.tickets.size === 1) {
+          tickets.add(ticketId);
+          if (!details.has(ticketId) || details.get(ticketId) > item.receivedAt) details.set(ticketId, item.receivedAt);
+        }
+      }
+    },
+    result() {
+      if (ambiguous || tickets.size !== 1) return null;
+      const [ticketId] = tickets, acknowledgement = acknowledgements.get(ticketId);
+      return acknowledgement ? { messageId: acknowledgement.messageId, ticketId,
+        receivedAt: Math.max(acknowledgement.receivedAt, details.get(ticketId)) } : null;
+    }
+  };
+}
+
+/** Correlate one bounded page, retaining the existing single-message API. */
+export function matchReceipts(messages, record, options) {
+  const matcher = createReceiptMatcher(record, options);
+  matcher.add(messages);
+  return matcher.result();
 }
 
 /** Match one message when the acknowledgement and correlation are in the same email. */

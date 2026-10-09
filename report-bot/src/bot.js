@@ -61,7 +61,8 @@ export class ReportBot {
 
   mailCandidates() {
     if (!this.mailEnabled || !this.ready || this.closed) return [];
-    return Object.entries(this.store.data.reports).flatMap(([key, parent]) => reportEntries(parent)
+    return Object.entries(this.store.data.reports).filter(([, parent]) => !parent.results || parent.finished)
+      .flatMap(([key, parent]) => reportEntries(parent)
       .filter(record => ['success', 'unknown', 'verification'].includes(record.kind) && !record.mail
         && record.at >= this.now() - 2 * DAY_MS
         && (!record.mailboxHash || !this.receiptMailboxHash || record.mailboxHash === this.receiptMailboxHash))
@@ -73,7 +74,7 @@ export class ReportBot {
     const task = this.queue.then(async () => {
       if (!this.mailEnabled || !this.ready || this.closed) return false;
       const parent = this.store.data.reports[candidate.key];
-      if (!parent || parent.batchId !== candidate.batchId) return false;
+      if (!parent || parent.batchId !== candidate.batchId || (parent.results && !parent.finished)) return false;
       const index = parent.results?.findIndex(item => item.reporterId === candidate.reporterId);
       const record = parent.results ? parent.results[index] : parent;
       if (!record || record.at !== candidate.at || record.mailRef !== candidate.mailRef || record.mail
@@ -384,16 +385,14 @@ export class ReportBot {
       item.message = RESULT_MESSAGES[item.kind];
       if (!await this.persist()) { item.kind = 'unknown'; item.message = RESULT_MESSAGES.unknown; return; }
       if (item.kind === 'success') this.counts.success++;
-      // A challenge, rate limit or ambiguous POST stops this batch; never switch accounts to retry it.
-      if (['verification', 'unknown'].includes(item.kind)) break;
+      // Record this account once, then proceed with the next confirmed identity.
+      // Mail reconciliation starts only after the complete batch has finished.
     }
     record.finished = true; record.kind = batchKind(record.results); record.message = RESULT_MESSAGES[record.kind];
     if (!await this.persist()) return;
     const mailCount = record.results.filter(item => item.mailRef && item.kind !== 'not_sent'
       && (!this.receiptMailboxHash || item.mailboxHash === this.receiptMailboxHash)).length;
-    const stopped = record.results.some(item => ['verification', 'unknown'].includes(item.kind));
     await this.reply({ text: `${draft.player}\n${batchSummary(record)}`
-      + (stopped ? '\n遇到验证或结果未知，已停止本批后续提交；不会自动重试。' : '')
-      + (mailCount ? `\n将自动核对其中 ${mailCount} 次提交的 Gmail 官方回执。` : '') }, signal);
+      + (mailCount ? `\n本批处理已结束，将统一核对 ${mailCount} 次提交的 Gmail 官方回执；不会重复提交。` : '') }, signal);
   }
 }
