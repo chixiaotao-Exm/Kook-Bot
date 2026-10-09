@@ -1,6 +1,6 @@
 # KOOK PUBG 举报助手
 
-独立运行，只处理私密环境配置 `KOOK_CHANNEL_ID` 指定的文字频道。频道内真人可发送昵称或只含昵称的截图；忽略其他频道、私聊和机器人消息。本人确认预览后，按 TXT 文件中的举报人账号列表依次向 PUBG 官方客服提交，每个账号最多一次。
+独立运行，只处理私密环境配置 `KOOK_CHANNEL_ID` 指定的文字频道。频道内真人可发送昵称或只含昵称的截图；忽略其他频道、私聊和机器人消息。本人确认预览后，按 TXT 文件中的举报人账号列表向 PUBG 官方客服提交，每个账号最多一次。默认逐个处理，也可配置独立浏览器通道进行异步并发。
 
 ## 使用
 
@@ -11,7 +11,7 @@
 
 标题、正文使用中性模板，请官方核查，不凭昵称编造作弊行为。客服身份使用管理员私密配置的资料，邮箱、Steam ID不在KOOK频道展示；不会把昵称截图当成作弊证据提交。
 
-官方明确返回成功提示才显示成功。发送前失败显示尚未提交；官方要求验证时记录需验证；发送后超时、断线或回执不明保持结果未知。各账号依次尝试一次，单个账号的未发送、需验证或结果未知不会中断其余账号；整批处理完后再统一核验 Gmail 回执，不重试已处理的账号。服务关闭、取消或状态保存失败仍会停止后续任务。同一昵称可以重新生成预览并人工确认再次提交；同一张确认卡片只执行一批。机器人不设置每日总额、短时冷却、每小时预览/OCR次数、待处理任务数、身份查询次数或状态记录条数的使用门槛，任务按顺序处理。
+官方明确返回成功提示才显示成功。发送前失败显示尚未提交；官方要求验证时记录需验证；发送后超时、断线或回执不明保持结果未知。各账号最多尝试一次，单个账号的未发送、需验证或结果未知不会中断其余账号；整批处理完后再统一核验 Gmail 回执，不重试已处理的账号。服务关闭、取消或状态保存失败仍会停止领取后续账号。同一昵称可以重新生成预览并人工确认再次提交；同一张确认卡片只执行一批。机器人不设置每日总额、短时冷却、每小时预览/OCR次数、待处理任务数、身份查询次数或状态记录条数的使用门槛，批次按顺序处理，批内账号可配置并发。
 
 ## TXT 举报人账号
 
@@ -56,7 +56,7 @@ npm start
 
 `PADDLEOCR_ENDPOINT`固定官方jobs接口；Token放`.env`。仅从KOOK图片域名下载最多5MiB的PNG/JPEG/WebP，上传单个OCR任务并限时轮询，再读取官方域JSONL；不下载标注结果图、不保存原截图。官方验证/限流不绕过。文本昵称无需OCR，不调用大模型。
 
-systemd示例见 `deploy/kook-report-bot.service`，运行用户 `kook-report`，目录 `/opt/kook-report-bot`，只读程序目录、私有data、双层单实例锁。服务健康地址为 `127.0.0.1:18992/health`，不含昵称、邮件、Token或原始接口响应。SIGTERM取消未发送任务；已发送结果不明的记录会阻止自动重发。
+systemd示例见 `deploy/kook-report-bot.service`，运行用户 `kook-report`，目录 `/opt/kook-report-bot`，只读程序目录、私有data、双层单实例锁。服务健康地址为 `127.0.0.1:18992/health`，不含昵称、邮件、Token或原始接口响应。SIGTERM停止领取未发送任务、取消在途操作并保存不确定结果，全局关闭截止时间为20秒，不保证全部浏览器清理均已完成；已发送结果不明的记录会阻止自动重发。
 
 `.env`、`data/`和HAR都不入Git。各账号回执、批次和去重状态私密保存；状态文件异常时停止提交，避免重复举报。`node --env-file=.env src/check-connections.js`只检查KOOK及官方会话，不会发送举报或启动OCR任务。
 
@@ -71,6 +71,42 @@ systemd示例见 `deploy/kook-report-bot.service`，运行用户 `kook-report`�
 适配器需要 `REPORT_BROWSER_TOKEN`（64位随机十六进制）和可选的 `REPORT_UPSTREAM_PROXY`。使用带 `-sid-会话ID-t-` 用户名格式的 SOCKS5 代理时，每次准备新的举报会话生成随机 SID，同次任务的所有连接保持 SID 不变。新 SID 是否分配不同出口由代理供应商决定，不能保证每次 IP 唯一；代理故障时不回退直连。代理凭据仅保存在私密环境文件，不传给 KOOK、日志或 Git。
 
 构建 `docker build -t kook-report-browser ./browser`，以环境文件注入配置，并仅映射 `127.0.0.1:8191:8191`。机器人配置 `REPORT_BROWSER_URL=http://127.0.0.1:8191` 与相同 `REPORT_BROWSER_TOKEN` 后启用。浏览器限制为一个任务，过期自动销毁；独立容器设置内存、进程数和重启策略。遇到官方人工验证、代理故障或结果未知时记录该账号的结果并结束其会话，不更换 SID 重发该账号；随后处理本批下一个账号。
+
+### 三路异步并发
+
+耗时主要来自代理、页面加载与官方请求等待，可同时使用三个独立浏览器容器。Node.js 通过异步网络 I/O 调度账号，不需要创建工作线程；每个容器仍只接收一个会话，账号之间隔离 Cookie、浏览器和随机 SID。三路并发不是实测三倍加速，最终耗时受官方响应、代理质量及服务器资源影响。
+
+在 `browser/.env` 配置适配器所需的同一 `REPORT_BROWSER_TOKEN` 和可选 `REPORT_UPSTREAM_PROXY`，然后启动 Compose 的可选 `parallel` 配置：
+
+```sh
+cd browser
+docker compose --profile parallel up -d --build
+```
+
+默认 `docker compose up -d --build` 仍只启动8191单容器。启用 `parallel` 后，三个容器分别为 `kook-report-browser`、`kook-report-browser-8192`、`kook-report-browser-8193`，只绑定 `127.0.0.1:8191`、`127.0.0.1:8192`、`127.0.0.1:8193`。每容器沿用1GiB内存及交换总额、1 CPU、256个进程、256MiB共享内存限制；启用前应为三个容器和机器人预留足够资源。
+
+在机器人的 `.env` 设置：
+
+```dotenv
+REPORT_BROWSER_URLS=http://127.0.0.1:8191,http://127.0.0.1:8192,http://127.0.0.1:8193
+REPORT_CONCURRENCY=3
+REPORT_BROWSER_TOKEN=与浏览器容器一致的64位随机十六进制Token
+```
+
+`REPORT_BROWSER_URLS` 是逗号分隔的独立适配器地址列表，优先于旧配置 `REPORT_BROWSER_URL`。地址仅支持 `http://127.0.0.1:8191` 至 `http://127.0.0.1:8194`，每个地址必须对应独立容器。`REPORT_CONCURRENCY` 默认为1，必须为1至4的整数，且不得超过独立浏览器地址数量。修改配置后重启机器人。保留旧的单地址配置和默认并发数即可继续使用单容器部署，但浏览器镜像也须升级至本版。
+
+每个并发槽位确认对应浏览器健康可用后才领取下一账号。正常运行时，单次浏览器会话清理请求最多等待12秒，清理完成且槽位可用后才复用。浏览器不可用或会话无法清理时，该槽位退出本批，其余健康槽位继续处理；全部槽位不可用时，尚未领取的账号保持“未发送”。已处理账号不会被其他槽位重试。邮箱核验仍等整批所有槽位结束后统一进行。
+
+若由 systemd 管理容器生命周期，先用 `docker compose --profile parallel create --build` 创建容器，避免同时使用 Compose 启动和 systemd 启动。关闭这些容器的 Docker 自动重启策略，由 systemd 负责重启；独立使用 Compose 时仍保留默认 `on-failure`。8191继续使用 `deploy/kook-report-browser.service`；把新增的 `deploy/kook-report-browser@.service` 安装到 `/etc/systemd/system/` 后执行：
+
+```sh
+docker update --restart=no kook-report-browser kook-report-browser-8192 kook-report-browser-8193
+systemctl daemon-reload
+systemctl enable --now kook-report-browser.service kook-report-browser@8192.service kook-report-browser@8193.service
+systemctl status kook-report-browser.service kook-report-browser@8192.service kook-report-browser@8193.service
+```
+
+已有手工创建的8191容器时，必须先升级至本版浏览器镜像。本版调度器依赖健康接口的 `available` 字段，旧版镜像缺少该字段，不会被视为可用槽位。只有8191已运行本版镜像时，才可保留该容器和服务，只创建 `report-browser-2`、`report-browser-3` 两个新容器：`docker compose --profile parallel create --build report-browser-2 report-browser-3`。之后仍需对三个容器执行上面的 `docker update --restart=no`。每个实例通过对应名称启动并停止容器；实例端口与 Compose 容器名中的端口后缀必须一致。以后用 Compose 重新创建由 systemd 管理的容器时，也应重新关闭 Docker 自动重启策略。
 
 ## Gmail 官方回执核验
 

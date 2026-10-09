@@ -30,16 +30,18 @@ async function bounded(operation, signal, timeoutMs) {
 
 export class ReportBot {
   constructor({ store, send, submit, ocr, enabled = false, now = Date.now, resolveAuthor, resolveButtonAuthor,
-    timeouts = {}, mailEnabled = false, getReporters, receiptMailbox } = {}) {
+    timeouts = {}, mailEnabled = false, getReporters, receiptMailbox, concurrency = 1, prepareWorker } = {}) {
     if (!store?.data || typeof store.save !== 'function' || typeof send !== 'function' || typeof submit !== 'function'
       || typeof now !== 'function' || typeof enabled !== 'boolean'
-      || [ocr, resolveAuthor, resolveButtonAuthor, getReporters].some(fn => fn != null && typeof fn !== 'function'))
+      || !Number.isInteger(concurrency) || concurrency < 1 || concurrency > 4
+      || [ocr, resolveAuthor, resolveButtonAuthor, getReporters, prepareWorker].some(fn => fn != null && typeof fn !== 'function'))
       throw new Error('Invalid report bot configuration');
-    Object.assign(this, { store, send, submit, ocr, enabled, now, resolveAuthor, resolveButtonAuthor, mailEnabled, getReporters });
+    Object.assign(this, { store, send, submit, ocr, enabled, now, resolveAuthor, resolveButtonAuthor, mailEnabled, getReporters,
+      concurrency, prepareWorker });
     this.receiptMailboxHash = receiptMailbox ? mailboxHash(receiptMailbox) : null;
     this.reporterCount = null;
-    this.timeouts = { storage: 5000, identity: 8000, send: 10000, ocr: 85000, submit: 65000, ...timeouts };
-    if (Object.values(this.timeouts).some(value => !Number.isInteger(value) || value < 1 || value > 90000))
+    this.timeouts = { storage: 5000, identity: 8000, send: 10000, ocr: 85000, submit: 65000, worker: 35000, ...timeouts };
+    if (Object.values(this.timeouts).some(value => !Number.isInteger(value) || value < 1 || value > 120000))
       throw new Error('Invalid report bot timeouts');
     // Compatible with the initial in-memory store shape; disk stores are strictly validated by openStore.
     const state = store.data;
@@ -47,14 +49,14 @@ export class ReportBot {
     state.attempts ??= []; state.previews ??= [];
     state.rate ??= { globalAt: null, users: Object.create(null) };
     state.rate.users = Object.assign(Object.create(null), state.rate.users);
-    this.queue = Promise.resolve(); this.pending = 0; this.active = 0; this.ready = true; this.closed = false;
+    this.queue = Promise.resolve(); this.pending = 0; this.active = 0; this.inFlight = 0; this.ready = true; this.closed = false;
     this.controller = new AbortController(); this.lastError = null;
     this.counts = { received: 0, previews: 0, attempts: 0, success: 0, rejected: 0, failures: 0 };
   }
 
   status() {
     return { ready: this.ready && !this.closed, enabled: this.enabled, pending: this.pending, active: this.active,
-      lastError: this.lastError, reporterCount: this.reporterCount, ...this.counts };
+      lastError: this.lastError, reporterCount: this.reporterCount, concurrency: this.concurrency, inFlight: this.inFlight, ...this.counts };
   }
 
   async close() { this.closed = true; this.controller.abort(); await this.queue; }
@@ -313,11 +315,12 @@ export class ReportBot {
     }
     if (!result && (signal.aborted || this.closed)) result = { kind: 'not_sent' };
     if (!result) {
-      this.counts.attempts++;
+      this.counts.attempts++; this.inFlight++;
       try { result = await bounded(currentSignal => this.submit({ ...draft,
         ...(mailInfo.mailRef ? { subject: `${draft.subject} [${mailInfo.mailRef}]` } : {})
       }, { signal: currentSignal }), signal, this.timeouts.submit); }
       catch { result = { kind: 'unknown' }; }
+      finally { this.inFlight--; }
     }
     // Never echo exception text, official HTML, requester identity, or unvalidated result messages.
     const kind = ['success', 'not_sent', 'verification', 'unknown'].includes(result?.kind) ? result.kind : 'unknown';
@@ -362,32 +365,51 @@ export class ReportBot {
     this.store.data.reports[key] = record;
     if (!await this.persist()) return;
     let announced = false;
-    try { announced = Boolean(await this.reply({ text: `⏳ 正在处理 ${draft.player}，共 ${profiles.length} 个账号，将依次提交。请勿重复操作。` }, signal)); }
+    try { announced = Boolean(await this.reply({ text: `⏳ 正在处理 ${draft.player}，共 ${profiles.length} 个账号，最多 ${this.concurrency} 个账号并发提交。请勿重复操作。` }, signal)); }
     catch { /* If delivery is uncertain, keep all accounts as not sent. */ }
-    for (const [index, profile] of profiles.entries()) {
-      if (!announced || signal.aborted || this.closed || !this.ready) break;
-      const item = record.results[index];
-      Object.assign(item, { at: this.now(), kind: 'pending', message: RESULT_MESSAGES.pending,
-        ...(this.mailEnabled ? { mailRef: 'KOOK-' + randomUUID().replaceAll('-', '') } : {}) });
-      this.store.data.attempts.push({ at: item.at, author: draft.author });
-      if (!await this.persist()) return;
-      let result;
-      if (signal.aborted || this.closed) result = { kind: 'not_sent' };
-      else {
-        this.counts.attempts++;
-        try {
-          result = await bounded(currentSignal => this.submit({ ...draft,
-            ...(item.mailRef ? { subject: `${draft.subject} [${item.mailRef}]` } : {})
-          }, { signal: currentSignal, profile }), signal, this.timeouts.submit);
-        } catch { result = { kind: 'unknown' }; }
+    let nextIndex = 0;
+    const canStart = () => announced && !signal.aborted && !this.closed && this.ready && nextIndex < profiles.length;
+    const worker = async workerIndex => {
+      while (canStart()) {
+        if (this.prepareWorker) {
+          try {
+            if (await bounded(currentSignal => this.prepareWorker(workerIndex, { signal: currentSignal }),
+              signal, this.timeouts.worker) !== true) return;
+          } catch { return; }
+        }
+        // Claim only after the isolated transport is available. Failed workers
+        // leave every unclaimed identity for the remaining healthy workers.
+        if (!canStart()) return;
+        const index = nextIndex++, profile = profiles[index], item = record.results[index];
+        Object.assign(item, { at: this.now(), kind: 'pending', message: RESULT_MESSAGES.pending,
+          ...(this.mailEnabled ? { mailRef: 'KOOK-' + randomUUID().replaceAll('-', '') } : {}) });
+        this.store.data.attempts.push({ at: item.at, author: draft.author });
+        if (!await this.persist()) return;
+        let result;
+        // Another worker may have failed its durability barrier while this one
+        // was waiting. No new submission may start after that shared failure.
+        if (signal.aborted || this.closed || !this.ready) result = { kind: 'not_sent' };
+        else {
+          this.counts.attempts++; this.inFlight++;
+          try {
+            result = await bounded(currentSignal => {
+              if (!this.ready || this.closed || currentSignal.aborted) return { kind: 'not_sent' };
+              return this.submit({ ...draft,
+                ...(item.mailRef ? { subject: `${draft.subject} [${item.mailRef}]` } : {})
+              }, { signal: currentSignal, profile, workerIndex });
+            }, signal, this.timeouts.submit);
+          } catch { result = { kind: 'unknown' }; }
+          finally { this.inFlight--; }
+        }
+        item.kind = ['success', 'not_sent', 'verification', 'unknown'].includes(result?.kind) ? result.kind : 'unknown';
+        item.message = RESULT_MESSAGES[item.kind];
+        if (!await this.persist()) { item.kind = 'unknown'; item.message = RESULT_MESSAGES.unknown; return; }
+        if (item.kind === 'success') this.counts.success++;
       }
-      item.kind = ['success', 'not_sent', 'verification', 'unknown'].includes(result?.kind) ? result.kind : 'unknown';
-      item.message = RESULT_MESSAGES[item.kind];
-      if (!await this.persist()) { item.kind = 'unknown'; item.message = RESULT_MESSAGES.unknown; return; }
-      if (item.kind === 'success') this.counts.success++;
-      // Record this account once, then proceed with the next confirmed identity.
-      // Mail reconciliation starts only after the complete batch has finished.
-    }
+    };
+    await Promise.all(Array.from({ length: Math.min(this.concurrency, profiles.length) }, (_, index) => worker(index)));
+    // Mail reconciliation starts only after all workers and their durable
+    // result writes have finished. No identity is retried within this batch.
     record.finished = true; record.kind = batchKind(record.results); record.message = RESULT_MESSAGES[record.kind];
     if (!await this.persist()) return;
     const mailCount = record.results.filter(item => item.mailRef && item.kind !== 'not_sent'

@@ -594,6 +594,167 @@ test('status exposes safe counts and does not include users, targets, payloads o
 const fixedSettings = { email: 'receipts@gmail.com', language: 'english' };
 const accountText = '76561198000000001\tReporter_1\n76561198000000002\tReporter_2\n76561198000000003\tReporter_3';
 const accounts = () => parseReporters(accountText, fixedSettings);
+const manyAccounts = length => parseReporters(Array.from({ length }, (_, index) =>
+  `${76561198000000001n + BigInt(index)}\tReporter_${index + 1}`).join('\n'), fixedSettings);
+const deferred = () => {
+  let resolve;
+  const promise = new Promise(done => { resolve = done; });
+  return { promise, resolve };
+};
+
+test('batch concurrency and preparation settings reject unsupported limits', () => {
+  const options = { store: { data: {}, save: async () => {} }, send: async () => {}, submit: async () => {} };
+  for (const concurrency of [0, -1, 1.5, 5, '3', NaN]) {
+    assert.throws(() => new ReportBot({ ...options, concurrency }), /Invalid report bot configuration/);
+  }
+  assert.throws(() => new ReportBot({ ...options, prepareWorker: true }), /Invalid report bot configuration/);
+  assert.throws(() => new ReportBot({ ...options, timeouts: { submit: 120001 } }), /Invalid report bot timeouts/);
+  const bot = new ReportBot({ ...options, concurrency: 4, timeouts: { submit: 110000, worker: 120000 } });
+  assert.equal(bot.status().concurrency, 4); assert.equal(bot.status().inFlight, 0);
+});
+
+test('three isolated workers submit each account once and persist out-of-order results before reconciling mail', async t => {
+  const profiles = manyAccounts(7), entered = profiles.map(deferred), finishes = profiles.map(deferred);
+  const kinds = ['success', 'unknown', 'verification', 'not_sent', 'success', 'unknown', 'success'];
+  const calls = [], durableSnapshots = [], activeWorkers = new Set(); let h, peak = 0;
+  h = await setup(t, { concurrency: 3, getReporters: async () => profiles, mailEnabled: true,
+    submit: async (draft, { profile, workerIndex }) => {
+      const index = profiles.findIndex(item => item.steam === profile.steam);
+      const duplicateWorker = activeWorkers.has(workerIndex);
+      activeWorkers.add(workerIndex); peak = Math.max(peak, activeWorkers.size);
+      const saved = durableSnapshots.findLast(snapshot => snapshot.reports.player_01?.results[index].kind === 'pending');
+      calls.push({ index, workerIndex, duplicateWorker, saved, draft }); entered[index].resolve();
+      await finishes[index].promise;
+      activeWorkers.delete(workerIndex);
+      return { kind: kinds[index] };
+    } });
+  const save = h.store.save;
+  h.store.save = async () => {
+    // Observe completed durability barriers without holding a Windows file
+    // read handle open while another worker atomically replaces that file.
+    const snapshot = structuredClone(h.store.data);
+    await save(); durableSnapshots.push(snapshot);
+  };
+  const card = await h.preview(), click = h.click(card);
+  const work = Promise.all([h.handle(click), h.handle(click), h.handle(h.click(card))]);
+  await Promise.all(entered.slice(0, 3).map(item => item.promise));
+  assert.equal(h.bot.status().inFlight, 3); assert.equal(calls.length, 3);
+  assert.deepEqual(calls.map(item => item.workerIndex).sort(), [0, 1, 2]);
+  assert.equal(h.bot.mailCandidates().length, 0);
+  assert.match(h.sends.at(-1).text, /最多 3 个账号并发/);
+  finishes[2].resolve(); await entered[3].promise;
+  assert.equal(durableSnapshots.at(-1).reports.player_01.results[2].kind, 'verification');
+  finishes[1].resolve(); await entered[4].promise;
+  finishes[0].resolve(); await entered[5].promise;
+  finishes[3].resolve(); await entered[6].promise;
+  assert.equal(h.store.data.reports.player_01.finished, false); assert.equal(h.bot.mailCandidates().length, 0);
+  finishes[5].resolve(); finishes[4].resolve(); finishes[6].resolve(); await work;
+  assert.equal(peak, 3); assert.equal(h.bot.status().inFlight, 0);
+  assert.equal(calls.length, profiles.length); assert.equal(calls.some(item => item.duplicateWorker), false);
+  assert.deepEqual(calls.map(item => item.index).sort((a, b) => a - b), profiles.map((_, index) => index));
+  for (const { index, saved, draft } of calls) {
+    const pending = saved.reports.player_01.results[index];
+    assert.equal(pending.kind, 'pending'); assert.ok(draft.subject.endsWith(`[${pending.mailRef}]`));
+    assert.deepEqual(Object.keys(saved.drafts), []);
+  }
+  const disk = await openStore(h.file);
+  assert.equal(disk.data.reports.player_01.finished, true);
+  assert.deepEqual(disk.data.reports.player_01.results.map(item => item.kind), kinds);
+  assert.equal(disk.data.attempts.length, profiles.length); assert.equal(h.bot.mailCandidates().length, 6);
+  assert.equal(new Set(disk.data.reports.player_01.results.map(item => item.mailRef)).size, profiles.length);
+  await h.handle(h.click(card)); assert.equal(calls.length, profiles.length);
+});
+
+for (const failure of ['unavailable', 'invalid readiness', 'exception', 'timeout']) {
+  test(`worker preparation ${failure} cannot consume an account and healthy workers finish the batch`, async t => {
+    const preparations = [], submissions = []; let failedSignal;
+    const h = await setup(t, { concurrency: 3, getReporters: async () => manyAccounts(6), timeouts: { worker: 15 },
+      prepareWorker: async (workerIndex, { signal }) => {
+        preparations.push(workerIndex);
+        if (workerIndex !== 0) return true;
+        failedSignal = signal;
+        if (failure === 'exception') throw Error('unavailable');
+        if (failure === 'timeout') return new Promise(() => {});
+        if (failure === 'invalid readiness') return undefined;
+        return false;
+      },
+      submit: async (_draft, { profile, workerIndex }) => {
+        submissions.push({ steam: profile.steam, workerIndex }); return { kind: 'success' };
+      } });
+    const card = await h.preview(); await h.handle(h.click(card));
+    assert.equal(preparations.filter(index => index === 0).length, 1);
+    assert.equal(submissions.length, 6); assert.equal(new Set(submissions.map(item => item.steam)).size, 6);
+    assert.ok(submissions.every(item => item.workerIndex !== 0));
+    assert.equal(h.store.data.attempts.length, 6); assert.equal(h.bot.status().success, 6);
+    assert.equal(failedSignal.aborted, true); assert.equal(h.store.data.reports.player_01.finished, true);
+  });
+}
+
+test('all unavailable workers leave the complete batch unclaimed and without mail references', async t => {
+  const h = await setup(t, { concurrency: 3, getReporters: async () => accounts(), mailEnabled: true,
+    prepareWorker: async () => false });
+  const card = await h.preview(); await h.handle(h.click(card));
+  assert.equal(h.submissions.length, 0); assert.equal(h.store.data.attempts.length, 0);
+  assert.ok(h.store.data.reports.player_01.results.every(item => item.kind === 'not_sent' && !item.mailRef));
+  assert.equal(h.store.data.reports.player_01.finished, true); assert.equal(h.bot.mailCandidates().length, 0);
+});
+
+test('shutdown settles three in-flight attempts and prevents every unclaimed account from starting', async t => {
+  const profiles = manyAccounts(6), entered = deferred(), late = deferred(); let count = 0;
+  const h = await setup(t, { concurrency: 3, getReporters: async () => profiles,
+    submit: async () => { if (++count === 3) entered.resolve(); await late.promise; return { kind: 'success' }; } });
+  const card = await h.preview(), work = h.handle(h.click(card)); await entered.promise;
+  assert.equal(h.bot.status().inFlight, 3); await h.bot.close(); await work;
+  late.resolve(); await tick();
+  assert.equal(count, 3); assert.equal(h.bot.status().inFlight, 0);
+  const disk = await openStore(h.file);
+  assert.equal(disk.data.reports.player_01.finished, true);
+  assert.deepEqual(disk.data.reports.player_01.results.map(item => item.kind),
+    ['unknown', 'unknown', 'unknown', 'not_sent', 'not_sent', 'not_sent']);
+  assert.equal(disk.data.attempts.length, 3);
+});
+
+test('shutdown during worker preparation does not claim an account even after a late readiness result', async t => {
+  const entered = deferred(), late = deferred(); let preparations = 0;
+  const h = await setup(t, { concurrency: 3, getReporters: async () => accounts(),
+    prepareWorker: async () => { if (++preparations === 3) entered.resolve(); await late.promise; return true; } });
+  const card = await h.preview(), work = h.handle(h.click(card)); await entered.promise;
+  await h.bot.close(); await work; late.resolve(); await tick();
+  assert.equal(h.submissions.length, 0); assert.equal(h.store.data.attempts.length, 0);
+  assert.ok(h.store.data.reports.player_01.results.every(item => item.kind === 'not_sent'));
+});
+
+test('a storage failure stops new workers while an in-flight attempt settles without retry', async t => {
+  const firstEntered = deferred(), durableSecond = deferred(), releaseSecond = deferred();
+  const failedWrite = deferred(), releaseFirst = deferred(); let h, count = 0;
+  h = await setup(t, { concurrency: 3, getReporters: async () => manyAccounts(6),
+    prepareWorker: async workerIndex => {
+      if (workerIndex === 1) await firstEntered.promise;
+      if (workerIndex === 2) await durableSecond.promise;
+      return true;
+    },
+    submit: async () => { count++; firstEntered.resolve(); await releaseFirst.promise; return { kind: 'success' }; } });
+  const save = h.store.save;
+  h.store.save = async () => {
+    const results = h.store.data.reports.player_01?.results;
+    if (results?.[2].kind === 'pending') { failedWrite.resolve(); throw Error('disk failure'); }
+    if (results?.[1].kind === 'pending') {
+      await save(); durableSecond.resolve(); await releaseSecond.promise; return;
+    }
+    return save();
+  };
+  const card = await h.preview(), work = h.handle(h.click(card)); await failedWrite.promise; await tick();
+  assert.equal(h.bot.status().ready, false); assert.equal(h.bot.status().inFlight, 1);
+  assert.equal(h.store.data.reports.player_01.finished, false);
+  // The second worker's own durability barrier succeeded. Another worker's
+  // failure must still prevent it from submitting after that await resumes.
+  releaseSecond.resolve(); await tick(); assert.equal(count, 1);
+  releaseFirst.resolve(); await work;
+  assert.equal(count, 1); assert.equal(h.bot.status().inFlight, 0);
+  const disk = await openStore(h.file);
+  assert.deepEqual(disk.data.reports.player_01.results.map(item => item.kind),
+    ['unknown', 'unknown', 'not_sent', 'not_sent', 'not_sent', 'not_sent']);
+});
 
 test('TXT account count controls sequential submissions, with durable per-account markers and no replay', async t => {
   let h, active = 0, calls = 0;

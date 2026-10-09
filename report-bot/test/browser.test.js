@@ -88,3 +88,13 @@ test('preview mode performs no network activity', async () => {
   const submit = createBrowserSubmitter({}, false, { baseUrl: 'http://127.0.0.1:8191', token, fetchImpl: () => assert.fail('network') });
   assert.equal((await submit(draft)).kind, 'not_sent');
 });
+
+test('a temporarily busy cleanup is retried without repeating the official request', async () => {
+  let closes = 0;
+  const h = fixture(url => {
+    if (url.endsWith('/close') && ++closes === 1) return new Response('{"error":"browser_busy"}', { status: 409 });
+  }, { closeTimeoutMs: 1000 });
+  assert.equal((await h.submit(draft)).kind, 'success');
+  assert.equal(h.posts().length, 1); assert.equal(closes, 2);
+  assert.deepEqual(h.calls.filter(call => call.url.endsWith('/close')).map(call => call.body.sessionId), [sessionId, sessionId]);
+});

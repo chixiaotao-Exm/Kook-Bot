@@ -9,6 +9,7 @@ import {openStore} from './store.js';
 import {createSender} from './kook.js';
 import {createSubmitter} from './pubg.js';
 import {createBrowserSubmitter} from './browser.js';
+import {browserConfiguration,createBrowserPool} from './browser-pool.js';
 import {createOcr} from './ocr.js';
 import {createGmailReader,GmailMonitor} from './mail-monitor.js';
 import {createReportersReader} from './reporters.js';
@@ -25,11 +26,13 @@ const getReporters=createReportersReader({file:path.resolve(process.env.REPORTER
  legacyFile:path.join(dataDir,'profile.json'),allowLegacy:!process.env.REPORTERS_FILE,
  email:process.env.PUBG_REPORTER_EMAIL,language:process.env.PUBG_REPORTER_LANGUAGE});
 const initialReporters=await getReporters();
-const browserEnabled=Boolean(process.env.REPORT_BROWSER_URL);
-const submitterFor=profile=>browserEnabled?createBrowserSubmitter(profile,enabled,{baseUrl:process.env.REPORT_BROWSER_URL,token:process.env.REPORT_BROWSER_TOKEN}):createSubmitter(profile,enabled);
+const {baseUrls,concurrency,pooled}=browserConfiguration();
+const browserEnabled=baseUrls.length>0;
+const browserPool=pooled?createBrowserPool({baseUrls,token:process.env.REPORT_BROWSER_TOKEN,enabled}):null;
+const submitterFor=profile=>browserEnabled?createBrowserSubmitter(profile,enabled,{baseUrl:baseUrls[0],token:process.env.REPORT_BROWSER_TOKEN}):createSubmitter(profile,enabled);
 // Validate transport settings at startup, then create an isolated submitter for each selected identity.
 submitterFor(initialReporters[0]);
-const submit=(draft,{profile,signal}={})=>submitterFor(profile)(draft,{signal});
+const submit=browserPool?browserPool.submit:(draft,{profile,signal}={})=>submitterFor(profile)(draft,{signal});
 const ocr=process.env.PADDLEOCR_TOKEN?createOcr({token:process.env.PADDLEOCR_TOKEN,endpoint:process.env.PADDLEOCR_ENDPOINT,model:process.env.PADDLEOCR_MODEL||'PP-OCRv6'}):null;
 await mkdir(dataDir,{recursive:true,mode:0o700});
 // The systemd flock and PID lock prevent two gateways sharing submission state.
@@ -49,8 +52,9 @@ if(process.env.GMAIL_RECEIPTS_ENABLED&&!['true','false'].includes(process.env.GM
 if(mailEnabled&&process.env.GMAIL_ADDRESS?.trim().toLowerCase()!==initialReporters[0].email.toLowerCase())throw Error('Gmail must match the fixed reporter mailbox');
 const resolve=createAuthorResolver({token}),resolveButton=createButtonAuthorResolver({token,channelIds:[CHANNEL_ID]});
 const bot=new ReportBot({store,send:createSender(token),submit,ocr,enabled,
- mailEnabled,getReporters,receiptMailbox:process.env.GMAIL_ADDRESS,
- timeouts:browserEnabled?{submit:90000}:{},
+ mailEnabled,getReporters,receiptMailbox:process.env.GMAIL_ADDRESS,concurrency,
+ prepareWorker:browserPool?.ready,
+ timeouts:browserEnabled?{submit:110000}:{},
  resolveAuthor:(id,event)=>resolve({userId:id,guildId:event.extra?.guild_id,signal:event.signal}),
  resolveButtonAuthor:(body)=>resolveButton({userId:body.user_id,channelId:body.target_id,guildId:body.guild_id,signal:body.signal})});
 bot.reporterCount=initialReporters.length;
@@ -61,7 +65,7 @@ const server=http.createServer((req,res)=>{
  if(req.method!=='GET'||req.url!=='/health'){res.writeHead(404);res.end();return}
  const state=bot.status(),connection=gateway.snapshot();const ok=state.ready&&connection.connected;
  res.writeHead(ok?200:503,{'Content-Type':'application/json','Cache-Control':'no-store'});
- res.end(JSON.stringify({ok,gateway:{connected:connection.connected===true},chat:{enabled:state.ready},bot:state,ocr:{enabled:Boolean(ocr),model:ocr?'PP-OCRv6':null},submissionEnabled:enabled,submissionTransport:browserEnabled?'flaresolverr-browser':'direct',mail:mail?.status()||{enabled:false}}));
+ res.end(JSON.stringify({ok,gateway:{connected:connection.connected===true},chat:{enabled:state.ready},bot:state,ocr:{enabled:Boolean(ocr),model:ocr?'PP-OCRv6':null},submissionEnabled:enabled,submissionTransport:browserEnabled?'flaresolverr-browser':'direct',browserWorkers:baseUrls.length,mail:mail?.status()||{enabled:false}}));
 });
 server.headersTimeout=5000;server.requestTimeout=10000;
 await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(port,host,resolve)});
