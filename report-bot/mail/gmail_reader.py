@@ -56,7 +56,7 @@ def credentials(environ: dict) -> tuple[str, str]:
     return address, password
 
 
-def request_options(request: object) -> tuple[int, int]:
+def request_options(request: object) -> tuple[int, int, str | None]:
     if not isinstance(request, dict):
         raise ReaderError("invalid_config")
     since = request.get("sinceMs")
@@ -66,7 +66,11 @@ def request_options(request: object) -> tuple[int, int]:
         raise ReaderError("invalid_config")
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_CANDIDATES:
         raise ReaderError("invalid_config")
-    return int(since), limit
+    cursor = request.get("cursor")
+    if cursor is not None and (not isinstance(cursor, str) or
+                               not re.fullmatch(r"[1-9]\d{0,19}:[1-9]\d{0,19}", cursor)):
+        raise ReaderError("invalid_config")
+    return int(since), limit, cursor
 
 
 def internal_date_ms(value: bytes) -> int:
@@ -186,7 +190,7 @@ def require_ok(result):
 
 
 def read_receipts(request: object, environ=None, imap_factory=None) -> dict:
-    since, limit = request_options(request)
+    since, limit, cursor = request_options(request)
     address, password = credentials(os.environ if environ is None else environ)
     factory = imaplib.IMAP4_SSL if imap_factory is None else imap_factory
     client = None
@@ -206,6 +210,8 @@ def read_receipts(request: object, environ=None, imap_factory=None) -> dict:
         if not validity_values or not isinstance(validity_values[0], bytes) or not re.fullmatch(rb"\d{1,20}", validity_values[0]):
             raise ReaderError("mail_unavailable")
         validity = validity_values[0].decode("ascii")
+        if cursor and cursor.split(":")[0] != validity:
+            raise ReaderError("mailbox_changed")
         date = dt.datetime.fromtimestamp(since / 1000, dt.timezone.utc).date()
         if date > dt.date(1970, 1, 1):
             date -= dt.timedelta(days=1)
@@ -219,8 +225,13 @@ def read_receipts(request: object, environ=None, imap_factory=None) -> dict:
         if any(not re.fullmatch(rb"\d{1,20}", uid) for uid in raw_uids):
             raise ReaderError("mail_unavailable")
         uids = sorted(set(raw_uids), key=int, reverse=True)
-        result = {"messages": [], "truncated": len(uids) > limit}
-        for raw_uid in uids[:limit]:
+        if cursor:
+            before_uid = int(cursor.split(":")[1])
+            uids = [uid for uid in uids if int(uid) < before_uid]
+        selected = uids[:limit]
+        result = {"messages": [], "truncated": len(uids) > limit, "skipped": False,
+                  "nextCursor": validity + ":" + selected[-1].decode("ascii") if len(uids) > limit else None}
+        for raw_uid in selected:
             uid = raw_uid.decode("ascii")
             metadata = require_ok(client.uid("fetch", uid, "(UID RFC822.SIZE INTERNALDATE)"))
             metadata = b" ".join(item[0] if isinstance(item, tuple) else item
@@ -238,6 +249,7 @@ def read_receipts(request: object, environ=None, imap_factory=None) -> dict:
                 continue
             if size > MAX_MESSAGE_BYTES:
                 result["truncated"] = True
+                result["skipped"] = True
                 continue
             fetched = require_ok(client.uid("fetch", uid, "(UID BODY.PEEK[])"))
             bodies = [item for item in fetched if isinstance(item, tuple) and len(item) == 2

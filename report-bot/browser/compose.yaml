@@ -1,18 +1,74 @@
 services:
   report-browser:
-    build: .
-    restart: on-failure
-    env_file: .env
+    <<: &browser-settings
+      build: .
+      restart: on-failure
+      env_file: .env
+      mem_limit: 1g
+      memswap_limit: 1g
+      cpus: 1
+      pids_limit: 256
+      shm_size: 256m
+      cap_drop: [ALL]
+      security_opt: [no-new-privileges:true]
+      logging:
+        options:
+          max-size: 5m
+          max-file: "2"
+    container_name: kook-report-browser
     ports:
       - "127.0.0.1:8191:8191"
-    mem_limit: 1g
-    memswap_limit: 1g
-    cpus: 1
-    pids_limit: 256
-    shm_size: 256m
-    cap_drop: [ALL]
-    security_opt: [no-new-privileges:true]
-    logging:
-      options:
-        max-size: 5m
-        max-file: "2"
+  report-browser-2:
+    <<: *browser-settings
+    profiles: [parallel]
+    container_name: kook-report-browser-8192
+    ports:
+      - "127.0.0.1:8192:8191"
+  report-browser-3:
+    <<: *browser-settings
+    profiles: [parallel]
+    container_name: kook-report-browser-8193
+    ports:
+      - "127.0.0.1:8193:8191"
+  report-browser-4:
+    <<: *browser-settings
+    profiles: [parallel]
+    container_name: kook-report-browser-8194
+    ports:
+      - "127.0.0.1:8194:8191"
+  report-browser-5:
+    <<: *browser-settings
+    profiles: [parallel]
+    container_name: kook-report-browser-8195
+    ports:
+      - "127.0.0.1:8195:8191"
+  report-browser-6:
+    <<: *browser-settings
+    profiles: [parallel]
+    container_name: kook-report-browser-8196
+    ports:
+      - "127.0.0.1:8196:8191"
+  report-browser-7:
+    <<: *browser-settings
+    profiles: [parallel]
+    container_name: kook-report-browser-8197
+    ports:
+      - "127.0.0.1:8197:8191"
+  report-browser-8:
+    <<: *browser-settings
+    profiles: [parallel]
+    container_name: kook-report-browser-8198
+    ports:
+      - "127.0.0.1:8198:8191"
+  report-browser-9:
+    <<: *browser-settings
+    profiles: [parallel]
+    container_name: kook-report-browser-8199
+    ports:
+      - "127.0.0.1:8199:8191"
+  report-browser-10:
+    <<: *browser-settings
+    profiles: [parallel]
+    container_name: kook-report-browser-8200
+    ports:
+      - "127.0.0.1:8200:8191"

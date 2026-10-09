@@ -1,26 +1,50 @@
 import { ORIGIN, submitReport, validateProfile } from './protocol.mjs';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 const SESSION = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/;
 const failure = kind => ({ kind, message: kind === 'not_sent' ? '浏览器会话尚未就绪，未发送举报。' : '提交结果未知，请先查看邮箱或官网；不会自动重试。' });
 
-async function readJson(response, signal) {
-  if (!response.ok || response.redirected || Number(response.headers.get('content-length')) > 2 * 1024 * 1024) throw Error('Browser unavailable');
+async function readJson(response, signal, maxBytes = 2 * 1024 * 1024) {
+  if (!response.ok || response.redirected || Number(response.headers.get('content-length')) > maxBytes) throw Error('Browser unavailable');
   const reader = response.body?.getReader(); if (!reader) throw Error('Browser unavailable');
   const chunks = []; let length = 0;
   try {
     for (;;) {
       signal.throwIfAborted(); const { done, value } = await reader.read(); if (done) break;
-      length += value.byteLength; if (length > 2 * 1024 * 1024) throw Error('Browser response too large'); chunks.push(value);
+      length += value.byteLength; if (length > maxBytes) throw Error('Browser response too large'); chunks.push(value);
     }
     signal.throwIfAborted(); return JSON.parse(Buffer.concat(chunks).toString('utf8'));
   } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
 }
 
+export const validBrowserUrl = value => typeof value === 'string' && /^http:\/\/127\.0\.0\.1:(?:819[1-9]|8200)$/.test(value);
+
+/** A read-only readiness probe never creates a browser or sends an official request. */
+export async function browserAvailable(baseUrl, { signal, fetchImpl = fetch, timeoutMs = 2000 } = {}) {
+  if (!validBrowserUrl(baseUrl)) throw Error('Invalid browser configuration');
+  const controller = new AbortController();
+  const active = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+  let timer, abort;
+  const stopped = new Promise((_, reject) => {
+    abort = () => reject(Error('Browser health check interrupted'));
+    active.addEventListener('abort', abort, { once: true });
+    timer = setTimeout(() => controller.abort(), timeoutMs);
+  });
+  try {
+    active.throwIfAborted();
+    const result = await Promise.race([stopped, (async () => {
+      const response = await fetchImpl(baseUrl + '/health', { method: 'GET', redirect: 'error', signal: active });
+      return readJson(response, active, 1024);
+    })()]);
+    return result?.ok === true && result?.available === true;
+  } finally { clearTimeout(timer); active.removeEventListener('abort', abort); controller.abort(); }
+}
+
 // This private adapter never uses FlareSolverr request.post, which can replay a POST.
 export function createBrowserSubmitter(profile, enabled, { baseUrl, token, fetchImpl = fetch,
-  prepareTimeoutMs = 45000, requestTimeoutMs = 25000, closeTimeoutMs = 3000 } = {}) {
+  prepareTimeoutMs = 45000, requestTimeoutMs = 25000, closeTimeoutMs = 12000 } = {}) {
   if (enabled) validateProfile(profile);
-  if (baseUrl !== 'http://127.0.0.1:8191' || typeof token !== 'string' || !/^[a-f0-9]{64}$/.test(token)) throw Error('Invalid browser configuration');
+  if (!validBrowserUrl(baseUrl) || typeof token !== 'string' || !/^[a-f0-9]{64}$/.test(token)) throw Error('Invalid browser configuration');
   for (const timeout of [prepareTimeoutMs, requestTimeoutMs, closeTimeoutMs]) if (!Number.isInteger(timeout) || timeout < 1 || timeout > 45000) throw Error('Invalid browser timeout');
   const safeProfile = Object.fromEntries(['email', 'steam', 'nickname', 'language', 'category'].map(key => [key, profile?.[key]]));
   async function api(route, body, timeout, signal) {
@@ -62,6 +86,16 @@ export function createBrowserSubmitter(profile, enabled, { baseUrl, token, fetch
       return await submitReport({ ...safeProfile, subject: draft?.subject }, draft?.player, draft?.description, browserFetch, undefined,
         { signal, sessionTimeoutMs: 12000, submitTimeoutMs: requestTimeoutMs, wasPostSent: () => postStarted });
     } catch { return failure(postStarted ? 'unknown' : 'not_sent'); }
-    finally { if (sessionId) await api('/close', { sessionId }, closeTimeoutMs).catch(() => {}); }
+    finally {
+      if (sessionId) {
+        // A timed-out request can briefly hold the adapter lock. Closing this
+        // exact session is idempotent; only cleanup may be retried, never POST.
+        const deadline = Date.now() + closeTimeoutMs;
+        while (Date.now() < deadline) {
+          try { await api('/close', { sessionId }, Math.max(1, deadline - Date.now())); break; }
+          catch { await sleep(Math.min(200, Math.max(0, deadline - Date.now()))); }
+        }
+      }
+    }
   };
 }

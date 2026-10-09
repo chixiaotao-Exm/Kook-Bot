@@ -1,17 +1,41 @@
 # KOOK PUBG 举报助手
 
-独立运行，只处理私密环境配置 `KOOK_CHANNEL_ID` 指定的文字频道。频道内真人可发送昵称或只含昵称的截图；忽略其他频道、私聊和机器人消息。本人确认预览后，才向 PUBG 官方客服表单单次提交。
+独立运行，只处理私密环境配置 `KOOK_CHANNEL_ID` 指定的文字频道。频道内真人可发送昵称或只含昵称的截图；忽略其他频道、私聊和机器人消息。本人确认预览后，按 TXT 文件中的举报人账号列表向 PUBG 官方客服提交，每个账号最多一次。默认逐个处理，也可配置独立浏览器通道进行异步并发。
 
 ## 使用
 
 - `举报 [ABC]Player_01` 或直接发送 `Player_01`：生成预览，仅移除开头完整的战队标签；保留大小写、数字、下划线和连字符，不猜 O/0、I/l/1。
 - 发送一张昵称图片（包括 KOOK 桌面客户端的单图片卡片）：使用 PaddleOCR 官方托管 `PP-OCRv6` 识别。多图卡片、识别多行、置信度低、标签不完整时要求手动填写，不自动选玩家。
-- 预览提供「确认举报」「修改昵称」「取消」。只有发起人可以操作；可以同时保留多张独立预览，预览不会按时间过期。点击修改后发送新昵称生成修正版，已经提交或取消的卡片不能再次执行。
-- `状态 Player_01`：查看最近结果；`帮助`：查看用法。
+- 预览显示有效账号数和预计提交次数，并提供「确认举报」「修改昵称」「取消」。只有发起人可以操作；可以同时保留多张独立预览，预览不会按时间过期。点击修改后发送新昵称生成修正版，已经提交或取消的卡片不能再次执行。
+- `状态 Player_01`：查看最近一批的成功、未发送、需验证、已尝试提交及邮箱确认数量；`帮助`：查看用法。
 
 标题、正文使用中性模板，请官方核查，不凭昵称编造作弊行为。客服身份使用管理员私密配置的资料，邮箱、Steam ID不在KOOK频道展示；不会把昵称截图当成作弊证据提交。
 
-官方明确返回成功提示才显示成功。发送前失败显示尚未提交；官方要求验证时提示前往官网；发送后超时、断线或回执不明保持结果未知，不自动重试。同一昵称可以重新生成预览并人工确认再次提交；同一张确认卡片只执行一次。状态查询显示该昵称最近一次提交结果。机器人不设置每日总额、短时冷却、每小时预览/OCR次数、待处理任务数、身份查询次数或状态记录条数的使用门槛，任务按顺序处理。
+官方明确返回成功提示才显示成功。发送前失败显示尚未提交；官方要求验证时记录需验证；提交尝试超时、断线或未取得完整响应时显示「已尝试提交」，内部仍保留 `unknown`，不把该状态视为已送达或官方已接收。各账号最多尝试一次，单个账号的未发送、需验证或已尝试提交不会中断其余账号；整批处理完后再统一核验 Gmail 回执，不重试已处理的账号。服务关闭、取消或状态保存失败仍会停止领取后续账号。同一昵称可以重新生成预览并人工确认再次提交；同一张确认卡片只执行一批。机器人不设置每日总额、短时冷却、每小时预览/OCR次数、待处理任务数、身份查询次数或状态记录条数的使用门槛，批次按顺序处理，批内账号可配置并发。
+
+## TXT 举报人账号
+
+复制 `reporters.example.txt` 到 `data/reporters.txt`，填写自己的账号。使用 UTF-8，TAB 或空格分隔两列；表头可保留：
+
+```text
+SteamID64	PUBG游戏昵称
+76561198000000001	Reporter_1
+76561198000000002	Reporter_2
+```
+
+邮箱和语言对所有账号固定，在 `.env` 配置：
+
+```dotenv
+REPORTERS_FILE=./data/reporters.txt
+PUBG_REPORTER_EMAIL=your-mailbox@example.com
+PUBG_REPORTER_LANGUAGE=english
+```
+
+2 个有效账号对应一次确认后计划提交 2 次；增加或删除账号行即可改变次数。空行、表头、以 `#` 开头的注释不计数；完全相同的账号行只计一次，同一 Steam ID 配不同昵称会报错。空文件或任何无效行都会停止使用该列表，不会悄悄跳过。邮箱、语言沿用官方表单格式，举报分类固定为原有分类。
+
+每次预览和确认都会重读 TXT，不需要重启。列表、昵称或固定资料发生变化后旧预览失效，需要重新确认；已确认并开始执行的一批使用确认时的完整列表。预览和频道结果只显示数量，不展示举报人资料。TXT 默认放在已被 Git 忽略的 `data/` 中。
+
+升级旧部署时，未设置 `REPORTERS_FILE` 且默认 TXT 不存在，会兼容 `data/profile.json` 中的一个账号；出现 TXT 后即使用 TXT。没有配置固定邮箱或语言时，可沿用 `profile.json` 的对应字段，语言最终默认 `english`。明确设置 TXT 路径后，文件缺失不会回退旧账号。状态文件自动升级到版本 2；重启不会恢复中断批次的发送，已发送但无结果的账号保留未知，尚未开始的账号保留未发送。
 
 ## 部署
 
@@ -20,19 +44,21 @@ Node.js 22.16+；在 `report-bot` 目录执行：
 ```sh
 npm ci --ignore-scripts
 cp .env.example .env
-# 编辑机器人与PaddleOCR凭据；确认频道和机器人的权限。
-npm run import-profile -- /private/support.pubg.com.har
+# 编辑机器人、固定举报邮箱/语言与 PaddleOCR 凭据；确认频道和机器人的权限。
+mkdir -p data
+cp reporters.example.txt data/reporters.txt
+# 编辑 data/reporters.txt，取消示例账号注释并填写自己的真实资料。
 npm test
 npm start
 ```
 
-HAR只导入邮箱、自己的Steam ID、自己的昵称、语言和举报分类；不会保存旧Cookie、防伪令牌、旧举报对象或旧正文。HAR不上传服务器，只转移导出的白名单资料到 `data/profile.json`。`PUBG_SUBMIT_ENABLED=false` 为预览模式，正式开启设置true；true仍要求每次由发起人点击确认。
+也可运行 `npm run import-profile -- /private/account1.har /private/account2.har`，把 HAR 中的账号追加到 TXT；第一次导入时保留 `data/profile.json` 作为固定邮箱和语言的默认值，后续导入不改动这些固定值。HAR 只提取邮箱、自己的 Steam ID、自己的昵称、语言和举报分类，不保存旧 Cookie、防伪令牌、举报对象或正文；HAR 不上传服务器。`PUBG_SUBMIT_ENABLED=false` 为预览模式，正式开启设置 true；true 仍要求每一批由发起人点击确认。
 
 `PADDLEOCR_ENDPOINT`固定官方jobs接口；Token放`.env`。仅从KOOK图片域名下载最多5MiB的PNG/JPEG/WebP，上传单个OCR任务并限时轮询，再读取官方域JSONL；不下载标注结果图、不保存原截图。官方验证/限流不绕过。文本昵称无需OCR，不调用大模型。
 
-systemd示例见 `deploy/kook-report-bot.service`，运行用户 `kook-report`，目录 `/opt/kook-report-bot`，只读程序目录、私有data、双层单实例锁。服务健康地址为 `127.0.0.1:18992/health`，不含昵称、邮件、Token或原始接口响应。SIGTERM取消未发送任务；已发送结果不明的记录会阻止自动重发。
+systemd示例见 `deploy/kook-report-bot.service`，运行用户 `kook-report`，目录 `/opt/kook-report-bot`，只读程序目录、私有data、双层单实例锁。服务健康地址为 `127.0.0.1:18992/health`，不含昵称、邮件、Token或原始接口响应。SIGTERM停止领取未发送任务、取消在途操作并保存不确定结果，全局关闭截止时间为20秒，不保证全部浏览器清理均已完成；已发送结果不明的记录会阻止自动重发。
 
-`.env`、`data/`和HAR都不入Git。回执、用户限额和去重状态私密保存；状态文件异常时停止提交，避免重复举报。`node --env-file=.env src/check-connections.js`只检查KOOK及官方会话，不会发送举报或启动OCR任务。
+`.env`、`data/`和HAR都不入Git。各账号回执、批次和去重状态私密保存；状态文件异常时停止提交，避免重复举报。`node --env-file=.env src/check-connections.js`只检查KOOK及官方会话，不会发送举报或启动OCR任务。
 
 ## 验证范围
 
@@ -44,12 +70,48 @@ systemd示例见 `deploy/kook-report-bot.service`，运行用户 `kook-report`�
 
 适配器需要 `REPORT_BROWSER_TOKEN`（64位随机十六进制）和可选的 `REPORT_UPSTREAM_PROXY`。使用带 `-sid-会话ID-t-` 用户名格式的 SOCKS5 代理时，每次准备新的举报会话生成随机 SID，同次任务的所有连接保持 SID 不变。新 SID 是否分配不同出口由代理供应商决定，不能保证每次 IP 唯一；代理故障时不回退直连。代理凭据仅保存在私密环境文件，不传给 KOOK、日志或 Git。
 
-构建 `docker build -t kook-report-browser ./browser`，以环境文件注入配置，并仅映射 `127.0.0.1:8191:8191`。机器人配置 `REPORT_BROWSER_URL=http://127.0.0.1:8191` 与相同 `REPORT_BROWSER_TOKEN` 后启用。浏览器限制为一个任务，过期自动销毁；独立容器设置内存、进程数和重启策略。遇到官方人工验证、代理故障或结果未知仍停止，不自动更换 SID 重发。
+构建 `docker build -t kook-report-browser ./browser`，以环境文件注入配置，并仅映射 `127.0.0.1:8191:8191`。机器人配置 `REPORT_BROWSER_URL=http://127.0.0.1:8191` 与相同 `REPORT_BROWSER_TOKEN` 后启用。浏览器限制为一个任务，过期自动销毁；独立容器设置内存、进程数和重启策略。遇到官方人工验证、代理故障或结果未知时记录该账号的结果并结束其会话，不更换 SID 重发该账号；随后处理本批下一个账号。
+
+### 十路异步并发
+
+耗时主要来自代理、页面加载与官方请求等待，最多可同时使用十个独立浏览器容器。Node.js 通过异步网络 I/O 调度账号，不需要创建工作线程；每个容器仍只接收一个会话，账号之间隔离 Cookie、浏览器和随机 SID。十路并发不保证十倍加速，最终耗时受官方响应、代理质量及服务器资源影响。
+
+在 `browser/.env` 配置适配器所需的同一 `REPORT_BROWSER_TOKEN` 和可选 `REPORT_UPSTREAM_PROXY`，然后启动 Compose 的可选 `parallel` 配置：
+
+```sh
+cd browser
+docker compose --profile parallel up -d --build
+```
+
+默认 `docker compose up -d --build` 仍只启动8191单容器。启用 `parallel` 后，共有十个容器：`kook-report-browser` 和端口后缀为8192至8200的九个 `kook-report-browser-端口号` 容器，只绑定 `127.0.0.1:8191` 至 `127.0.0.1:8200`。每容器沿用1GiB内存及交换总额、1 CPU、256个进程、256MiB共享内存限制。配置十个容器并不表示服务器已有10GiB可用内存；部署前须核对可用内存、CPU及运行负载，为浏览器、机器人和系统预留资源，再验证实际运行情况。资源不足时应减少启用的容器、URL列表与并发数。
+
+在机器人的 `.env` 设置：
+
+```dotenv
+REPORT_BROWSER_URLS=http://127.0.0.1:8191,http://127.0.0.1:8192,http://127.0.0.1:8193,http://127.0.0.1:8194,http://127.0.0.1:8195,http://127.0.0.1:8196,http://127.0.0.1:8197,http://127.0.0.1:8198,http://127.0.0.1:8199,http://127.0.0.1:8200
+REPORT_CONCURRENCY=10
+REPORT_BROWSER_TOKEN=与浏览器容器一致的64位随机十六进制Token
+```
+
+`REPORT_BROWSER_URLS` 是逗号分隔的独立适配器地址列表，优先于旧配置 `REPORT_BROWSER_URL`。地址仅支持 `http://127.0.0.1:8191` 至 `http://127.0.0.1:8200`，每个地址必须对应独立容器。`REPORT_CONCURRENCY` 默认为1，必须为1至10的整数，且不得超过独立浏览器地址数量。修改配置后重启机器人。保留旧的单地址配置和默认并发数即可继续使用单容器部署，但浏览器镜像也须升级至本版。
+
+每个并发槽位确认对应浏览器健康可用后才领取下一账号。正常运行时，单次浏览器会话清理请求最多等待12秒，清理完成且槽位可用后才复用。浏览器不可用或会话无法清理时，该槽位退出本批，其余健康槽位继续处理；全部槽位不可用时，尚未领取的账号保持“未发送”。已处理账号不会被其他槽位重试。邮箱核验仍等整批所有槽位结束后统一进行。
+
+若由 systemd 管理容器生命周期，先用 `docker compose --profile parallel create --build` 创建容器，避免同时使用 Compose 启动和 systemd 启动。关闭这些容器的 Docker 自动重启策略，由 systemd 负责重启；独立使用 Compose 时仍保留默认 `on-failure`。8191继续使用 `deploy/kook-report-browser.service`；把新增的 `deploy/kook-report-browser@.service` 安装到 `/etc/systemd/system/` 后执行：
+
+```sh
+docker update --restart=no kook-report-browser kook-report-browser-8192 kook-report-browser-8193 kook-report-browser-8194 kook-report-browser-8195 kook-report-browser-8196 kook-report-browser-8197 kook-report-browser-8198 kook-report-browser-8199 kook-report-browser-8200
+systemctl daemon-reload
+systemctl enable --now kook-report-browser.service kook-report-browser@8192.service kook-report-browser@8193.service kook-report-browser@8194.service kook-report-browser@8195.service kook-report-browser@8196.service kook-report-browser@8197.service kook-report-browser@8198.service kook-report-browser@8199.service kook-report-browser@8200.service
+systemctl status kook-report-browser.service kook-report-browser@8192.service kook-report-browser@8193.service kook-report-browser@8194.service kook-report-browser@8195.service kook-report-browser@8196.service kook-report-browser@8197.service kook-report-browser@8198.service kook-report-browser@8199.service kook-report-browser@8200.service
+```
+
+已有手工创建的8191容器时，必须先升级至本版浏览器镜像。本版调度器依赖健康接口的 `available` 字段，旧版镜像缺少该字段，不会被视为可用槽位。只有8191已运行本版镜像时，才可保留该容器和服务，只创建 `report-browser-2` 至 `report-browser-10` 九个新容器：`docker compose --profile parallel create --build report-browser-2 report-browser-3 report-browser-4 report-browser-5 report-browser-6 report-browser-7 report-browser-8 report-browser-9 report-browser-10`。之后仍需对十个容器执行上面的 `docker update --restart=no`。每个实例通过对应名称启动并停止容器；实例端口与 Compose 容器名中的端口后缀必须一致。以后用 Compose 重新创建由 systemd 管理的容器时，也应重新关闭 Docker 自动重启策略。
 
 ## Gmail 官方回执核验
 
 Linux 安装 Python 3.10+，设置 `GMAIL_RECEIPTS_ENABLED=true`、`GMAIL_ADDRESS` 和 Gmail 16位应用专用密码 `GMAIL_APP_PASSWORD`。邮箱必须与私密举报资料的邮箱一致，凭据只放 `.env`。无需第三方 Python 包。
 
-每60秒只读检查收件箱内最近候选的 PUBG/Zendesk 邮件，不改变未读状态、移动或删除邮件。只接受 PUBG 官方地址并核对 Gmail 的邮件认证结果、收件人、提交时间、玩家昵称与工单号。新举报标题含独立参考编号，避免把旧工单误认作新提交；兼容已存在记录时使用提交后的官方确认信和同工单昵称邮件共同核对。只核验最近48小时记录，超出窗口不推断失败。
+每60秒只读检查收件箱内候选的 PUBG/Zendesk 邮件，正在提交的批次会等全部账号处理完成后再核验，不改变未读状态、移动或删除邮件。邮件按 UID 分页读取，每页最多50封、每轮最多4页；未读完的扫描下一轮继续，50个账号产生超过50封回执也能完整核对。只缓存跨页匹配所需的工单与时间信息，不缓存邮件正文。只接受 PUBG 官方地址并核对 Gmail 的邮件认证结果、收件人、提交时间、玩家昵称与工单号。同一批每个账号的举报标题各含独立参考编号，各自匹配回执，避免把不同账号或旧工单误认作新提交；兼容已存在记录时使用提交后的官方确认信和同工单昵称邮件共同核对。只核验最近48小时记录，超出窗口不推断失败。
 
 匹配后将未知/验证状态更新为“邮箱已确认”，在原频道播报工单号；不会公布邮件正文、邮箱、个人资料或登录信息。“收到请求”只代表提交被接收，不代表封禁。未收到邮件继续保持原状态，不自动重新举报；已确认邮件不重复播报。发送 `状态 玩家昵称` 可查看核验结果。健康接口 `mail` 提供连接、最近检查、错误和本次进程确认计数。

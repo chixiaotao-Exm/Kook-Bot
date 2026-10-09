@@ -433,11 +433,25 @@ class HttpTests(unittest.TestCase):
         return result[0][0], json.loads(response)
 
     def test_health_is_minimal_and_unlocked(self):
+        self.assertEqual(("200 OK", {"ok": True, "available": True}), self.call("/health", auth=None, method="GET"))
         self.bridge.lock.acquire()
         try:
-            self.assertEqual(("200 OK", {"ok": True}), self.call("/health", auth=None, method="GET"))
+            self.assertEqual(("200 OK", {"ok": True, "available": False}), self.call("/health", auth=None, method="GET"))
         finally:
             self.bridge.lock.release()
+
+    def test_health_slot_is_available_only_after_confirmed_session_cleanup(self):
+        _, prepared = self.call("/prepare", {})
+        self.assertEqual({"ok": True, "available": False}, self.call("/health", auth=None, method="GET")[1])
+        close = self.backend.close
+        self.backend.close = lambda _sid: (_ for _ in ()).throw(RuntimeError("cleanup failed"))
+        self.assertEqual("502 Bad Gateway", self.call("/close", prepared)[0])
+        self.assertFalse(self.call("/health", auth=None, method="GET")[1]["available"])
+        self.backend.close = close
+        self.assertEqual("200 OK", self.call("/close", prepared)[0])
+        self.assertTrue(self.call("/health", auth=None, method="GET")[1]["available"])
+        self.bridge.ready = False
+        self.assertEqual(("503 Service Unavailable", {"ok": False, "available": False}), self.call("/health", auth=None, method="GET"))
 
     def test_http_auth_and_unsupported_upstream_api(self):
         self.assertEqual("401 Unauthorized", self.call("/prepare", {}, auth=None)[0])

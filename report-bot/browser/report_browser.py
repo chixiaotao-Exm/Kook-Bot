@@ -398,7 +398,8 @@ def create_app(bridge):
     @app.get("/health")
     def health():
         response.status = 200 if bridge.ready else 503
-        return {"ok": bridge.ready}
+        return {"ok": bridge.ready,
+                "available": bridge.ready and not bridge.lock.locked() and bridge.session is None}
 
     def dispatch():
         try:
