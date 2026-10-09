@@ -33,7 +33,7 @@ export class ReportBot {
     timeouts = {}, mailEnabled = false, getReporters, receiptMailbox, concurrency = 1, prepareWorker } = {}) {
     if (!store?.data || typeof store.save !== 'function' || typeof send !== 'function' || typeof submit !== 'function'
       || typeof now !== 'function' || typeof enabled !== 'boolean'
-      || !Number.isInteger(concurrency) || concurrency < 1 || concurrency > 4
+      || !Number.isInteger(concurrency) || concurrency < 1 || concurrency > 10
       || [ocr, resolveAuthor, resolveButtonAuthor, getReporters, prepareWorker].some(fn => fn != null && typeof fn !== 'function'))
       throw new Error('Invalid report bot configuration');
     Object.assign(this, { store, send, submit, ocr, enabled, now, resolveAuthor, resolveButtonAuthor, mailEnabled, getReporters,

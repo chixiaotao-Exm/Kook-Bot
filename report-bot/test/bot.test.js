@@ -605,13 +605,39 @@ const deferred = () => {
 
 test('batch concurrency and preparation settings reject unsupported limits', () => {
   const options = { store: { data: {}, save: async () => {} }, send: async () => {}, submit: async () => {} };
-  for (const concurrency of [0, -1, 1.5, 5, '3', NaN]) {
+  for (const concurrency of [0, -1, 1.5, 11, '3', NaN]) {
     assert.throws(() => new ReportBot({ ...options, concurrency }), /Invalid report bot configuration/);
   }
   assert.throws(() => new ReportBot({ ...options, prepareWorker: true }), /Invalid report bot configuration/);
   assert.throws(() => new ReportBot({ ...options, timeouts: { submit: 120001 } }), /Invalid report bot timeouts/);
-  const bot = new ReportBot({ ...options, concurrency: 4, timeouts: { submit: 110000, worker: 120000 } });
-  assert.equal(bot.status().concurrency, 4); assert.equal(bot.status().inFlight, 0);
+  const bot = new ReportBot({ ...options, concurrency: 10, timeouts: { submit: 110000, worker: 120000 } });
+  assert.equal(bot.status().concurrency, 10); assert.equal(bot.status().inFlight, 0);
+});
+
+test('ten workers process fifty accounts without exceeding concurrency or duplicating an account', async t => {
+  const profiles = manyAccounts(50), gate = deferred(), started = deferred(), calls = [];
+  let active = 0, peak = 0;
+  const h = await setup(t, { concurrency: 10, getReporters: async () => profiles, mailEnabled: true,
+    submit: async (_draft, { profile, workerIndex }) => {
+      calls.push({ steam: profile.steam, workerIndex });
+      peak = Math.max(peak, ++active);
+      if (calls.length === 10) started.resolve();
+      await gate.promise; await tick(); active--;
+      return { kind: 'unknown' };
+    } });
+  const card = await h.preview(), click = h.click(card);
+  const work = Promise.all([h.handle(click), h.handle(click)]);
+  await started.promise;
+  assert.equal(h.bot.status().inFlight, 10); assert.equal(calls.length, 10);
+  assert.equal(new Set(calls.map(item => item.workerIndex)).size, 10);
+  assert.equal(h.bot.mailCandidates().length, 0);
+  gate.resolve(); await work;
+  assert.equal(peak, 10); assert.equal(calls.length, 50);
+  assert.equal(new Set(calls.map(item => item.steam)).size, 50);
+  assert.equal(h.bot.mailCandidates().length, 50); assert.equal(h.bot.status().inFlight, 0);
+  const restored = await openStore(h.file);
+  assert.equal(restored.data.reports.player_01.finished, true);
+  assert.equal(restored.data.attempts.length, 50);
 });
 
 test('three isolated workers submit each account once and persist out-of-order results before reconciling mail', async t => {

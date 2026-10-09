@@ -17,7 +17,7 @@ async function readJson(response, signal, maxBytes = 2 * 1024 * 1024) {
   } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
 }
 
-export const validBrowserUrl = value => typeof value === 'string' && /^http:\/\/127\.0\.0\.1:819[1-4]$/.test(value);
+export const validBrowserUrl = value => typeof value === 'string' && /^http:\/\/127\.0\.0\.1:(?:819[1-9]|8200)$/.test(value);
 
 /** A read-only readiness probe never creates a browser or sends an official request. */
 export async function browserAvailable(baseUrl, { signal, fetchImpl = fetch, timeoutMs = 2000 } = {}) {

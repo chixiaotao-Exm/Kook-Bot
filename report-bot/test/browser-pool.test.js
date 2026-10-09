@@ -17,11 +17,34 @@ test('configuration defaults to one worker and validates independent loopback en
   assert.deepEqual(browserConfiguration({ REPORT_BROWSER_URL: baseUrls[0] }), { baseUrls: [baseUrls[0]], concurrency: 1, pooled: false });
   assert.deepEqual(browserConfiguration({ REPORT_BROWSER_URLS: baseUrls.join(', '), REPORT_BROWSER_URL: 'ignored', REPORT_CONCURRENCY: '3' }),
     { baseUrls, concurrency: 3, pooled: true });
-  for (const raw of ['0', '5', '3.5', '03', 'NaN']) assert.throws(() => browserConfiguration({ REPORT_CONCURRENCY: raw }));
+  for (const raw of ['0', '11', '3.5', '03', 'NaN']) assert.throws(() => browserConfiguration({ REPORT_CONCURRENCY: raw }));
   for (const urls of [baseUrls[0] + ',' + baseUrls[0], baseUrls[0] + ',', 'https://example.com', 'http://localhost:8191',
-    'http://127.0.0.1:8195', baseUrls[0] + '/', 'http://user:pass@127.0.0.1:8191', baseUrls[0] + '?secret=x'])
+    'http://127.0.0.1:8190', 'http://127.0.0.1:8201', baseUrls[0] + '/', 'http://user:pass@127.0.0.1:8191', baseUrls[0] + '?secret=x'])
     assert.throws(() => browserConfiguration({ REPORT_BROWSER_URLS: urls }));
   assert.throws(() => browserConfiguration({ REPORT_BROWSER_URL: baseUrls[0], REPORT_CONCURRENCY: '2' }));
+});
+
+test('ten unique loopback endpoints are supported while an eleventh worker or endpoint is rejected', async () => {
+  const ten = Array.from({ length: 10 }, (_, index) => `http://127.0.0.1:${8191 + index}`);
+  assert.deepEqual(browserConfiguration({ REPORT_BROWSER_URLS: ten.join(','), REPORT_CONCURRENCY: '10' }),
+    { baseUrls: ten, concurrency: 10, pooled: true });
+  const probes = [];
+  const pool = createBrowserPool({ baseUrls: ten, token, enabled: true, fetchImpl: async (url, request) => {
+    probes.push(url); assert.equal(request.method, 'GET'); return json({ ok: true, available: true });
+  } });
+  assert.equal(pool.size, 10);
+  assert.deepEqual(await Promise.all(ten.map((_, index) => pool.ready(index))), Array(10).fill(true));
+  assert.deepEqual(probes, ten.map(url => url + '/health'));
+  await assert.rejects(pool.ready(10), /Invalid browser worker/);
+  assert.throws(() => browserConfiguration({ REPORT_BROWSER_URLS: ten.join(','), REPORT_CONCURRENCY: '11' }), /between 1 and 10/);
+  for (const endpoints of [[...ten, 'http://127.0.0.1:8201'], [...ten, ten[0]]]) {
+    assert.throws(() => browserConfiguration({ REPORT_BROWSER_URLS: endpoints.join(',') }), /Invalid browser worker URLs/);
+    assert.throws(() => createBrowserPool({ baseUrls: endpoints, token, enabled: true }), /Invalid browser pool configuration/);
+  }
+  for (const invalid of ['http://127.0.0.1:8200/path', 'http://127.0.0.1:8200?x=1',
+    'http://127.0.0.1:8200#fragment', 'http://user:pass@127.0.0.1:8200', 'http://localhost:8200']) {
+    assert.throws(() => createBrowserPool({ baseUrls: [invalid], token, enabled: true }), /Invalid browser pool configuration/);
+  }
 });
 
 function fixture(options = {}) {

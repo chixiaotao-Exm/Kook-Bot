@@ -5,10 +5,10 @@ export function browserConfiguration(env = process.env) {
   const pooled = Boolean(env.REPORT_BROWSER_URLS?.trim());
   const baseUrls = pooled ? env.REPORT_BROWSER_URLS.split(',').map(value => value.trim())
     : env.REPORT_BROWSER_URL?.trim() ? [env.REPORT_BROWSER_URL.trim()] : [];
-  if (baseUrls.length > 4 || baseUrls.some(value => !validBrowserUrl(value)) || new Set(baseUrls).size !== baseUrls.length)
+  if (baseUrls.length > 10 || baseUrls.some(value => !validBrowserUrl(value)) || new Set(baseUrls).size !== baseUrls.length)
     throw Error('Invalid browser worker URLs');
   const raw = env.REPORT_CONCURRENCY?.trim() || '1';
-  if (!/^[1-4]$/.test(raw)) throw Error('REPORT_CONCURRENCY must be between 1 and 4');
+  if (!/^(?:[1-9]|10)$/.test(raw)) throw Error('REPORT_CONCURRENCY must be between 1 and 10');
   const concurrency = Number(raw);
   if (baseUrls.length && concurrency > baseUrls.length) throw Error('Not enough independent browser workers');
   return { baseUrls, concurrency, pooled };
@@ -17,7 +17,7 @@ export function browserConfiguration(env = process.env) {
 /** Each worker owns a separate loopback adapter; cookies, browser and SID never cross workers. */
 export function createBrowserPool({ baseUrls, token, enabled, fetchImpl = fetch,
   readyTimeoutMs = 30000, probeTimeoutMs = 2000, pollIntervalMs = 250, submitOptions = {} } = {}) {
-  if (!Array.isArray(baseUrls) || !baseUrls.length || baseUrls.length > 4 || baseUrls.some(value => !validBrowserUrl(value))
+  if (!Array.isArray(baseUrls) || !baseUrls.length || baseUrls.length > 10 || baseUrls.some(value => !validBrowserUrl(value))
     || new Set(baseUrls).size !== baseUrls.length || typeof token !== 'string' || !/^[a-f0-9]{64}$/.test(token)
     || typeof enabled !== 'boolean') throw Error('Invalid browser pool configuration');
   for (const timeout of [readyTimeoutMs, probeTimeoutMs, pollIntervalMs])

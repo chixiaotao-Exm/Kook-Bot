@@ -72,9 +72,9 @@ systemd示例见 `deploy/kook-report-bot.service`，运行用户 `kook-report`�
 
 构建 `docker build -t kook-report-browser ./browser`，以环境文件注入配置，并仅映射 `127.0.0.1:8191:8191`。机器人配置 `REPORT_BROWSER_URL=http://127.0.0.1:8191` 与相同 `REPORT_BROWSER_TOKEN` 后启用。浏览器限制为一个任务，过期自动销毁；独立容器设置内存、进程数和重启策略。遇到官方人工验证、代理故障或结果未知时记录该账号的结果并结束其会话，不更换 SID 重发该账号；随后处理本批下一个账号。
 
-### 三路异步并发
+### 十路异步并发
 
-耗时主要来自代理、页面加载与官方请求等待，可同时使用三个独立浏览器容器。Node.js 通过异步网络 I/O 调度账号，不需要创建工作线程；每个容器仍只接收一个会话，账号之间隔离 Cookie、浏览器和随机 SID。三路并发不是实测三倍加速，最终耗时受官方响应、代理质量及服务器资源影响。
+耗时主要来自代理、页面加载与官方请求等待，最多可同时使用十个独立浏览器容器。Node.js 通过异步网络 I/O 调度账号，不需要创建工作线程；每个容器仍只接收一个会话，账号之间隔离 Cookie、浏览器和随机 SID。十路并发不保证十倍加速，最终耗时受官方响应、代理质量及服务器资源影响。
 
 在 `browser/.env` 配置适配器所需的同一 `REPORT_BROWSER_TOKEN` 和可选 `REPORT_UPSTREAM_PROXY`，然后启动 Compose 的可选 `parallel` 配置：
 
@@ -83,30 +83,30 @@ cd browser
 docker compose --profile parallel up -d --build
 ```
 
-默认 `docker compose up -d --build` 仍只启动8191单容器。启用 `parallel` 后，三个容器分别为 `kook-report-browser`、`kook-report-browser-8192`、`kook-report-browser-8193`，只绑定 `127.0.0.1:8191`、`127.0.0.1:8192`、`127.0.0.1:8193`。每容器沿用1GiB内存及交换总额、1 CPU、256个进程、256MiB共享内存限制；启用前应为三个容器和机器人预留足够资源。
+默认 `docker compose up -d --build` 仍只启动8191单容器。启用 `parallel` 后，共有十个容器：`kook-report-browser` 和端口后缀为8192至8200的九个 `kook-report-browser-端口号` 容器，只绑定 `127.0.0.1:8191` 至 `127.0.0.1:8200`。每容器沿用1GiB内存及交换总额、1 CPU、256个进程、256MiB共享内存限制。配置十个容器并不表示服务器已有10GiB可用内存；部署前须核对可用内存、CPU及运行负载，为浏览器、机器人和系统预留资源，再验证实际运行情况。资源不足时应减少启用的容器、URL列表与并发数。
 
 在机器人的 `.env` 设置：
 
 ```dotenv
-REPORT_BROWSER_URLS=http://127.0.0.1:8191,http://127.0.0.1:8192,http://127.0.0.1:8193
-REPORT_CONCURRENCY=3
+REPORT_BROWSER_URLS=http://127.0.0.1:8191,http://127.0.0.1:8192,http://127.0.0.1:8193,http://127.0.0.1:8194,http://127.0.0.1:8195,http://127.0.0.1:8196,http://127.0.0.1:8197,http://127.0.0.1:8198,http://127.0.0.1:8199,http://127.0.0.1:8200
+REPORT_CONCURRENCY=10
 REPORT_BROWSER_TOKEN=与浏览器容器一致的64位随机十六进制Token
 ```
 
-`REPORT_BROWSER_URLS` 是逗号分隔的独立适配器地址列表，优先于旧配置 `REPORT_BROWSER_URL`。地址仅支持 `http://127.0.0.1:8191` 至 `http://127.0.0.1:8194`，每个地址必须对应独立容器。`REPORT_CONCURRENCY` 默认为1，必须为1至4的整数，且不得超过独立浏览器地址数量。修改配置后重启机器人。保留旧的单地址配置和默认并发数即可继续使用单容器部署，但浏览器镜像也须升级至本版。
+`REPORT_BROWSER_URLS` 是逗号分隔的独立适配器地址列表，优先于旧配置 `REPORT_BROWSER_URL`。地址仅支持 `http://127.0.0.1:8191` 至 `http://127.0.0.1:8200`，每个地址必须对应独立容器。`REPORT_CONCURRENCY` 默认为1，必须为1至10的整数，且不得超过独立浏览器地址数量。修改配置后重启机器人。保留旧的单地址配置和默认并发数即可继续使用单容器部署，但浏览器镜像也须升级至本版。
 
 每个并发槽位确认对应浏览器健康可用后才领取下一账号。正常运行时，单次浏览器会话清理请求最多等待12秒，清理完成且槽位可用后才复用。浏览器不可用或会话无法清理时，该槽位退出本批，其余健康槽位继续处理；全部槽位不可用时，尚未领取的账号保持“未发送”。已处理账号不会被其他槽位重试。邮箱核验仍等整批所有槽位结束后统一进行。
 
 若由 systemd 管理容器生命周期，先用 `docker compose --profile parallel create --build` 创建容器，避免同时使用 Compose 启动和 systemd 启动。关闭这些容器的 Docker 自动重启策略，由 systemd 负责重启；独立使用 Compose 时仍保留默认 `on-failure`。8191继续使用 `deploy/kook-report-browser.service`；把新增的 `deploy/kook-report-browser@.service` 安装到 `/etc/systemd/system/` 后执行：
 
 ```sh
-docker update --restart=no kook-report-browser kook-report-browser-8192 kook-report-browser-8193
+docker update --restart=no kook-report-browser kook-report-browser-8192 kook-report-browser-8193 kook-report-browser-8194 kook-report-browser-8195 kook-report-browser-8196 kook-report-browser-8197 kook-report-browser-8198 kook-report-browser-8199 kook-report-browser-8200
 systemctl daemon-reload
-systemctl enable --now kook-report-browser.service kook-report-browser@8192.service kook-report-browser@8193.service
-systemctl status kook-report-browser.service kook-report-browser@8192.service kook-report-browser@8193.service
+systemctl enable --now kook-report-browser.service kook-report-browser@8192.service kook-report-browser@8193.service kook-report-browser@8194.service kook-report-browser@8195.service kook-report-browser@8196.service kook-report-browser@8197.service kook-report-browser@8198.service kook-report-browser@8199.service kook-report-browser@8200.service
+systemctl status kook-report-browser.service kook-report-browser@8192.service kook-report-browser@8193.service kook-report-browser@8194.service kook-report-browser@8195.service kook-report-browser@8196.service kook-report-browser@8197.service kook-report-browser@8198.service kook-report-browser@8199.service kook-report-browser@8200.service
 ```
 
-已有手工创建的8191容器时，必须先升级至本版浏览器镜像。本版调度器依赖健康接口的 `available` 字段，旧版镜像缺少该字段，不会被视为可用槽位。只有8191已运行本版镜像时，才可保留该容器和服务，只创建 `report-browser-2`、`report-browser-3` 两个新容器：`docker compose --profile parallel create --build report-browser-2 report-browser-3`。之后仍需对三个容器执行上面的 `docker update --restart=no`。每个实例通过对应名称启动并停止容器；实例端口与 Compose 容器名中的端口后缀必须一致。以后用 Compose 重新创建由 systemd 管理的容器时，也应重新关闭 Docker 自动重启策略。
+已有手工创建的8191容器时，必须先升级至本版浏览器镜像。本版调度器依赖健康接口的 `available` 字段，旧版镜像缺少该字段，不会被视为可用槽位。只有8191已运行本版镜像时，才可保留该容器和服务，只创建 `report-browser-2` 至 `report-browser-10` 九个新容器：`docker compose --profile parallel create --build report-browser-2 report-browser-3 report-browser-4 report-browser-5 report-browser-6 report-browser-7 report-browser-8 report-browser-9 report-browser-10`。之后仍需对十个容器执行上面的 `docker update --restart=no`。每个实例通过对应名称启动并停止容器；实例端口与 Compose 容器名中的端口后缀必须一致。以后用 Compose 重新创建由 systemd 管理的容器时，也应重新关闭 Docker 自动重启策略。
 
 ## Gmail 官方回执核验
 
