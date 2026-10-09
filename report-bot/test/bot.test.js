@@ -333,7 +333,7 @@ test('uncaught submitter failure is unknown, never definitely not_sent, and neve
   const h = await setup(t, { submit: async () => { throw new Error('private@example.test'); } });
   const card = await h.preview(); h.advance(); await h.handle(h.click(card));
   assert.equal(h.store.data.reports.player_01.kind, 'unknown');
-  assert.match(h.sends.at(-1).text, /结果未知/);
+  assert.match(h.sends.at(-1).text, /已尝试提交，未取得完整响应/);
   assert.doesNotMatch(h.sends.at(-1).text, /private@example/);
 });
 
@@ -513,7 +513,7 @@ test('submit timeout remains unknown and does not block subsequent read-only sta
   const card = await h.preview(); h.advance(); await h.handle(h.click(card));
   assert.equal(h.store.data.reports.player_01.kind, 'unknown');
   h.advance(); await h.handle(h.event('状态 PLAYER_01'));
-  assert.match(h.sends.at(-1).text, /结果未知/);
+  assert.match(h.sends.at(-1).text, /已尝试提交，未取得完整响应/);
   assert.equal(h.bot.status().ready, true);
 });
 
@@ -881,7 +881,7 @@ test('all fifty accounts are attempted once before any of their receipts become 
   assert.equal(h.bot.mailCandidates().length, 50);
   assert.equal(new Set(h.bot.mailCandidates().map(item => item.mailRef)).size, 50);
   assert.match(h.sends.at(-1).text, /统一核对 50 次/);
-  assert.match(h.sends.at(-1).text, /结果未知 50/);
+  assert.match(h.sends.at(-1).text, /已尝试提交 50/);
   await h.handle(h.click(card)); assert.equal(h.store.data.attempts.length, 50);
 });
 

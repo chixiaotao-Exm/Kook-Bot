@@ -46,7 +46,7 @@ export const RESULT_MESSAGES = Object.freeze({
   success: '官方已确认请求提交成功；不代表已判定违规或封禁。',
   not_sent: '尚未发送举报。请检查服务配置或官方页面后重新生成预览。',
   verification: '官方要求额外验证，请前往 PUBG 官方客服完成验证；不会自动重试。',
-  unknown: '提交结果未知，请先查看邮箱或 PUBG 官方客服；不会自动重试。'
+  unknown: '已尝试提交，未取得完整响应；不会重复提交。'
 });
 
 // Missing bot metadata requires a separate official identity lookup. Explicit conflicts never fall back.

@@ -13,9 +13,10 @@ export function batchSummary(record) {
   for (const result of record.results) counts[result.kind]++;
   const received = record.results.filter(item => item.mail).length;
   return `本次账号数：${record.results.length}，每个账号最多提交一次。\n`
-    + `成功 ${counts.success} · 未发送 ${counts.not_sent} · 需验证 ${counts.verification} · 结果未知 ${counts.unknown}`
+    + `成功 ${counts.success} · 未发送 ${counts.not_sent} · 需验证 ${counts.verification} · 已尝试提交 ${counts.unknown}`
     + (counts.pending ? ` · 处理中 ${counts.pending}` : '')
     + (received ? `\n邮箱已确认 ${received} 次。` : '')
+    + (counts.unknown ? '\n已尝试提交：未取得完整响应，不重复提交。' : '')
     + '\n成功表示官方已接收请求，不代表已判定违规或封禁。';
 }
 

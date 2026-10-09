@@ -5,7 +5,7 @@ import { reporterId, mailboxHash, reportersSnapshot } from './reporters.js';
 import { batchKind, batchSummary, reportEntries } from './report-results.js';
 
 const abortError = () => Object.assign(new Error('cancelled'), { code: 'cancelled' });
-const HELP = '发送昵称或只含昵称的截图，机器人移除完整的开头战队标签并生成举报预览。\n只有发起人可以确认、修改或取消自己的预览，预览不会按时间过期。\n修改：点击「修改昵称」后发送新昵称，或重新发送「举报 正确昵称」。\n状态：发送「状态 昵称」。\n图片会发往配置的 PaddleOCR 云服务识别。\n按 TXT 中的账号数量提交，每个账号最多提交一次；未知结果不会自动重试。';
+const HELP = '发送昵称或只含昵称的截图，机器人移除完整的开头战队标签并生成举报预览。\n只有发起人可以确认、修改或取消自己的预览，预览不会按时间过期。\n修改：点击「修改昵称」后发送新昵称，或重新发送「举报 正确昵称」。\n状态：发送「状态 昵称」。\n图片会发往配置的 PaddleOCR 云服务识别。\n按 TXT 中的账号数量提交，每个账号最多提交一次；未取得完整响应时显示「已尝试提交」，不会自动重试。';
 
 // A late, uncancellable operation never gets to mutate state or release a second submission.
 async function bounded(operation, signal, timeoutMs) {
@@ -415,6 +415,6 @@ export class ReportBot {
     const mailCount = record.results.filter(item => item.mailRef && item.kind !== 'not_sent'
       && (!this.receiptMailboxHash || item.mailboxHash === this.receiptMailboxHash)).length;
     await this.reply({ text: `${draft.player}\n${batchSummary(record)}`
-      + (mailCount ? `\n本批处理已结束，将统一核对 ${mailCount} 次提交的 Gmail 官方回执；不会重复提交。` : '') }, signal);
+      + (mailCount ? `\n本批处理已结束，将统一核对 ${mailCount} 次提交尝试的 Gmail 官方回执；不会重复提交。` : '') }, signal);
   }
 }
