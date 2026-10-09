@@ -518,8 +518,9 @@ test('submit timeout remains unknown and does not block subsequent read-only sta
 });
 
 test('uncertain storage timeout fails closed even if its delayed operation eventually resolves', async t => {
-  const h = await setup(t, { timeouts: { storage: 10 } });
+  const h = await setup(t);
   const card = await h.preview(); let finish;
+  h.bot.timeouts.storage = 10;
   h.store.save = () => new Promise(resolve => { finish = resolve; });
   h.advance(); await h.handle(h.click(card));
   assert.equal(h.bot.status().ready, false); assert.equal(h.submissions.length, 0);
