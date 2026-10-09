@@ -21,3 +21,18 @@ test('report gateway buffers more than 100 events and 4 MiB without losing origi
     assert.ok(seen.every(x => x.receivedAt === 1_800_000_000_000));
   } finally { gateway.close(); }
 });
+
+test('caller-bounded batches can outlive the event deadline and still cancel on gateway close', async () => {
+  let release, receivedSignal;
+  const gateway = new KookGateway({ token: 'test', Socket: class {}, eventTimeoutMs: 0,
+    onEvent: async (_event, context) => {
+      receivedSignal = context.signal;
+      await new Promise(resolve => { release = resolve; });
+    } });
+  gateway.running = true; gateway.connected = true; gateway.botId = '1234567890';
+  try {
+    gateway.enqueue(1, { id: 1 }, 100); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(gateway.timers.has('event'), false); assert.equal(receivedSignal.aborted, false);
+    gateway.close(); assert.equal(receivedSignal.aborted, true); release();
+  } finally { gateway.close(); }
+});

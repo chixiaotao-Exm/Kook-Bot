@@ -7,6 +7,7 @@ import { ReportBot } from '../src/bot.js';
 import { createOcr } from '../src/ocr.js';
 import { openStore, validateStore } from '../src/store.js';
 import { CHANNEL_ID, DAY_MS, normalizeNickname, RESULT_MESSAGES } from '../src/domain.js';
+import { parseReporters, mailboxHash } from '../src/reporters.js';
 
 const USER = '1234567890123', OTHER = '1234567890124', BOT = '9999999999999', GUILD = '7654321098765';
 const messageId = number => `aabbccdd-1234-4321-aabb-${String(number).padStart(12, '0')}`;
@@ -588,4 +589,175 @@ test('status exposes safe counts and does not include users, targets, payloads o
   const status = JSON.stringify(h.bot.status());
   assert.doesNotMatch(status, /PrivateTarget|1234567890123|description|email|steam/);
   assert.equal(h.bot.status().ready, true); assert.equal(h.bot.status().previews, 1);
+});
+
+const fixedSettings = { email: 'receipts@gmail.com', language: 'english' };
+const accountText = '76561198000000001\tReporter_1\n76561198000000002\tReporter_2\n76561198000000003\tReporter_3';
+const accounts = () => parseReporters(accountText, fixedSettings);
+
+test('TXT account count controls sequential submissions, with durable per-account markers and no replay', async t => {
+  let h, active = 0, calls = 0;
+  h = await setup(t, { getReporters: async () => accounts(), submit: async (draft, { profile, signal }) => {
+    assert.equal(++active, 1); assert.ok(signal instanceof AbortSignal);
+    const saved = JSON.parse(await readFile(h.file, 'utf8')), index = calls++;
+    const batch = saved.reports.player_01;
+    assert.deepEqual(Object.keys(saved.drafts), []);
+    assert.equal(batch.results[index].kind, 'pending'); assert.equal(saved.attempts.length, index + 1);
+    assert.equal(profile.steam, accounts()[index].steam);
+    assert.equal(profile.nickname, accounts()[index].nickname);
+    assert.equal(profile.email, fixedSettings.email); assert.equal(profile.language, fixedSettings.language);
+    assert.equal(draft.player, 'Player_01');
+    await tick(); active--; return { kind: 'success' };
+  } });
+  const card = await h.preview(); assert.match(card.text, /举报人账号：3 个/); assert.match(card.text, /预计提交 3 次/);
+  assert.equal(calls, 0);
+  await h.handle(h.click(card, 'confirm', { user_id: OTHER })); assert.equal(calls, 0);
+  const click = h.click(card); await Promise.all([h.handle(click), h.handle(click), h.handle(h.click(card))]);
+  assert.equal(calls, 3); assert.equal(h.bot.status().success, 3);
+  assert.match(h.sends.at(-1).text, /成功 3 · 未发送 0/);
+  assert.doesNotMatch(JSON.stringify(h.sends), /receipts@gmail|7656119800000000|Reporter_[123]/);
+  const disk = await openStore(h.file); assert.equal(disk.data.version, 2);
+  assert.equal(disk.data.reports.player_01.results.length, 3);
+  assert.ok(disk.data.reports.player_01.results.every(item => item.kind === 'success'));
+  await h.handle(h.event('状态 Player_01')); assert.match(h.sends.at(-1).text, /成功 3/);
+});
+
+test('duplicate TXT rows do not increase count and a new preview uses the updated file', async t => {
+  let text = accountText + '\n' + accountText.split('\n')[0];
+  const h = await setup(t, { getReporters: async () => parseReporters(text, fixedSettings) });
+  const first = await h.preview(); await h.handle(h.click(first)); assert.equal(h.submissions.length, 3);
+  text = accountText.split('\n')[0];
+  const second = await h.preview(); assert.match(second.text, /预计提交 1 次/);
+  await h.handle(h.click(second)); assert.equal(h.submissions.length, 4);
+  assert.equal(h.store.data.reports.player_01.results.length, 1);
+});
+
+test('changed identity, nickname, count or shared email invalidates an already displayed preview', async t => {
+  for (const changed of [accounts().slice(0, 2), accounts().map((item, i) => i ? item : { ...item, steam: '76561198000000004' }),
+    accounts().map(item => ({ ...item, email: 'changed@gmail.com' })), accounts().map(item => ({ ...item, nickname: item.nickname + 'X' })),
+    accounts().map(item => ({ ...item, language: 'korean' }))]) {
+    let current = accounts();
+    const h = await setup(t, { getReporters: async () => current });
+    const card = await h.preview(); current = changed; await h.handle(h.click(card));
+    assert.equal(h.submissions.length, 0); assert.match(h.sends.at(-1).text, /账号列表已变化/);
+    assert.deepEqual(Object.keys(h.store.data.drafts), []);
+  }
+});
+
+test('a saved preview retains the account snapshot across restart, while legacy previews require confirmation anew', async t => {
+  const h = await setup(t, { getReporters: async () => accounts() });
+  const card = await h.preview(); h.bot.store = await openStore(h.file);
+  await h.handle(h.click(card)); assert.equal(h.submissions.length, 3);
+  const legacy = await setup(t); const oldCard = await legacy.preview();
+  legacy.bot.getReporters = async () => accounts(); await legacy.handle(legacy.click(oldCard));
+  assert.equal(legacy.submissions.length, 0); assert.match(legacy.sends.at(-1).text, /重新发送昵称/);
+});
+
+test('an unreadable or invalid list cannot submit or silently fall back to one account', async t => {
+  let fail = false;
+  const h = await setup(t, { getReporters: async () => { if (fail) throw Error('private path and mailbox'); return accounts(); } });
+  const card = await h.preview(); fail = true; await h.handle(h.click(card));
+  assert.equal(h.submissions.length, 0); assert.match(h.sends.at(-1).text, /本次未提交/);
+  assert.doesNotMatch(h.sends.at(-1).text, /private path/);
+  await h.handle(h.event('AnotherPlayer')); assert.equal(h.sends.filter(item => item.buttons).length, 1);
+});
+
+test('preview mode displays the batch count but never calls the submitter', async t => {
+  const h = await setup(t, { getReporters: async () => accounts(), enabled: false });
+  const card = await h.preview(); await h.handle(h.click(card));
+  assert.equal(h.submissions.length, 0); assert.equal(h.store.data.attempts.length, 0);
+  assert.match(h.sends.at(-1).text, /已确认 3 个账号.*未发送举报/);
+});
+
+test('known not-sent results remain distinct from successful accounts in the batch summary', async t => {
+  let count = 0;
+  const h = await setup(t, { getReporters: async () => accounts(), submit: async () => ({ kind: count++ === 1 ? 'not_sent' : 'success' }) });
+  const card = await h.preview(); await h.handle(h.click(card));
+  assert.equal(count, 3); assert.match(h.sends.at(-1).text, /成功 2 · 未发送 1/);
+  const disk = await openStore(h.file);
+  assert.deepEqual(disk.data.reports.player_01.results.map(item => item.kind), ['success', 'not_sent', 'success']);
+});
+
+for (const kind of ['verification', 'unknown']) {
+  test(`a ${kind} result stops remaining accounts without retrying earlier accounts`, async t => {
+    let count = 0;
+    const h = await setup(t, { getReporters: async () => accounts(), submit: async () => ({ kind: count++ ? kind : 'success' }) });
+    const card = await h.preview(); await h.handle(h.click(card));
+    assert.equal(count, 2); assert.equal(h.store.data.attempts.length, 2);
+    assert.deepEqual(h.store.data.reports.player_01.results.map(item => item.kind), ['success', kind, 'not_sent']);
+    assert.match(h.sends.at(-1).text, /已停止本批后续提交/);
+    await h.handle(h.click(card)); assert.equal(count, 2);
+  });
+}
+
+test('shutdown or timeout preserves the active account as unknown and never starts remaining accounts', async t => {
+  for (const shutdown of [true, false]) {
+    let started, finish, count = 0;
+    const gate = new Promise(resolve => { started = resolve; });
+    const h = await setup(t, { getReporters: async () => accounts(), timeouts: { submit: shutdown ? 1000 : 15 },
+      submit: async () => { if (!count++) return { kind: 'success' }; started(); return new Promise(resolve => { finish = resolve; }); } });
+    const card = await h.preview(); const work = h.handle(h.click(card)); await gate;
+    if (shutdown) await h.bot.close();
+    await work; finish({ kind: 'success' }); await tick();
+    const disk = await openStore(h.file);
+    assert.equal(count, 2); assert.equal(disk.data.reports.player_01.finished, true);
+    assert.deepEqual(disk.data.reports.player_01.results.map(item => item.kind), ['success', 'unknown', 'not_sent']);
+    assert.deepEqual(Object.keys(disk.data.drafts), []);
+  }
+});
+
+test('each account has an independent mail reference and receipt, including after restart', async t => {
+  const h = await setup(t, { getReporters: async () => accounts(), mailEnabled: true, receiptMailbox: fixedSettings.email });
+  const card = await h.preview(); await h.handle(h.click(card));
+  const candidates = h.bot.mailCandidates(); assert.equal(candidates.length, 3);
+  assert.equal(new Set(candidates.map(item => item.mailRef)).size, 3);
+  for (const [index, item] of candidates.entries()) {
+    assert.ok(h.submissions[index].input.subject.endsWith('[' + item.mailRef + ']'));
+    assert.equal(item.mailboxHash, mailboxHash(fixedSettings.email));
+  }
+  const receipt = { messageId: '10:200', ticketId: '81234567', receivedAt: h.now() };
+  assert.equal(await h.bot.confirmMail({ ...candidates[1], batchId: 'outdated' }, receipt), false);
+  assert.equal(await h.bot.confirmMail(candidates[1], receipt), true);
+  assert.equal(await h.bot.confirmMail(candidates[0], receipt), false);
+  assert.equal(h.bot.mailCandidates().length, 2);
+  assert.match(h.sends.at(-1).text, /本次账号序号：2/);
+  h.bot.store = await openStore(h.file);
+  assert.equal(h.bot.store.data.reports.player_01.results[1].mail.ticketId, receipt.ticketId);
+  assert.equal(h.bot.mailCandidates().length, 2);
+  await h.handle(h.event('状态 Player_01')); assert.match(h.sends.at(-1).text, /邮箱已确认 1 次/);
+  const newer = await h.preview(); await h.handle(h.click(newer));
+  assert.equal(await h.bot.confirmMail(candidates[0], { ...receipt, ticketId: '81234568', messageId: '10:201' }), false);
+});
+
+test('a storage failure before the next account prevents that submission and all subsequent accounts', async t => {
+  const h = await setup(t, { getReporters: async () => accounts() });
+  const save = h.store.save;
+  h.store.save = async () => {
+    if (h.store.data.reports.player_01?.results?.[1].kind === 'pending') throw Error('disk failure');
+    return save();
+  };
+  const card = await h.preview(); await h.handle(h.click(card));
+  assert.equal(h.submissions.length, 1); assert.equal(h.bot.status().ready, false);
+  const disk = await openStore(h.file);
+  assert.deepEqual(disk.data.reports.player_01.results.map(item => item.kind), ['success', 'not_sent', 'not_sent']);
+});
+
+test('crash recovery retains per-account uncertainty and refuses corrupt batch state', async t => {
+  let started;
+  const gate = new Promise(resolve => { started = resolve; });
+  const h = await setup(t, { getReporters: async () => accounts(), submit: async () => { started(); return new Promise(() => {}); } });
+  const card = await h.preview(); const work = h.handle(h.click(card)); await gate;
+  const persisted = JSON.parse(await readFile(h.file, 'utf8'));
+  assert.equal(persisted.reports.player_01.results[0].kind, 'pending');
+  const restored = validateStore(persisted);
+  assert.deepEqual(restored.reports.player_01.results.map(item => item.kind), ['unknown', 'not_sent', 'not_sent']);
+  assert.equal(restored.reports.player_01.finished, true);
+  for (const mutate of [value => { value.reports.player_01.results = []; },
+    value => { value.reports.player_01.results[1].reporterId = value.reports.player_01.results[0].reporterId; },
+    value => { value.reports.player_01.results[0].mailboxHash = 'bad'; },
+    value => { value.reports.player_01.results[0].kind = 'bad'; },
+    value => { value.reports.player_01.batchId = 'bad'; }]) {
+    const bad = structuredClone(persisted); mutate(bad); assert.throws(() => validateStore(bad), /状态文件结构无效/);
+  }
+  await h.bot.close(); await work;
 });

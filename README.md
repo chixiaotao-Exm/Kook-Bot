@@ -11,7 +11,7 @@ KOOK 多机器人项目合集，包含双音乐源播放机器人、Sub2API 额�
 | `bridge-bot/` | GitHub 提交、PR 和 CI 结果的 KOOK 通知桥 | [通知桥](bridge-bot/README.md) |
 | `ops-center/` | Linux 资源与服务、网站接口与证书、机器人总览、KOOK 告警和状态查询 | [运维中心](ops-center/README.md) |
 | `menu-bot/` | 在指定文字频道发送“菜单”，直接回复 Gran Furama 中文菜单图片 | [中文菜单机器人](menu-bot/README.md) |
-| `report-bot/` | 指定频道昵称／截图识别、本人确认、单次 PUBG 举报及回执 | [PUBG 举报助手](report-bot/README.md) |
+| `report-bot/` | 指定频道昵称／截图识别、TXT 账号列表、本人确认、逐账号 PUBG 举报及回执 | [PUBG 举报助手](report-bot/README.md) |
 
 ## 快速开始
 

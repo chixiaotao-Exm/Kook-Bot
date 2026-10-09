@@ -290,7 +290,8 @@ export class KookGateway {
     let finish;
     const timeout = new Promise(resolve => { finish = resolve; });
     controller.signal.addEventListener('abort', () => finish(false), { once: true });
-    this.later('event', () => { controller.abort(); finish(false); }, this.eventTimeoutMs);
+    // Zero opts into caller-bounded operations, for account batches with no fixed total duration.
+    if (this.eventTimeoutMs !== 0) this.later('event', () => { controller.abort(); finish(false); }, this.eventTimeoutMs);
     const handled = Promise.resolve().then(() => {
       if (controller.signal.aborted || !this.running || epoch !== this.sequenceEpoch) return;
       return this.onEvent(entry.data, { signal: controller.signal, botId: this.botId, receivedAt: entry.receivedAt });
