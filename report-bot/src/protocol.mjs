@@ -21,26 +21,26 @@ function text(value, max, message, { multiline = false } = {}) {
 }
 
 export function validateProfile(profile) {
-  if (!profile || typeof profile !== 'object' || Array.isArray(profile)) throw new Error('请先导入有效的举报人资料。');
-  const email = text(profile.email, 254, '请先保存有效邮箱。');
-  if (!/^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.[A-Za-z]{2,63}$/.test(email)) throw new Error('请先保存有效邮箱。');
-  if (typeof profile.steam !== 'string' || !/^\d{17}$/.test(profile.steam)) throw new Error('Steam ID 必须为 17 位数字。');
-  text(profile.nickname, 128, '请填写有效的举报人游戏昵称。');
-  if (typeof profile.language !== 'string' || !/^[a-z][a-z0-9_-]{0,63}$/i.test(profile.language)) throw new Error('请从官方表单导入有效的语言设置。');
-  if (profile.category !== CATEGORY) throw new Error('请从官方举报表单导入正确的举报分类。');
+  if (!profile || typeof profile !== 'object' || Array.isArray(profile)) throw new Error('Import a valid reporter profile first.');
+  const email = text(profile.email, 254, 'Save a valid email address first.');
+  if (!/^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.[A-Za-z]{2,63}$/.test(email)) throw new Error('Save a valid email address first.');
+  if (typeof profile.steam !== 'string' || !/^\d{17}$/.test(profile.steam)) throw new Error('Steam ID must contain 17 digits.');
+  text(profile.nickname, 128, 'Enter a valid reporter nickname.');
+  if (typeof profile.language !== 'string' || !/^[a-z][a-z0-9_-]{0,63}$/i.test(profile.language)) throw new Error('Import a valid language setting from the official form.');
+  if (profile.category !== CATEGORY) throw new Error('Import the correct report category from the official form.');
 }
 
 export function validate(profile, player, description) {
   validateProfile(profile);
-  if (typeof player !== 'string' || !/^[A-Za-z0-9_-]{3,32}$/.test(player)) throw new Error('请填写有效的被举报玩家昵称。');
-  const subject = text(profile.subject, 200, '举报标题无效或过长。');
-  if (subject.replaceAll('{player}', player).length > 200) throw new Error('举报标题过长。');
-  text(description, 12000, '举报描述无效或过长。', { multiline: true });
+  if (typeof player !== 'string' || !/^[A-Za-z0-9_-]{3,32}$/.test(player)) throw new Error('Enter a valid player nickname to report.');
+  const subject = text(profile.subject, 200, 'The report subject is invalid or too long.');
+  if (subject.replaceAll('{player}', player).length > 200) throw new Error('The report subject is too long.');
+  text(description, 12000, 'The report description is invalid or too long.', { multiline: true });
 }
 
 export function buildBody(profile, player, description, token) {
   validate(profile, player, description);
-  if (typeof token !== 'string' || !token || token.length > 4096 || /\s|[\u0000-\u001f\u007f]/u.test(token)) throw new Error('未获取有效的临时防伪令牌。');
+  if (typeof token !== 'string' || !token || token.length > 4096 || /\s|[\u0000-\u001f\u007f]/u.test(token)) throw new Error('No valid temporary CSRF token was received.');
   const escaped = description.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;').replace(/\r\n?|\n/g, '<br>');
   const body = new URLSearchParams({
     'request[ticket_form_id]': FORM_ID,
@@ -56,20 +56,20 @@ export function buildBody(profile, player, description, token) {
 
 export function importProfile(har) {
   const entries = har?.log?.entries;
-  if (!Array.isArray(entries) || entries.length > 10000) throw new Error('不是有效的 HAR 文件。');
+  if (!Array.isArray(entries) || entries.length > 10000) throw new Error('Invalid HAR file.');
   const entry = entries.find(e => e?.request?.method === 'POST' && e.request.url === SUBMIT_URL);
   const data = entry?.request?.postData;
-  if (!data || (data.mimeType && !/^application\/x-www-form-urlencoded(?:\s*;|$)/i.test(data.mimeType))) throw new Error('HAR 中未找到官方举报表单提交请求。');
+  if (!data || (data.mimeType && !/^application\/x-www-form-urlencoded(?:\s*;|$)/i.test(data.mimeType))) throw new Error('No official report form submission was found in the HAR file.');
   let params;
   if (typeof data.text === 'string' && data.text) {
-    if (Buffer.byteLength(data.text, 'utf8') > 256 * 1024) throw new Error('HAR 表单过大。');
+    if (Buffer.byteLength(data.text, 'utf8') > 256 * 1024) throw new Error('The HAR form is too large.');
     // Text is the encoded wire body: decode once, preserving literal + and %.
     params = new URLSearchParams(data.text);
   } else {
-    if (!Array.isArray(data.params) || data.params.length > 128) throw new Error('HAR 缺少有效表单。');
+    if (!Array.isArray(data.params) || data.params.length > 128) throw new Error('The HAR file does not contain a valid form.');
     params = new URLSearchParams();
     for (const p of data.params) {
-      if (typeof p?.name !== 'string' || typeof p.value !== 'string' || p.name.length > 256 || p.value.length > 16384) throw new Error('HAR 字段无效。');
+      if (typeof p?.name !== 'string' || typeof p.value !== 'string' || p.name.length > 256 || p.value.length > 16384) throw new Error('Invalid HAR field.');
       // HAR params normally are decoded. Some exporters encode names and values together.
       const encoded = /%5b/i.test(p.name);
       const decode = value => decodeURIComponent(value.replace(/\+/g, ' '));
@@ -77,8 +77,8 @@ export function importProfile(har) {
     }
   }
   const allowed = ['request[ticket_form_id]', ...Object.values(FIELD)];
-  for (const key of allowed) if (params.getAll(key).length !== 1) throw new Error('HAR 缺少资料或存在重复字段。');
-  if (params.get('request[ticket_form_id]') !== FORM_ID) throw new Error('HAR 不是支持的官方举报表单。');
+  for (const key of allowed) if (params.getAll(key).length !== 1) throw new Error('The HAR file has missing or duplicate profile fields.');
+  if (params.get('request[ticket_form_id]') !== FORM_ID) throw new Error('The HAR file does not contain a supported official report form.');
   // Deliberately exclude cookies, headers, CSRF tokens, subjects and old evidence.
   const profile = Object.fromEntries(Object.entries(FIELD).map(([key, field]) => [key, params.get(field)]));
   validateProfile(profile);
@@ -107,20 +107,20 @@ function flashMessages(html) {
 
 export function classifyResponse(response, html) {
   let url;
-  try { url = new URL(response.url); } catch { return unknown('未取得有效的官方响应地址'); }
-  if (url.origin !== ORIGIN || url.username || url.password) return unknown('响应未停留在官方站点');
-  if ([401, 403].includes(response.status)) return { kind: 'verification', message: '官方要求登录或人工验证。请求可能已送达，请先查看邮箱或官网；不会自动重试。' };
-  if (typeof html !== 'string' || Buffer.byteLength(html, 'utf8') > MAX_RESPONSE_BYTES) return unknown('官方响应无效或过大');
+  try { url = new URL(response.url); } catch { return unknown('No valid official response URL was received'); }
+  if (url.origin !== ORIGIN || url.username || url.password) return unknown('The response left the official website');
+  if ([401, 403].includes(response.status)) return { kind: 'verification', message: 'The official website requires sign-in or manual verification. The request may have been delivered; check your email or the official website. It will not be retried automatically.' };
+  if (typeof html !== 'string' || Buffer.byteLength(html, 'utf8') > MAX_RESPONSE_BYTES) return unknown('The official response is invalid or too large');
   // Only the captured official success notice on its expected landing page proves success.
   if (response.status === 200 && /^\/hc\/zh-cn\/?$/.test(url.pathname) &&
       flashMessages(html).some(m => m?.type === 'notice' && m.title === '您的请求已成功提交。')) {
-    return { kind: 'success', message: '官方已确认：您的请求已成功提交。提交成功不代表已判定违规或封禁。' };
+    return { kind: 'success', message: 'The official website confirmed that your request was submitted successfully. This does not indicate a confirmed violation or ban.' };
   }
-  return unknown(`未取得官方成功提示（HTTP ${response.status}）`);
+  return unknown(`No official success notice was received (HTTP ${response.status})`);
 }
 
-function unknown(reason) { return { kind: 'unknown', message: `${reason}。请求可能已送达，请先查看邮箱或官网，勿直接重复提交；不会自动重试。` }; }
-function notSent() { return { kind: 'not_sent', message: '获取官方会话或验证资料失败，尚未发送举报。请打开官网完成可能需要的验证。' }; }
+function unknown(reason) { return { kind: 'unknown', message: `${reason}. The request may have been delivered; check your email or the official website before submitting again. It will not be retried automatically.` }; }
+function notSent() { return { kind: 'not_sent', message: 'Could not obtain an official session or validate the profile. No report was sent. Open the official website to complete any required verification.' }; }
 function throwIfAborted(signal) { if (signal?.aborted) throw new Error('Aborted'); }
 
 // The race bounds even custom fetch/body implementations that ignore AbortSignal.
@@ -200,7 +200,7 @@ export async function submitReport(profile, player, description, fetcher = fetch
       });
       return classifyResponse(response, await boundedText(response, MAX_RESPONSE_BYTES, activeSignal));
     }, submitTimeoutMs, signal);
-  } catch { return postStarted && (wasPostSent ? wasPostSent() : true) ? unknown('发送后连接中断或超时，结果未知') : notSent(); }
+  } catch { return postStarted && (wasPostSent ? wasPostSent() : true) ? unknown('The connection was interrupted or timed out after the submission attempt') : notSent(); }
 }
 
 // A read-only readiness probe. It never returns the token or sends a report.

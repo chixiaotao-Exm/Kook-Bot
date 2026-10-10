@@ -2,7 +2,7 @@ import { ORIGIN, submitReport, validateProfile } from './protocol.mjs';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 const SESSION = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/;
-const failure = kind => ({ kind, message: kind === 'not_sent' ? '浏览器会话尚未就绪，未发送举报。' : '提交结果未知，请先查看邮箱或官网；不会自动重试。' });
+const failure = kind => ({ kind, message: kind === 'not_sent' ? 'The browser session is not ready. No report was sent.' : 'Submission attempted without a complete response. Check your email or the official website; it will not be retried automatically.' });
 
 async function readJson(response, signal, maxBytes = 2 * 1024 * 1024) {
   if (!response.ok || response.redirected || Number(response.headers.get('content-length')) > maxBytes) throw Error('Browser unavailable');

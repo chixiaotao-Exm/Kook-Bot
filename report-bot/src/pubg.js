@@ -43,12 +43,12 @@ export function sessionFetch(fetchImpl = fetch, { onPostStart = () => {} } = {})
 
 export function createSubmitter(profile, enabled, { fetchImpl = fetch, sessionTimeoutMs, submitTimeoutMs } = {}) {
   if (enabled) {
-    try { validateProfile(profile); } catch { throw new Error('举报人资料无效：请从官方举报表单 HAR 重新导入邮箱、Steam ID、昵称、语言和举报分类。'); }
+    try { validateProfile(profile); } catch { throw new Error('Invalid reporter profile: reimport the email, Steam ID, nickname, language and report category from an official report form HAR.'); }
   }
   // Retain only the allowed profile fields; no supplied cookies or headers are reused.
   const safeProfile = profile ? Object.fromEntries(['email', 'steam', 'nickname', 'language', 'category'].map(key => [key, profile[key]])) : {};
   return async (draft, { signal } = {}) => {
-    if (!enabled) return { kind: 'not_sent', message: '预览模式：尚未向 PUBG 发送举报。' };
+    if (!enabled) return { kind: 'not_sent', message: 'Preview mode: no report has been sent to PUBG.' };
     let postSent = false;
     return submitReport({ ...safeProfile, subject: draft?.subject }, draft?.player, draft?.description,
       sessionFetch(fetchImpl, { onPostStart: () => { postSent = true; } }), undefined,

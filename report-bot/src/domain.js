@@ -9,18 +9,18 @@ export const validEventTime = (value, now) => Number.isSafeInteger(value) && val
 
 export function normalizeNickname(raw) {
   if (typeof raw !== 'string' || raw.length > 150 || /[\r\n\u0000-\u001f\u007f]/.test(raw))
-    throw new Error('请只提供一行昵称；多行识别结果需要手动修改。');
+    throw new Error('Provide one line containing a nickname. Edit multiple lines of recognized text manually.');
   // Only a complete leading clan tag is removed. Preserve case and ambiguous OCR characters.
   const value = raw.trim().replace(/^(?:\[[^\[\]]{1,40}\]|【[^【】]{1,40}】|［[^［］]{1,40}］)\s*/, '');
   if (!/^[A-Za-z0-9_-]{3,32}$/.test(value))
-    throw new Error('昵称或战队标签不完整。请发送「举报 正确昵称」修改；大小写及 O/0、I/l/1 不会自动替换。');
+    throw new Error('The nickname or clan tag is incomplete. Send "report CorrectNickname" to edit it. Letter case and O/0 or I/l/1 are never changed automatically.');
   return value;
 }
 
 // KOOK desktop uploads can arrive as type 10 image-only cards instead of type 2.
 // Never choose one image from a gallery or treat arbitrary card text as a nickname.
 export function cardImageUrl(content) {
-  const invalid = () => { throw new Error('请一次发送一张只含昵称的图片，或发送「举报 正确昵称」。'); };
+  const invalid = () => { throw new Error('Send one image containing only a nickname, or send "report CorrectNickname".'); };
   if (typeof content !== 'string' || content.length > 4096) return invalid();
   let cards;
   try { cards = JSON.parse(content); } catch { return invalid(); }
@@ -36,17 +36,17 @@ export function cardImageUrl(content) {
 
 export function draftContent(player) {
   return {
-    subject: `请求核查玩家 ${player} 的游戏行为`,
-    description: `PUBG 客服团队您好：\n\n我希望请求核查以下玩家是否存在违规行为。\n被举报玩家昵称：${player}\n游戏平台：Steam PC\n\n请根据可用的对局记录及反作弊检测信息核实，并依据核查结果处理。本次举报不预先断定对方存在作弊行为。\n\n本次仅提供玩家昵称，未提供具体对局时间或作弊证据。如需补充资料，请通过我的联系邮箱告知。\n\n谢谢。`
+    subject: `Request to review player ${player}'s gameplay`,
+    description: `Dear PUBG Support Team,\n\nI would like to request a review of the following player for possible rule violations.\nReported player's nickname: ${player}\nPlatform: Steam PC\n\nPlease review the available match records and anti-cheat information, and take any appropriate action based on your findings. This report does not assume that the player has cheated.\n\nOnly the player's nickname is provided. No specific match time or evidence of cheating is included. Please contact me at my email address if you need additional information.\n\nThank you.`
   };
 }
 
 export const RESULT_MESSAGES = Object.freeze({
-  pending: '正在提交，结果尚未确认。',
-  success: '官方已确认请求提交成功；不代表已判定违规或封禁。',
-  not_sent: '尚未发送举报。请检查服务配置或官方页面后重新生成预览。',
-  verification: '官方要求额外验证，请前往 PUBG 官方客服完成验证；不会自动重试。',
-  unknown: '已尝试提交，未取得完整响应；不会重复提交。'
+  pending: 'Submitting. The result has not been confirmed.',
+  success: 'PUBG Support has confirmed receipt of the request. This does not mean a violation or ban has been confirmed.',
+  not_sent: 'The report has not been sent. Check the service configuration or official website, then create a new preview.',
+  verification: 'Additional verification is required. Complete it on the official PUBG Support website. No automatic retry will be made.',
+  unknown: 'Submission attempted without a complete response. The report will not be submitted again.'
 });
 
 // Missing bot metadata requires a separate official identity lookup. Explicit conflicts never fall back.

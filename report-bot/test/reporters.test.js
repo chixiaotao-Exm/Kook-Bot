@@ -19,7 +19,7 @@ async function directory(t) {
 }
 
 test('two-column Windows TXT accepts a BOM, header, whitespace, comments and duplicate lines', () => {
-  const profiles = parseReporters(`\uFEFFSteamID64\tPUBG游戏昵称\r\n# private list\r\n\r\n${first}\r\n${second.replace('\t', '   ')}\r\n${first}\r\n`, settings);
+  const profiles = parseReporters(`\uFEFFSteamID64\tPUBG nickname\r\n# private list\r\n\r\n${first}\r\n${second.replace('\t', '   ')}\r\n${first}\r\n`, settings);
   assert.deepEqual(profiles, [
     { ...settings, steam: '76561198000000001', nickname: 'Reporter_1', category: CATEGORY },
     { ...settings, steam: '76561198000000002', nickname: 'Reporter_2', category: CATEGORY }
@@ -53,8 +53,8 @@ test('reader reloads TXT, inherits fixed legacy settings and never falls back af
   const read = createReportersReader({ file, legacyFile, allowLegacy: true });
   assert.equal((await read()).length, 1);
   await writeFile(file, first + '\n' + second); assert.equal((await read()).length, 2);
-  await writeFile(file, ''); await assert.rejects(read(), /没有有效账号/);
-  await rm(file); await assert.rejects(createReportersReader({ file, legacyFile })(), /无法读取/);
+  await writeFile(file, ''); await assert.rejects(read(), /no valid accounts/);
+  await rm(file); await assert.rejects(createReportersReader({ file, legacyFile })(), /Cannot read/);
   await writeFile(file, second);
   const fixed = createReportersReader({ file, legacyFile, email: 'fixed@gmail.com', language: 'korean' });
   const [profile] = await fixed(); assert.equal(profile.email, 'fixed@gmail.com'); assert.equal(profile.language, 'korean');
@@ -78,7 +78,7 @@ test('HAR importer appends two-column accounts while keeping the first fixed set
   await run(process.execPath, [script, harFiles[0]], { env });
   const defaults = await readFile(path.join(dir, 'profile.json'), 'utf8');
   const { stdout } = await run(process.execPath, [script, harFiles[1]], { env });
-  assert.match(stdout, /2 个不同账号/);
+  assert.match(stdout, /2 distinct accounts/);
   assert.equal(await readFile(path.join(dir, 'profile.json'), 'utf8'), defaults);
   assert.equal(await readFile(file, 'utf8'), first + '\n' + second + '\n');
   const read = createReportersReader({ file, legacyFile: path.join(dir, 'profile.json') });

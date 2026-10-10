@@ -7,7 +7,7 @@ const IMAGE_LIMIT = 5 * 1024 * 1024;
 const RESULT_LIMIT = 2 * 1024 * 1024;
 
 class OcrError extends Error {
-  constructor(code) { super('昵称图片识别失败，请发送「举报 正确昵称」手动填写。'); this.name = 'OcrError'; this.code = code; }
+  constructor(code) { super('Nickname image recognition failed. Enter the nickname manually with "report CorrectNickname".'); this.name = 'OcrError'; this.code = code; }
 }
 
 function trustedUrl(raw, domains) {
