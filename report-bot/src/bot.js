@@ -5,7 +5,7 @@ import { reporterId, mailboxHash, reportersSnapshot } from './reporters.js';
 import { batchKind, batchSummary, reportEntries } from './report-results.js';
 
 const abortError = () => Object.assign(new Error('cancelled'), { code: 'cancelled' });
-const HELP = '发送昵称或只含昵称的截图，机器人移除完整的开头战队标签并生成举报预览。\n只有发起人可以确认、修改或取消自己的预览，预览不会按时间过期。\n修改：点击「修改昵称」后发送新昵称，或重新发送「举报 正确昵称」。\n状态：发送「状态 昵称」。\n图片会发往配置的 PaddleOCR 云服务识别。\n按 TXT 中的账号数量提交，每个账号最多提交一次；未取得完整响应时显示「已尝试提交」，不会自动重试。';
+const HELP = 'Send "report PlayerName", a nickname, or a screenshot containing only the nickname. The bot removes a complete leading clan tag and creates a report preview.\nOnly the requester can confirm, edit, or cancel their preview. Previews do not expire.\nEdit: click "Edit nickname" and send the corrected nickname, or send "report CorrectNickname".\nStatus: send "status PlayerName".\nCancel your pending previews: send "cancel". Show these instructions: send "help".\nImages are sent to the configured PaddleOCR cloud service for recognition.\nEach account in the TXT file can submit at most once per batch. If a complete response is not received, the result is "Submission attempted" and is not retried automatically.';
 
 // A late, uncancellable operation never gets to mutate state or release a second submission.
 async function bounded(operation, signal, timeoutMs) {
@@ -117,7 +117,7 @@ export class ReportBot {
     record.mail.notification = 'attempted';
     if (!await this.persist() || this.closed) return;
     const player = this.store.data.reports[key]?.player || key;
-    await this.reply({ text: `✅ 邮箱已确认提交\n玩家：${player}${index ? `\n本次账号序号：${index}` : ''}\nPUBG 工单：#${record.mail.ticketId}\n官方邮件确认已收到请求；不代表已判定违规或封禁。` }, this.controller.signal).catch(() => {});
+    await this.reply({ text: `✅ Submission confirmed by email\nPlayer: ${player}${index ? `\nAccount number in this batch: ${index}` : ''}\nPUBG ticket: #${record.mail.ticketId}\nThe official email confirms receipt of the request. It does not confirm a violation or a ban.` }, this.controller.signal).catch(() => {});
   }
 
   handle(event, { botId, signal, receivedAt = this.now() } = {}) {
@@ -208,10 +208,10 @@ export class ReportBot {
         if (input.action === 'confirm') return await this.confirm(input.id, signal);
         if (input.action === 'cancel') {
           delete state.drafts[input.id];
-          if (await this.persist()) await this.reply({ text: '已取消，未提交举报。' }, signal);
+          if (await this.persist()) await this.reply({ text: 'Cancelled. No report was submitted.' }, signal);
         } else {
           draft.editing = true; delete draft.cardId;
-          if (await this.persist()) await this.reply({ text: '请发送修改后的昵称或昵称截图，我会重新生成预览；旧预览已失效。' }, signal);
+          if (await this.persist()) await this.reply({ text: 'Send the corrected nickname or a screenshot of it to create a new preview. The previous preview is no longer valid.' }, signal);
         }
         return;
       }
@@ -226,35 +226,35 @@ export class ReportBot {
       } catch (error) { await this.reply({ text: error.message }, signal); return; }
     }
     const state = this.store.data, content = event.content.trim();
-    if (event.type !== 2 && (content === '帮助' || content === '/帮助')) { await this.reply({ text: HELP }, signal); return; }
-    if (event.type !== 2 && /^状态\s/.test(content)) {
+    if (event.type !== 2 && /^\/?(?:help|帮助)$/i.test(content)) { await this.reply({ text: HELP }, signal); return; }
+    if (event.type !== 2 && /^\/?(?:status|状态)\s/i.test(content)) {
       try {
-        const player = normalizeNickname(content.replace(/^状态\s+/, ''));
+        const player = normalizeNickname(content.replace(/^\/?(?:status|状态)\s+/i, ''));
         const record = state.reports[player.toLowerCase()];
         if (record?.results) { await this.reply({ text: `${player}\n${batchSummary(record)}` }, signal); return; }
-        const receipt = record?.mail ? `\n邮箱已确认，PUBG 工单 #${record.mail.ticketId}。` : '';
-        await this.reply({ text: record ? `${player}：${RESULT_MESSAGES[record.kind] ?? RESULT_MESSAGES.unknown}${receipt}` : `${player}：没有提交记录。` }, signal);
-      } catch { await this.reply({ text: '请发送「状态 玩家昵称」查询。' }, signal); }
+        const receipt = record?.mail ? `\nConfirmed by email. PUBG ticket #${record.mail.ticketId}.` : '';
+        await this.reply({ text: record ? `${player}: ${RESULT_MESSAGES[record.kind] ?? RESULT_MESSAGES.unknown}${receipt}` : `${player}: No submission record.` }, signal);
+      } catch { await this.reply({ text: 'Send "status PlayerName" to check a submission.' }, signal); }
       return;
     }
-    if (event.type !== 2 && /^(?:取消|取消举报)$/.test(content)) {
+    if (event.type !== 2 && /^\/?(?:cancel|取消|取消举报)$/i.test(content)) {
       for (const [id, draft] of Object.entries(state.drafts)) if (draft.author === event.author_id) delete state.drafts[id];
-      if (await this.persist()) await this.reply({ text: '已取消你的待确认预览，未提交举报。' }, signal);
+      if (await this.persist()) await this.reply({ text: 'Your pending previews have been cancelled. No report was submitted.' }, signal);
       return;
     }
-    let raw = content.replace(/^\/?举报\s+/, '');
+    let raw = content.replace(/^\/?(?:report|举报)\s+/i, '');
     if (event.type !== 2) {
       try { normalizeNickname(raw); } catch (error) {
-        if (/^\/?举报\s/.test(content) || /^[\[【［]/.test(content)
+        if (/^\/?(?:report|举报)\s/i.test(content) || /^[\[【［]/.test(content)
           || Object.values(state.drafts).some(item => item.author === event.author_id && item.editing))
           await this.reply({ text: error.message }, signal);
         return;
       }
     }
     if (event.type === 2) {
-      if (!this.ocr) { await this.reply({ text: '图片识别尚未配置。请直接发送「举报 玩家昵称」。' }, signal); return; }
+      if (!this.ocr) { await this.reply({ text: 'Image recognition is not configured. Send "report PlayerName" instead.' }, signal); return; }
       try { raw = await bounded(currentSignal => this.ocr(event, { signal: currentSignal }), signal, this.timeouts.ocr); }
-      catch { await this.reply({ text: '昵称图片识别失败，请发送「举报 正确昵称」手动填写。' }, signal); return; }
+      catch { await this.reply({ text: 'Nickname image recognition failed. Enter the nickname manually with "report CorrectNickname".' }, signal); return; }
     }
     if (signal.aborted || this.closed) return;
     let player;
@@ -264,7 +264,7 @@ export class ReportBot {
     if (this.getReporters) {
       let profiles;
       try { profiles = await this.readReporters(signal); }
-      catch { await this.reply({ text: '无法读取有效的举报人账号列表，请管理员检查 TXT 文件后重新生成预览。' }, signal); return; }
+      catch { await this.reply({ text: 'A valid reporter account list could not be read. Ask an administrator to check the TXT file, then create a new preview.' }, signal); return; }
       accountInfo = { reporterSnapshot: reportersSnapshot(profiles), reporterCount: profiles.length };
     }
     const editing = Object.entries(state.drafts).find(([, draft]) => draft.author === event.author_id && draft.editing);
@@ -276,11 +276,11 @@ export class ReportBot {
     state.drafts[id] = draft;
     if (!await this.persist() || signal.aborted || this.closed) return;
     const cardId = await this.reply({
-      text: `${this.enabled ? '举报预览' : '预览模式 · 尚未开启真实提交'}\n识别原文：${draft.raw}\n举报昵称：${player}`
-        + (draft.reporterCount ? `\n举报人账号：${draft.reporterCount} 个\n确认后预计提交 ${draft.reporterCount} 次，每个账号一次。` : '')
-        + `\n\n标题：${draft.subject}\n\n${draft.description}\n\n只有本次发起人可以确认。请先核对昵称。`,
-      buttons: [{ label: this.enabled ? '确认举报' : '确认预览', value: `report:confirm:${id}` },
-        { label: '修改昵称', value: `report:edit:${id}` }, { label: '取消', value: `report:cancel:${id}` }]
+      text: `${this.enabled ? 'Report preview' : 'Preview mode · Live submission is disabled'}\nOriginal text: ${draft.raw}\nReported nickname: ${player}`
+        + (draft.reporterCount ? `\nReporter accounts: ${draft.reporterCount}\nPlanned submissions after confirmation: ${draft.reporterCount}, once per account.` : '')
+        + `\n\nSubject: ${draft.subject}\n\n${draft.description}\n\nOnly the requester can confirm this preview. Check the nickname first.`,
+      buttons: [{ label: this.enabled ? 'Confirm report' : 'Confirm preview', value: `report:confirm:${id}` },
+        { label: 'Edit nickname', value: `report:edit:${id}` }, { label: 'Cancel', value: `report:cancel:${id}` }]
     }, signal);
     if (signal.aborted || this.closed || !validMessageId(cardId)) return;
     draft.cardId = cardId;
@@ -295,7 +295,7 @@ export class ReportBot {
     const key = draft.player.toLowerCase();
     if (!this.enabled) {
       delete state.drafts[id];
-      if (await this.persist()) await this.reply({ text: `${draft.player}：预览已确认，当前未开启真实提交，未发送举报。` }, signal);
+      if (await this.persist()) await this.reply({ text: `${draft.player}: Preview confirmed. Live submission is disabled. No report was sent.` }, signal);
       return;
     }
     this.prune(this.now());
@@ -309,7 +309,7 @@ export class ReportBot {
     let result;
     try {
       if (signal.aborted || this.closed) throw abortError();
-      await this.reply({ text: `⏳ 正在处理 ${draft.player}，请勿重复操作。` }, signal);
+      await this.reply({ text: `⏳ Processing ${draft.player}. Please do not repeat the action.` }, signal);
     } catch {
       result = { kind: 'not_sent' };
     }
@@ -332,7 +332,7 @@ export class ReportBot {
     }
     if (kind === 'success') this.counts.success++;
     const icon = kind === 'success' ? '✅' : kind === 'not_sent' ? 'ℹ️' : '⚠️';
-    const mailNote = this.mailEnabled && kind !== 'not_sent' ? '\n将自动核对 Gmail 官方回执，确认后在此频道通知。' : '';
+    const mailNote = this.mailEnabled && kind !== 'not_sent' ? '\nOfficial receipts in Gmail will be checked automatically. A confirmation will be posted in this channel.' : '';
     await this.reply({ text: `${icon} ${draft.player}\n${RESULT_MESSAGES[kind]}${mailNote}` }, signal);
   }
 
@@ -346,15 +346,15 @@ export class ReportBot {
   async confirmBatch(id, draft, signal) {
     let profiles;
     try { profiles = await this.readReporters(signal); }
-    catch { await this.reply({ text: '无法读取有效的举报人账号列表，本次未提交。请管理员检查 TXT 文件。' }, signal); return; }
+    catch { await this.reply({ text: 'A valid reporter account list could not be read. Nothing was submitted. Ask an administrator to check the TXT file.' }, signal); return; }
     if (profiles.length !== draft.reporterCount || reportersSnapshot(profiles) !== draft.reporterSnapshot) {
       delete this.store.data.drafts[id];
-      if (await this.persist()) await this.reply({ text: '举报人账号列表已变化，本次未提交。请重新发送昵称并确认新的账号数量。' }, signal);
+      if (await this.persist()) await this.reply({ text: 'The reporter account list has changed. Nothing was submitted. Send the nickname again and confirm the updated account count.' }, signal);
       return;
     }
     delete this.store.data.drafts[id];
     if (!this.enabled) {
-      if (await this.persist()) await this.reply({ text: `${draft.player}：已确认 ${profiles.length} 个账号的预览，当前未开启真实提交，未发送举报。` }, signal);
+      if (await this.persist()) await this.reply({ text: `${draft.player}: Preview confirmed for ${profiles.length} accounts. Live submission is disabled. No report was sent.` }, signal);
       return;
     }
     const key = draft.player.toLowerCase(), at = this.now();
@@ -365,7 +365,7 @@ export class ReportBot {
     this.store.data.reports[key] = record;
     if (!await this.persist()) return;
     let announced = false;
-    try { announced = Boolean(await this.reply({ text: `⏳ 正在处理 ${draft.player}，共 ${profiles.length} 个账号，最多 ${this.concurrency} 个账号并发提交。请勿重复操作。` }, signal)); }
+    try { announced = Boolean(await this.reply({ text: `⏳ Processing ${draft.player} with ${profiles.length} accounts and up to ${this.concurrency} concurrent submissions. Please do not repeat the action.` }, signal)); }
     catch { /* If delivery is uncertain, keep all accounts as not sent. */ }
     let nextIndex = 0;
     const canStart = () => announced && !signal.aborted && !this.closed && this.ready && nextIndex < profiles.length;
@@ -415,6 +415,6 @@ export class ReportBot {
     const mailCount = record.results.filter(item => item.mailRef && item.kind !== 'not_sent'
       && (!this.receiptMailboxHash || item.mailboxHash === this.receiptMailboxHash)).length;
     await this.reply({ text: `${draft.player}\n${batchSummary(record)}`
-      + (mailCount ? `\n本批处理已结束，将统一核对 ${mailCount} 次提交尝试的 Gmail 官方回执；不会重复提交。` : '') }, signal);
+      + (mailCount ? `\nThis batch has finished. Official Gmail receipts will be checked for all ${mailCount} submission attempts. No submissions will be repeated.` : '') }, signal);
   }
 }

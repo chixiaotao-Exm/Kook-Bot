@@ -166,7 +166,7 @@ test('no HTTP errors after a POST are retried or misreported as not sent', async
     const result = await submit(draft);
     assert.equal(result.kind, status === 403 ? 'verification' : 'unknown');
     assert.deepEqual(methods, ['GET', 'POST']);
-    assert.match(result.message, /可能已送达/);
+    assert.match(result.message, /may have been delivered/);
   }
 });
 

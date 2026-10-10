@@ -6,9 +6,18 @@ import { batchKind } from './report-results.js';
 
 const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const timestamp = value => Number.isSafeInteger(value) && value >= 0;
-const fail = () => { throw new Error('状态文件结构无效，停止启动以避免重复提交。'); };
+const fail = () => { throw new Error('Invalid state file structure; startup stopped to prevent duplicate submissions.'); };
 const map = () => Object.create(null);
 const hash = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+
+// Only this exact historical template is eligible for migration. Never submit
+// translated content using a confirmation card that showed the old wording.
+function legacyDraftContent(player) {
+  return {
+    subject: `请求核查玩家 ${player} 的游戏行为`,
+    description: `PUBG 客服团队您好：\n\n我希望请求核查以下玩家是否存在违规行为。\n被举报玩家昵称：${player}\n游戏平台：Steam PC\n\n请根据可用的对局记录及反作弊检测信息核实，并依据核查结果处理。本次举报不预先断定对方存在作弊行为。\n\n本次仅提供玩家昵称，未提供具体对局时间或作弊证据。如需补充资料，请通过我的联系邮箱告知。\n\n谢谢。`
+  };
+}
 
 function restoreReceipt(input, output) {
   if (input.mailRef !== undefined) {
@@ -50,13 +59,19 @@ export function validateStore(value) {
     if (player !== input.player) fail();
     if (typeof input.raw !== 'string' || input.raw.length > 150 || /[\u0000-\u001f\u007f]/.test(input.raw)) fail();
     const content = draftContent(player);
-    if (input.subject !== content.subject || input.description !== content.description) fail();
+    const legacy = legacyDraftContent(player);
+    const isLegacy = input.subject === legacy.subject && input.description === legacy.description;
+    if (!isLegacy && (input.subject !== content.subject || input.description !== content.description)) fail();
+    const hasReporterSnapshot = input.reporterSnapshot !== undefined || input.reporterCount !== undefined;
+    if (hasReporterSnapshot && (!hash(input.reporterSnapshot) || !Number.isSafeInteger(input.reporterCount) || input.reporterCount < 1)) fail();
+    // Validate every field before discarding an old preview. Reports and attempt
+    // history below are retained, so migration cannot re-enable prior attempts.
+    if (isLegacy) continue;
     data.drafts[id] = { player, raw: input.raw, author: input.author, channelId: CHANNEL_ID,
       // Migrate old deadlines: saved previews remain actionable until handled or cancelled.
       guildId: input.guildId ?? null, expires: null, ...content,
       ...(input.cardId === undefined ? {} : { cardId: input.cardId }), editing: input.editing === true };
-    if (input.reporterSnapshot !== undefined || input.reporterCount !== undefined) {
-      if (!hash(input.reporterSnapshot) || !Number.isSafeInteger(input.reporterCount) || input.reporterCount < 1) fail();
+    if (hasReporterSnapshot) {
       Object.assign(data.drafts[id], { reporterSnapshot: input.reporterSnapshot, reporterCount: input.reporterCount });
     }
   }
@@ -123,7 +138,7 @@ export async function openStore(path) {
     if (!info.isFile()) fail();
     value = JSON.parse(await readFile(path, 'utf8'));
   } catch (error) {
-    if (error.code !== 'ENOENT') throw new Error('状态文件损坏或不可读，停止启动以避免重复提交。');
+    if (error.code !== 'ENOENT') throw new Error('State file is corrupt or unreadable; startup stopped to prevent duplicate submissions.');
     value = { seen: {}, drafts: {}, reports: {} };
   }
   const data = validateStore(value);
@@ -139,10 +154,10 @@ export async function openStore(path) {
         content = JSON.stringify(data);
       } catch {
         failed = true;
-        return Promise.reject(new Error('状态保存失败，已停止接收新任务。'));
+        return Promise.reject(new Error('Failed to save state; no new tasks will be accepted.'));
       }
       const task = tail.then(async () => {
-        if (failed) throw new Error('状态保存失败，已停止接收新任务。');
+        if (failed) throw new Error('Failed to save state; no new tasks will be accepted.');
         const temporary = `${path}.${randomUUID()}.tmp`;
         let file;
         try {
@@ -157,7 +172,7 @@ export async function openStore(path) {
           }
         } catch {
           failed = true;
-          throw new Error('状态保存失败，已停止接收新任务。');
+          throw new Error('Failed to save state; no new tasks will be accepted.');
         } finally {
           await file?.close().catch(() => {});
           await unlink(temporary).catch(() => {});

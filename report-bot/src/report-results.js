@@ -12,12 +12,12 @@ export function batchSummary(record) {
   const counts = { success: 0, not_sent: 0, verification: 0, unknown: 0, pending: 0 };
   for (const result of record.results) counts[result.kind]++;
   const received = record.results.filter(item => item.mail).length;
-  return `本次账号数：${record.results.length}，每个账号最多提交一次。\n`
-    + `成功 ${counts.success} · 未发送 ${counts.not_sent} · 需验证 ${counts.verification} · 已尝试提交 ${counts.unknown}`
-    + (counts.pending ? ` · 处理中 ${counts.pending}` : '')
-    + (received ? `\n邮箱已确认 ${received} 次。` : '')
-    + (counts.unknown ? '\n已尝试提交：未取得完整响应，不重复提交。' : '')
-    + '\n成功表示官方已接收请求，不代表已判定违规或封禁。';
+  return `Accounts in this batch: ${record.results.length}. Each account submits at most once.\n`
+    + `Success ${counts.success} · Not sent ${counts.not_sent} · Verification required ${counts.verification} · Submission attempted ${counts.unknown}`
+    + (counts.pending ? ` · Processing ${counts.pending}` : '')
+    + (received ? `\nConfirmed by email: ${received}.` : '')
+    + (counts.unknown ? '\nSubmission attempted: a complete response was not received. The submission will not be repeated.' : '')
+    + '\nSuccess means the request was received by PUBG support. It does not confirm a violation or a ban.';
 }
 
 export const reportEntries = record => record.results || [record];

@@ -1,8 +1,8 @@
-# UTF-8；每行一个账号：SteamID64<TAB>PUBG游戏昵称，TAB 或空格分隔。
-# 请用自己的真实资料替换示例，再保存到 data/reporters.txt。
-# 邮箱和语言统一使用 .env 中的 PUBG_REPORTER_EMAIL / PUBG_REPORTER_LANGUAGE。
-# 以下两行账号均为注释，不计入账号数。删除行首 # 并填写真实资料后生效。
-SteamID64	PUBG游戏昵称
+# UTF-8: one account per line, with SteamID64 and PUBG nickname separated by tabs or spaces.
+# Replace the examples with your own details and save as data/reporters.txt.
+# All accounts use PUBG_REPORTER_EMAIL / PUBG_REPORTER_LANGUAGE from .env.
+# The example accounts below are comments. Enter real details and remove the leading # to enable them.
+SteamID64	PUBG nickname
 # 76561198000000001	Reporter_1
 # 76561198000000002	Reporter_2
-# 空行和以 # 开头的行不计数；重复的同一 Steam ID 不增加次数。
+# Blank lines and comments are ignored. Duplicate Steam IDs do not increase the count.

@@ -53,11 +53,11 @@ async function setup(t, overrides = {}) {
 
 test('preview preserves nickname case, strips only the leading tag, and never submits before confirm', async t => {
   const h = await setup(t);
-  const card = await h.preview('举报 [ABC]Player_O1');
-  assert.match(card.text, /举报昵称：Player_O1/);
-  assert.match(card.text, /不预先断定.*作弊行为/);
-  assert.match(card.text, /未提供具体对局时间或作弊证据/);
-  assert.deepEqual(card.buttons.map(button => button.label), ['确认举报', '修改昵称', '取消']);
+  const card = await h.preview('report [ABC]Player_O1');
+  assert.match(card.text, /Reported nickname: Player_O1/);
+  assert.match(card.text, /does not assume that the player has cheated/);
+  assert.match(card.text, /No specific match time or evidence of cheating is included/);
+  assert.deepEqual(card.buttons.map(button => button.label), ['Confirm report', 'Edit nickname', 'Cancel']);
   assert.equal(h.submissions.length, 0);
   h.advance(); await h.handle(h.click(card));
   assert.equal(h.submissions.length, 1);
@@ -73,7 +73,7 @@ test('mail receipt reference is persisted before submission and survives restart
   assert.match(record.mailRef, /^KOOK-[a-f0-9]{32}$/);
   assert.equal(record.player, 'Player_01'); assert.ok(h.submissions[0].input.subject.endsWith('[' + record.mailRef + ']'));
   const restored = await openStore(h.file); assert.equal(restored.data.reports.player_01.mailRef, record.mailRef);
-  assert.match(h.sends.at(-1).text, /自动核对 Gmail/);
+  assert.match(h.sends.at(-1).text, /Official receipts in Gmail will be checked automatically/);
 });
 
 test('official mail confirms unknown once and updates status without another submission', async t => {
@@ -84,9 +84,9 @@ test('official mail confirms unknown once and updates status without another sub
   assert.equal(await h.bot.confirmMail(candidate, receipt), true);
   assert.equal(await h.bot.confirmMail(candidate, receipt), false);
   assert.equal(h.store.data.reports.player_01.kind, 'success');
-  assert.equal(h.sends.filter(item => item.text.includes('邮箱已确认提交')).length, 1);
-  await h.bot.flushMailNotifications(); assert.equal(h.sends.filter(item => item.text.includes('邮箱已确认提交')).length, 1);
-  h.advance(); await h.handle(h.event('状态 Player_01')); assert.match(h.sends.at(-1).text, /工单 #81234567/);
+  assert.equal(h.sends.filter(item => item.text.includes('Submission confirmed by email')).length, 1);
+  await h.bot.flushMailNotifications(); assert.equal(h.sends.filter(item => item.text.includes('Submission confirmed by email')).length, 1);
+  h.advance(); await h.handle(h.event('status Player_01')); assert.match(h.sends.at(-1).text, /ticket #81234567/);
   const restored = await openStore(h.file); assert.equal(restored.data.reports.player_01.mail.notification, 'attempted');
   assert.equal(restored.data.attempts.length, 1);
 });
@@ -124,7 +124,7 @@ test('desktop image-only cards reach OCR and require an initiator confirmation b
   const card = await h.preview(content, { type: 10 });
   assert.equal(imageEvent.type, 2); assert.equal(imageEvent.content, url);
   assert.equal(imageEvent.author_id, USER); assert.equal(imageEvent.target_id, CHANNEL_ID);
-  assert.match(card.text, /举报昵称：EXAMPLE_PLAYER/); assert.equal(h.submissions.length, 0);
+  assert.match(card.text, /Reported nickname: EXAMPLE_PLAYER/); assert.equal(h.submissions.length, 0);
   await h.handle(h.click(card, 'confirm', { user_id: OTHER })); assert.equal(h.submissions.length, 0);
   await h.handle(h.click(card)); assert.equal(h.submissions.length, 1);
 });
@@ -140,7 +140,7 @@ test('ambiguous or malformed image cards request a single image without running 
     JSON.stringify([{ modules: [{ ...module, elements: [image, image] }] }]),
     JSON.stringify([{ modules: [{ ...module, elements: [{ type: 'image', src: '' }] }] }])]) {
     h.advance(); await h.handle(h.event(input, { type: 10 }));
-    assert.match(h.sends.at(-1).text, /一次发送一张/);
+    assert.match(h.sends.at(-1).text, /Send one image/);
   }
   assert.equal(calls, 0); assert.equal(h.submissions.length, 0); assert.equal(h.store.data.previews.length, 0);
 });
@@ -165,7 +165,7 @@ test('image cards retain OCR URL and multiple-attachment guards before network a
     guild_id: GUILD, author: { id: USER, bot: false }, attachments: [{ url: 'a' }, { url: 'b' }]
   } }));
   assert.equal(calls, 0); assert.equal(h.sends.length, 2);
-  for (const reply of h.sends) assert.match(reply.text, /图片识别失败/);
+  for (const reply of h.sends) assert.match(reply.text, /image recognition failed/);
   assert.equal(Object.keys(h.store.data.drafts).length, 0); assert.equal(h.submissions.length, 0);
 });
 
@@ -268,7 +268,7 @@ test('cancel is immediate and durable after a preview', async t => {
   await h.handle(h.click(card, 'cancel'));
   assert.deepEqual(Object.keys(h.store.data.drafts), []);
   h.advance(); await h.handle(h.click(card));
-  assert.equal(h.submissions.length, 0); assert.match(h.sends.at(-1).text, /已取消/);
+  assert.equal(h.submissions.length, 0); assert.match(h.sends.at(-1).text, /Cancelled/);
   const saved = JSON.parse(await readFile(h.file, 'utf8'));
   assert.deepEqual(saved.drafts, {});
 });
@@ -276,7 +276,7 @@ test('cancel is immediate and durable after a preview', async t => {
 test('modify nickname invalidates old buttons and only a new preview can be confirmed', async t => {
   const h = await setup(t), first = await h.preview(); h.advance();
   await h.handle(h.click(first, 'edit'));
-  assert.match(h.sends.at(-1).text, /修改后的昵称/);
+  assert.match(h.sends.at(-1).text, /corrected nickname/);
   h.advance(); await h.handle(h.click(first)); assert.equal(h.submissions.length, 0);
   const second = await h.preview('Correct_Name'); h.advance();
   await h.handle(h.click(first)); await h.handle(h.click(second));
@@ -309,7 +309,7 @@ test('preview mode cannot invoke the real submitter and adds no submission histo
   const h = await setup(t, { enabled: false }); const card = await h.preview(); h.advance();
   await h.handle(h.click(card));
   assert.equal(h.submissions.length, 0); assert.equal(h.store.data.attempts.length, 0);
-  assert.match(h.sends.at(-1).text, /未发送举报/);
+  assert.match(h.sends.at(-1).text, /No report was sent/);
 });
 
 for (const outcome of ['success', 'verification', 'unknown']) {
@@ -322,7 +322,7 @@ for (const outcome of ['success', 'verification', 'unknown']) {
     const again = await h.preview('pLaYeR_nAmE', { author_id: OTHER, extra: { author: { id: OTHER, bot: false } } });
     h.advance(); await h.handle(h.click(again, 'confirm', { user_id: OTHER, user_info: { id: OTHER, bot: false } }));
     assert.equal(h.bot.status().attempts, 2); assert.equal(persisted.data.attempts.length, 2);
-    assert.doesNotMatch(h.sends.at(-1).text, /已有 24 小时内/);
+    assert.doesNotMatch(h.sends.at(-1).text, /already reported within 24 hours/);
     await h.handle(h.click(again, 'confirm', { user_id: OTHER, user_info: { id: OTHER, bot: false } }));
     assert.equal(h.bot.status().attempts, 2);
     assert.ok(h.sends.every(item => !item.text.includes('private@example.test')));
@@ -333,7 +333,7 @@ test('uncaught submitter failure is unknown, never definitely not_sent, and neve
   const h = await setup(t, { submit: async () => { throw new Error('private@example.test'); } });
   const card = await h.preview(); h.advance(); await h.handle(h.click(card));
   assert.equal(h.store.data.reports.player_01.kind, 'unknown');
-  assert.match(h.sends.at(-1).text, /已尝试提交，未取得完整响应/);
+  assert.match(h.sends.at(-1).text, /Submission attempted without a complete response/);
   assert.doesNotMatch(h.sends.at(-1).text, /private@example/);
 });
 
@@ -367,7 +367,7 @@ test('same-user confirmed retries are not limited to five daily submissions', as
     const card = await h.preview('Player_01'); await h.handle(h.click(card));
   }
   assert.equal(h.submissions.length, 6); assert.equal(h.store.data.attempts.length, 6);
-  assert.doesNotMatch(h.sends.at(-1).text, /提交上限/);
+  assert.doesNotMatch(h.sends.at(-1).text, /submission limit/);
 });
 
 test('distinct same-second messages are processed without global or per-user cooldowns after restart', async t => {
@@ -446,16 +446,16 @@ test('legacy hourly preview history never blocks another OCR request', async t =
   const h = await setup(t, { ocr: async (_event, { signal }) => { assert.ok(signal instanceof AbortSignal); ocrCalls++; return 'FromImage'; } });
   h.store.data.previews = Array.from({ length: 60 }, () => h.now());
   await h.handle(h.event('https://cdn.example.invalid/nickname.png', { type: 2 }));
-  assert.equal(ocrCalls, 1); assert.match(h.sends.at(-1).text, /举报昵称：FromImage/);
+  assert.equal(ocrCalls, 1); assert.match(h.sends.at(-1).text, /Reported nickname: FromImage/);
   await h.handle(h.event('https://cdn.example.invalid/nickname.png', { type: 2 }));
-  assert.equal(ocrCalls, 2); assert.match(h.sends.at(-1).text, /举报昵称：FromImage/);
+  assert.equal(ocrCalls, 2); assert.match(h.sends.at(-1).text, /Reported nickname: FromImage/);
   assert.equal(h.submissions.length, 0);
 });
 
 test('multi-line OCR and ambiguous clan strings never become report targets', async t => {
   const h = await setup(t, { ocr: async () => 'PlayerOne\nPlayerTwo' });
   await h.handle(h.event('https://cdn.example.invalid/nickname.png', { type: 2 }));
-  assert.deepEqual(Object.keys(h.store.data.drafts), []); assert.match(h.sends.at(-1).text, /一行昵称/);
+  assert.deepEqual(Object.keys(h.store.data.drafts), []); assert.match(h.sends.at(-1).text, /one line/);
   assert.equal(normalizeNickname('【CLAN】 Oo0_I1l'), 'Oo0_I1l');
   for (const raw of ['[CLANPlayer', '[A][B]Player', 'one two', 'ab', 'a\u0000b']) assert.throws(() => normalizeNickname(raw));
 });
@@ -512,8 +512,8 @@ test('submit timeout remains unknown and does not block subsequent read-only sta
   const h = await setup(t, { submit: async () => new Promise(() => {}), timeouts: { submit: 15 } });
   const card = await h.preview(); h.advance(); await h.handle(h.click(card));
   assert.equal(h.store.data.reports.player_01.kind, 'unknown');
-  h.advance(); await h.handle(h.event('状态 PLAYER_01'));
-  assert.match(h.sends.at(-1).text, /已尝试提交，未取得完整响应/);
+  h.advance(); await h.handle(h.event('/STATUS PLAYER_01'));
+  assert.match(h.sends.at(-1).text, /Submission attempted without a complete response/);
   assert.equal(h.bot.status().ready, true);
 });
 
@@ -561,10 +561,10 @@ test('store rejects corrupt data instead of silently resetting dedupe records', 
   for (const contents of ['{bad json', '{}', 'null', JSON.stringify({ seen: [], drafts: {}, reports: {} }),
     JSON.stringify({ seen: {}, drafts: {}, reports: { player: { kind: 'surprise', at: h.now() } } })]) {
     await writeFile(h.file, contents);
-    await assert.rejects(openStore(h.file), /状态文件/);
+    await assert.rejects(openStore(h.file), /[Ss]tate file/);
   }
   await writeFile(h.file, 'x'.repeat(4 * 1024 * 1024 + 1));
-  await assert.rejects(openStore(h.file), /状态文件/);
+  await assert.rejects(openStore(h.file), /[Ss]tate file/);
 });
 
 test('snapshot writes are atomic and an I/O failure permanently prevents reuse of that store', async t => {
@@ -575,8 +575,8 @@ test('snapshot writes are atomic and an I/O failure permanently prevents reuse o
   const store = await openStore(path.join(h.directory, 'temporary.json'));
   // A directory at the target makes rename fail; subsequent saves must stay closed even after removal.
   const destination = path.join(h.directory, 'temporary.json'); await mkdir(destination);
-  await assert.rejects(store.save(), /状态保存失败/); await rm(destination, { recursive: true });
-  await assert.rejects(store.save(), /状态保存失败/);
+  await assert.rejects(store.save(), /Failed to save state/); await rm(destination, { recursive: true });
+  await assert.rejects(store.save(), /Failed to save state/);
 });
 
 test('store validation discards unrecognized private fields and reconstitutes neutral drafts only', () => {
@@ -668,7 +668,7 @@ test('three isolated workers submit each account once and persist out-of-order r
   assert.equal(h.bot.status().inFlight, 3); assert.equal(calls.length, 3);
   assert.deepEqual(calls.map(item => item.workerIndex).sort(), [0, 1, 2]);
   assert.equal(h.bot.mailCandidates().length, 0);
-  assert.match(h.sends.at(-1).text, /最多 3 个账号并发/);
+  assert.match(h.sends.at(-1).text, /up to 3 concurrent submissions/);
   finishes[2].resolve(); await entered[3].promise;
   assert.equal(durableSnapshots.at(-1).reports.player_01.results[2].kind, 'verification');
   finishes[1].resolve(); await entered[4].promise;
@@ -797,17 +797,17 @@ test('TXT account count controls sequential submissions, with durable per-accoun
     assert.equal(draft.player, 'Player_01');
     await tick(); active--; return { kind: 'success' };
   } });
-  const card = await h.preview(); assert.match(card.text, /举报人账号：3 个/); assert.match(card.text, /预计提交 3 次/);
+  const card = await h.preview(); assert.match(card.text, /Reporter accounts: 3/); assert.match(card.text, /Planned submissions after confirmation: 3/);
   assert.equal(calls, 0);
   await h.handle(h.click(card, 'confirm', { user_id: OTHER })); assert.equal(calls, 0);
   const click = h.click(card); await Promise.all([h.handle(click), h.handle(click), h.handle(h.click(card))]);
   assert.equal(calls, 3); assert.equal(h.bot.status().success, 3);
-  assert.match(h.sends.at(-1).text, /成功 3 · 未发送 0/);
+  assert.match(h.sends.at(-1).text, /Success 3 · Not sent 0/);
   assert.doesNotMatch(JSON.stringify(h.sends), /receipts@gmail|7656119800000000|Reporter_[123]/);
   const disk = await openStore(h.file); assert.equal(disk.data.version, 2);
   assert.equal(disk.data.reports.player_01.results.length, 3);
   assert.ok(disk.data.reports.player_01.results.every(item => item.kind === 'success'));
-  await h.handle(h.event('状态 Player_01')); assert.match(h.sends.at(-1).text, /成功 3/);
+  await h.handle(h.event('status Player_01')); assert.match(h.sends.at(-1).text, /Success 3/);
 });
 
 test('duplicate TXT rows do not increase count and a new preview uses the updated file', async t => {
@@ -815,7 +815,7 @@ test('duplicate TXT rows do not increase count and a new preview uses the update
   const h = await setup(t, { getReporters: async () => parseReporters(text, fixedSettings) });
   const first = await h.preview(); await h.handle(h.click(first)); assert.equal(h.submissions.length, 3);
   text = accountText.split('\n')[0];
-  const second = await h.preview(); assert.match(second.text, /预计提交 1 次/);
+  const second = await h.preview(); assert.match(second.text, /Planned submissions after confirmation: 1/);
   await h.handle(h.click(second)); assert.equal(h.submissions.length, 4);
   assert.equal(h.store.data.reports.player_01.results.length, 1);
 });
@@ -827,7 +827,7 @@ test('changed identity, nickname, count or shared email invalidates an already d
     let current = accounts();
     const h = await setup(t, { getReporters: async () => current });
     const card = await h.preview(); current = changed; await h.handle(h.click(card));
-    assert.equal(h.submissions.length, 0); assert.match(h.sends.at(-1).text, /账号列表已变化/);
+    assert.equal(h.submissions.length, 0); assert.match(h.sends.at(-1).text, /account list has changed/);
     assert.deepEqual(Object.keys(h.store.data.drafts), []);
   }
 });
@@ -838,14 +838,14 @@ test('a saved preview retains the account snapshot across restart, while legacy 
   await h.handle(h.click(card)); assert.equal(h.submissions.length, 3);
   const legacy = await setup(t); const oldCard = await legacy.preview();
   legacy.bot.getReporters = async () => accounts(); await legacy.handle(legacy.click(oldCard));
-  assert.equal(legacy.submissions.length, 0); assert.match(legacy.sends.at(-1).text, /重新发送昵称/);
+  assert.equal(legacy.submissions.length, 0); assert.match(legacy.sends.at(-1).text, /Send the nickname again/);
 });
 
 test('an unreadable or invalid list cannot submit or silently fall back to one account', async t => {
   let fail = false;
   const h = await setup(t, { getReporters: async () => { if (fail) throw Error('private path and mailbox'); return accounts(); } });
   const card = await h.preview(); fail = true; await h.handle(h.click(card));
-  assert.equal(h.submissions.length, 0); assert.match(h.sends.at(-1).text, /本次未提交/);
+  assert.equal(h.submissions.length, 0); assert.match(h.sends.at(-1).text, /Nothing was submitted/);
   assert.doesNotMatch(h.sends.at(-1).text, /private path/);
   await h.handle(h.event('AnotherPlayer')); assert.equal(h.sends.filter(item => item.buttons).length, 1);
 });
@@ -854,14 +854,14 @@ test('preview mode displays the batch count but never calls the submitter', asyn
   const h = await setup(t, { getReporters: async () => accounts(), enabled: false });
   const card = await h.preview(); await h.handle(h.click(card));
   assert.equal(h.submissions.length, 0); assert.equal(h.store.data.attempts.length, 0);
-  assert.match(h.sends.at(-1).text, /已确认 3 个账号.*未发送举报/);
+  assert.match(h.sends.at(-1).text, /Preview confirmed for 3 accounts.*No report was sent/);
 });
 
 test('known not-sent results remain distinct from successful accounts in the batch summary', async t => {
   let count = 0;
   const h = await setup(t, { getReporters: async () => accounts(), submit: async () => ({ kind: count++ === 1 ? 'not_sent' : 'success' }) });
   const card = await h.preview(); await h.handle(h.click(card));
-  assert.equal(count, 3); assert.match(h.sends.at(-1).text, /成功 2 · 未发送 1/);
+  assert.equal(count, 3); assert.match(h.sends.at(-1).text, /Success 2 · Not sent 1/);
   const disk = await openStore(h.file);
   assert.deepEqual(disk.data.reports.player_01.results.map(item => item.kind), ['success', 'not_sent', 'success']);
 });
@@ -873,7 +873,7 @@ for (const kind of ['verification', 'unknown']) {
     const card = await h.preview(); await h.handle(h.click(card));
     assert.equal(count, 3); assert.equal(h.store.data.attempts.length, 3);
     assert.deepEqual(h.store.data.reports.player_01.results.map(item => item.kind), ['success', kind, kind]);
-    assert.doesNotMatch(h.sends.at(-1).text, /已停止本批后续提交/);
+    assert.doesNotMatch(h.sends.at(-1).text, /remaining submissions have been stopped/);
     await h.handle(h.click(card)); assert.equal(count, 3);
   });
 }
@@ -907,8 +907,8 @@ test('all fifty accounts are attempted once before any of their receipts become 
   assert.equal(submitted.size, 50); assert.equal(h.store.data.attempts.length, 50);
   assert.equal(h.bot.mailCandidates().length, 50);
   assert.equal(new Set(h.bot.mailCandidates().map(item => item.mailRef)).size, 50);
-  assert.match(h.sends.at(-1).text, /统一核对 50 次/);
-  assert.match(h.sends.at(-1).text, /已尝试提交 50/);
+  assert.match(h.sends.at(-1).text, /checked for all 50 submission attempts/);
+  assert.match(h.sends.at(-1).text, /Submission attempted 50/);
   await h.handle(h.click(card)); assert.equal(h.store.data.attempts.length, 50);
 });
 
@@ -926,11 +926,11 @@ test('each account has an independent mail reference and receipt, including afte
   assert.equal(await h.bot.confirmMail(candidates[1], receipt), true);
   assert.equal(await h.bot.confirmMail(candidates[0], receipt), false);
   assert.equal(h.bot.mailCandidates().length, 2);
-  assert.match(h.sends.at(-1).text, /本次账号序号：2/);
+  assert.match(h.sends.at(-1).text, /Account number in this batch: 2/);
   h.bot.store = await openStore(h.file);
   assert.equal(h.bot.store.data.reports.player_01.results[1].mail.ticketId, receipt.ticketId);
   assert.equal(h.bot.mailCandidates().length, 2);
-  await h.handle(h.event('状态 Player_01')); assert.match(h.sends.at(-1).text, /邮箱已确认 1 次/);
+  await h.handle(h.event('status Player_01')); assert.match(h.sends.at(-1).text, /Confirmed by email: 1/);
   const newer = await h.preview(); await h.handle(h.click(newer));
   assert.equal(await h.bot.confirmMail(candidates[0], { ...receipt, ticketId: '81234568', messageId: '10:201' }), false);
 });
@@ -963,7 +963,7 @@ test('crash recovery retains per-account uncertainty and refuses corrupt batch s
     value => { value.reports.player_01.results[0].mailboxHash = 'bad'; },
     value => { value.reports.player_01.results[0].kind = 'bad'; },
     value => { value.reports.player_01.batchId = 'bad'; }]) {
-    const bad = structuredClone(persisted); mutate(bad); assert.throws(() => validateStore(bad), /状态文件结构无效/);
+    const bad = structuredClone(persisted); mutate(bad); assert.throws(() => validateStore(bad), /Invalid state file structure/);
   }
   await h.bot.close(); await work;
 });

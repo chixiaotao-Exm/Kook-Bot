@@ -3,7 +3,7 @@ import path from 'node:path';
 import { importProfile } from './protocol.mjs';
 import { parseReporters,formatReporter } from './reporters.js';
 const files=process.argv.slice(2);
-if (!files.length) { console.error('用法：npm run import-profile -- HAR文件路径 [更多HAR文件路径]'); process.exit(1); }
+if (!files.length) { console.error('Usage: npm run import-profile -- HAR_PATH [MORE_HAR_PATHS]'); process.exit(1); }
 try {
   const target=path.resolve(process.env.REPORTERS_FILE||path.join(process.env.DATA_DIR||'data','reporters.txt'));
   const profilePath=path.resolve(process.env.DATA_DIR||'data','profile.json');
@@ -25,5 +25,5 @@ try {
   }
   await mkdir(path.dirname(target),{recursive:true,mode:0o700});
   await writeFile(target,text,{mode:0o600});
-  console.log(`已导入举报人 TXT，共 ${reporters.length} 个不同账号；未保存旧举报、Cookie 或令牌。`);
-} catch { console.error('无法导入个人资料，请检查 HAR、TXT 格式或同一账号的资料冲突。'); process.exitCode=1; }
+  console.log(`Imported ${reporters.length} distinct accounts into the reporter TXT file. Previous reports, cookies and tokens were not saved.`);
+} catch { console.error('Could not import profiles. Check the HAR and TXT formats and any conflicting entries for the same account.'); process.exitCode=1; }
