@@ -2,6 +2,10 @@
 
 独立的 Linux 服务将指定 GitHub 仓库的事件发送到固定 KOOK 文字频道，不调用模型、不启动对话机器人网关。
 
+可同时监听多个仓库：设置 `GITHUB_REPOSITORIES=example/first,example/second`，每个仓库分别添加 Webhook，使用同一接收地址与私密签名 Secret。未设置该变量时兼容原 `GITHUB_REPOSITORY`。卡片显示仓库名，各仓库的事件独立去重，原队列无需清空。
+
+默认所有仓库使用 `KOOK_TOKEN`。若某个仓库由另一个机器人发布，可在私密环境中设置 `GITHUB_REPOSITORY_TOKENS` JSON，为白名单仓库指定独立 Token；目标文字频道仍由同一个 `KOOK_CHANNEL_ID` 固定配置。这里的 Token 只用于发送卡片，不会写入队列或通知内容。
+
 ## 通知范围
 
 - 分支代码推送与删除：分支、提交数量、最多 3 条提交摘要。
