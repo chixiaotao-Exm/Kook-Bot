@@ -1,6 +1,7 @@
 import http from 'node:http';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { normalizeGithubEvent } from './events.js';
+import { normalizeRepositories } from './repositories.js';
 
 const EVENTS = new Set(['push', 'pull_request', 'workflow_run', 'ping']);
 const DELIVERY = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i;
@@ -13,12 +14,14 @@ export function verifySignature(raw, signature, secret) {
 }
 
 export class BridgeServer {
-  constructor({ host = '127.0.0.1', port = 18997, repository, secret, queue, logger = () => {}, maxBodyBytes = 1024 * 1024, bodyTimeoutMs = 10000 }) {
+  #repositories;
+  constructor({ host = '127.0.0.1', port = 18997, repository, repositories, secret, queue, logger = () => {}, maxBodyBytes = 1024 * 1024, bodyTimeoutMs = 10000 }) {
     if (!['127.0.0.1', '::1'].includes(host) || !Number.isInteger(port) || port < 0 || port > 65535
-      || typeof repository !== 'string' || typeof secret !== 'string' || secret.length < 32
+      || typeof secret !== 'string' || secret.length < 32
       || typeof queue?.enqueue !== 'function' || !Number.isInteger(maxBodyBytes) || maxBodyBytes < 1024 || maxBodyBytes > 2 * 1024 * 1024
       || !Number.isInteger(bodyTimeoutMs) || bodyTimeoutMs < 1 || bodyTimeoutMs > 10000) throw new Error('Invalid bridge listener');
     Object.assign(this, { host, port, repository, secret, queue, logger, maxBodyBytes, bodyTimeoutMs });
+    this.#repositories = normalizeRepositories(repositories ?? repository);
     this.server = http.createServer((req, res) => { void this.handle(req, res); });
     this.server.requestTimeout = 10000; this.server.headersTimeout = 5000;
     this.server.maxHeadersCount = 32;
@@ -77,10 +80,11 @@ export class BridgeServer {
       try { payload = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(raw)); }
       catch { throw new RequestError(400, 'invalid_json'); }
       if (!payload || typeof payload !== 'object' || Array.isArray(payload)
-        || typeof payload.repository?.full_name !== 'string'
-        || payload.repository.full_name.toLowerCase() !== this.repository.toLowerCase()) throw new RequestError(403, 'repository_not_allowed');
+        || typeof payload.repository?.full_name !== 'string') throw new RequestError(403, 'repository_not_allowed');
+      const repository = this.#repositories.find(name => name.toLowerCase() === payload.repository.full_name.toLowerCase());
+      if (!repository) throw new RequestError(403, 'repository_not_allowed');
       if (eventName === 'ping') { this.logger({ event: 'github_ping' }); return this.json(res, 200, { pong: true }); }
-      const notification = normalizeGithubEvent(eventName, payload, { repository: this.repository, deliveryId });
+      const notification = normalizeGithubEvent(eventName, payload, { repository, deliveryId });
       if (!notification) return this.json(res, 200, { ignored: true });
       const result = await this.queue.enqueue(notification);
       this.logger({ event: 'github_event', kind: notification.kind, outcome: result.duplicate ? 'duplicate' : 'queued' });

@@ -1,15 +1,13 @@
 import { loadConfig } from './config.js';
 import { BridgeServer } from './server.js';
 import { NotificationQueue } from './queue.js';
-import { validNotification } from './events.js';
-import { createKookSender } from './kook.js';
+import { createRepositoryRouter } from './routing.js';
 
 const config = loadConfig();
 const log = entry => console.log(JSON.stringify({ at: new Date().toISOString(), ...entry }));
-const send = createKookSender({ token: config.token, channelId: config.channelId, repository: config.repository });
-const queue = await new NotificationQueue({ dataDir: config.dataDir, send,
-  validate: value => validNotification(value, config.repository) }).init();
-const server = new BridgeServer({ host: config.host, port: config.port, repository: config.repository, secret: config.secret, queue, logger: log });
+const router = createRepositoryRouter({ token: config.token, repositoryTokens: config.repositoryTokens, channelId: config.channelId, repositories: config.repositories });
+const queue = await new NotificationQueue({ dataDir: config.dataDir, send: router.send, validate: router.validate }).init();
+const server = new BridgeServer({ host: config.host, port: config.port, repositories: config.repositories, secret: config.secret, queue, logger: log });
 await server.start(); queue.start();
 log({ event: 'bridge_started', port: config.port });
 let closing = false;

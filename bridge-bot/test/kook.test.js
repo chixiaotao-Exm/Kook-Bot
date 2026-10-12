@@ -22,7 +22,9 @@ test('sends one official plain-text card to its configured channel without quote
   assert.deepEqual(Object.keys(body).sort(), ['content', 'target_id', 'type']);
   assert.equal(cards.length, 1); assert.equal(cards[0].size, 'lg'); assert.equal(cards[0].theme, 'info');
   assert.deepEqual(cards[0].modules[0], { type: 'header', text: { type: 'plain-text', content: 'PR #10 已打开', emoji: false } });
-  assert.ok(cards[0].modules.slice(1, -1).every(module => module.type === 'section' && module.text.type === 'plain-text'));
+  assert.ok(cards[0].modules.slice(1, -2).every(module => module.type === 'section' && module.text.type === 'plain-text'));
+  assert.equal(cards[0].modules.at(-2).type, 'context');
+  assert.equal(cards[0].modules.at(-2).elements[0].content, '仓库：chixiaotao-Exm/Kook-Bot');
   const button = cards[0].modules.at(-1).elements[0];
   assert.equal(button.type, 'button'); assert.equal(button.click, 'link'); assert.equal(button.value, notification().url);
   assert.ok(Buffer.byteLength(init.body) <= 32768); assert.ok(body.content.length <= 8000);

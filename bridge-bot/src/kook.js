@@ -58,6 +58,7 @@ function prepare(notification, channelId, repository) {
   const cards = [{ type: 'card', size: 'lg', theme: notification.theme, modules: [
     { type: 'header', text: plain(title) },
     ...lines.map(line => ({ type: 'section', text: plain(line) })),
+    { type: 'context', elements: [plain(`仓库：${repository}`)] },
     { type: 'action-group', elements: [{ type: 'button', theme: 'info', click: 'link', value: url, text: plain('打开 GitHub') }] },
   ] }];
   const content = JSON.stringify(cards);
