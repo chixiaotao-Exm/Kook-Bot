@@ -5,8 +5,9 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from catalog import Catalog
-from policy import PolicyLimits, evaluate_request
+from catalog import Catalog, food_intent, quantity_followup
+from policy import PolicyLimits, evaluate_request, available_basic_foods
+from unittest.mock import patch
 
 
 def fixture():
@@ -149,6 +150,44 @@ class PolicyTests(unittest.TestCase):
         document["items"][0]["recipe"]["ingredients"][0]["quantity"] = True
         with self.assertRaises(ValueError):
             Catalog(document)
+
+    def test_basic_food_recommendations_use_the_same_progression_gates(self):
+        with patch('catalog.DEFAULT_FOOD_IDS', ('TestMeal', 'TestFuture', 'TestKey')):
+            self.assertEqual([i['id'] for i in available_basic_foods(self.catalog, self.world, now=1001)], ['TestMeal'])
+            self.world['observed_at'] = 100
+            self.assertEqual(available_basic_foods(self.catalog, self.world, now=1001), [])
+
+    def test_recommendations_do_not_invent_food_when_catalogue_has_none(self):
+        with patch('catalog.DEFAULT_FOOD_IDS', ('MissingFood', 'TestOre')):
+            self.assertEqual(self.catalog.basic_foods(), [])
+
+    def test_disabled_and_unverified_food_are_not_recommended(self):
+        with patch('catalog.DEFAULT_FOOD_IDS', ('TestMeal',)):
+            for patch_value in ({'disabled': True}, {'required_level': None}, {'requires_blueprint': 'Missing'}):
+                catalog = fixture()
+                catalog.items['TestMeal'].update(patch_value)
+                self.assertEqual(available_basic_foods(catalog, self.world, now=1001), [])
+
+    def test_quantity_tokens_do_not_match_unrelated_numeric_item_ids(self):
+        catalog = Catalog({'schema_version': 1, 'items': [
+            {'id': 'Meal', 'name': '测试食品', 'category': 'food'},
+            {'id': 'Blueprint010', 'name': '无关图纸', 'category': 'blueprint'},
+        ]})
+        self.assertEqual([i['id'] for i in catalog.search('申请测试食品 10 个')], ['Meal'])
+        self.assertEqual(catalog.search('10'), [])
+
+    def test_generic_food_intent_requires_whole_message_match(self):
+        for text in ('申请食物10份', '给我10份食物', '食物10份', '我要普通食物十份'):
+            self.assertEqual(food_intent(text), {'kind': 'request', 'quantity': 10})
+        self.assertEqual(food_intent('来点吃的'), {'kind': 'request', 'quantity': None})
+        for text in ('我饿了', '有什么食物', '推荐吃什么'):
+            self.assertEqual(food_intent(text)['kind'], 'browse')
+        for text in ('不要食物10份', '申请食物10份和石头20个', '为什么申请食物10份', '不是要10份食物', '申请神秘食物10份', '申请食物-10份', '申请食物1.5份'):
+            self.assertIsNone(food_intent(text), text)
+        self.assertEqual(quantity_followup('10份'), 10)
+        self.assertEqual(quantity_followup('二十份'), 20)
+        for text in ('不是10份', '10或20份', '0份', '1.5份', '10000000000份'):
+            self.assertIsNone(quantity_followup(text))
 
 
 if __name__ == "__main__":

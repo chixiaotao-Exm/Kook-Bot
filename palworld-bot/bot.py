@@ -12,8 +12,8 @@ import time
 import uuid
 
 from bridge import EventBridge
-from catalog import Catalog
-from policy import evaluate_request
+from catalog import Catalog, FOOD_TOPIC, food_intent, quantity_followup
+from policy import evaluate_request, available_basic_foods
 from delivery import DeliveryCoordinator
 from model import Model
 from runtime import Runtime, event_text
@@ -25,7 +25,8 @@ HELP = '''可直接说：申请木头 30 个、申请石头 20 个、申请食�
 第一次使用：发送「绑定 游戏角色名」，再到游戏聊天框输入验证码命令。
 「状态」查看世界进度；「我的次数」查看今日配额；「帮助」查看说明。
 每位绑定玩家每天最多 3 次，北京时间 00:00 重置。拒绝和明确未发放不扣次数；结果不明时保留次数待核对。
-成品装备按核实的配方发材料；食物、药品可直接申请。'''
+成品装备按核实的配方发材料；食物、药品可直接申请。
+不知道吃什么可说「有什么食物」；「申请食物 10 份」会按实际进度挑选普通食品。'''
 
 
 class Bot:
@@ -143,36 +144,136 @@ class Bot:
         if not player:
             await self.send('你的绑定角色当前不在线。上线后再申请，本次不扣次数。', message_id)
             return
-        await self.send('已接收 · 正在核对世界进度，并由 gpt-6-astra 审核物资申请。', message_id)
         world = {key: snapshot.get(key) for key in ('observed_at', 'world_level', 'world_day', 'base_count', 'source', 'game_version')}
         world['player_level'] = player['level']
-        candidates = self.candidates(text)
-        decision = await self.model.decide(text, world, candidates)
+        food = self.prepare_food(text, event, binding, world)
+        if food and food.get('reply'):
+            await self.send(food['reply'], message_id)
+            return
+        selected = food.get('selection') if food else None
+        if selected:
+            quantity = food['quantity']
+            await self.send(f"已为你选择适合当前进度的普通食品：{selected['name']} × {quantity}。正在由 gpt-6-astra 审核。", message_id)
+            candidates = [{**selected, 'assistance_selection': {'quantity': quantity, 'kind': 'ordinary_food'}}]
+        else:
+            await self.send('已接收 · 正在核对世界进度，并由 gpt-6-astra 审核物资申请。', message_id)
+            candidates = self.candidates(text, world)
+        model_text = food.get('model_text', text) if food else text
+        decision = await self.model.decide(model_text, world, candidates)
         if decision['intent'] != 'request':
-            await self.send(decision['reply'], message_id)
+            # The bot owns its catalogue. Even if the model unexpectedly asks
+            # for a directory, provide the verified recommendation ourselves.
+            await self.send(self.food_options(food['options'], selected, quantity) if selected else decision['reply'], message_id)
             return
         if not decision['approved']:
+            if selected:
+                self.finish_food(event, message_id)
             self.store.record_denial(message_id, uid, decision['reason'], text, decision)
             await self.send('本次未批准：' + decision['reason'] + '\n未扣次数。', message_id, 'warning')
+            return
+        if selected and decision['items'] != [{'item_id': selected['id'], 'quantity': quantity}]:
+            self.finish_food(event, message_id)
+            self.store.record_denial(message_id, uid, '食品审核结果与原申请数量不一致。', text, decision)
+            await self.send('食品审核结果与原申请不一致，未发放、不扣次数。请重新申请。', message_id, 'warning')
             return
         # Refresh actual state after a slow model response; an old snapshot cannot approve inventory changes.
         snapshot = self.bridge.snapshot()
         current = next((p for p in snapshot['players'] if p['player_uid'] == binding['player_uid'] and p['account_id'] == binding['account_id']), None)
         if not current:
+            if selected:
+                self.finish_food(event, message_id)
             await self.send('审核期间角色已离线，本次未发放、不扣次数。', message_id)
             return
         world.update({key: snapshot.get(key) for key in ('observed_at', 'world_level', 'world_day', 'base_count', 'source', 'game_version')})
         world['player_level'] = current['level']
         plan = evaluate_request(self.catalog, decision['items'], world)
         if not plan['approved']:
+            if selected:
+                self.finish_food(event, message_id)
             self.store.record_denial(message_id, uid, plan['reason'], text, {'model': decision, 'policy': plan})
             await self.send('本次未批准：' + plan['reason'] + '\n未扣次数。', message_id, 'warning')
             return
+        if selected:
+            # Close the short-answer continuation before any inventory call.
+            # A later "10份" / "换一个" must never repeat this claim.
+            self.finish_food(event, message_id)
+            plan['food_selection'] = {'item_id': selected['id'], 'name': selected['name'], 'quantity': quantity}
         result = await self.delivery.grant(message_id, uid, plan['items'], requested_text=text, decision={'model': decision, 'policy': plan})
         await self.send(self.receipt_text(result), message_id, 'success' if result['state'] == 'submitted' else 'warning')
 
-    def candidates(self, text):
-        return self.catalog.search(text, limit=60)
+    def candidates(self, text, world=None):
+        result = self.catalog.search(text, limit=60)
+        if world and FOOD_TOPIC.search(text):
+            seen = {item['id'] for item in result}
+            result += [item for item in available_basic_foods(self.catalog, world) if item['id'] not in seen]
+        return result
+
+    @staticmethod
+    def food_key(event):
+        # This bot serves one configured channel, but retain the channel in the
+        # key as well so future multi-channel routing cannot share suggestions.
+        return 'food_suggestion:' + str(event.get('target_id', event.get('channel_id', ''))) + ':' + str(event['author_id'])
+
+    @staticmethod
+    def food_options(options, selected=None, quantity=None, *, pending=False, completed=False):
+        selected = selected or options[0]
+        lines = ['当前可选的普通食品：' + '、'.join(item['name'] for item in options[:5]) + '。',
+                 f"推荐：{selected['name']}。"]
+        if completed:
+            lines.append('上次申请已处理；换推荐不会再次发放。需要新的补给请重新明确申请。')
+        elif pending:
+            lines.append('想领取多少份？直接回复「10份」即可；也可说「换一个」。')
+        else:
+            lines.append(f"可直接说「申请{selected['name']} {quantity or 10}份」；也可说「换一个」看看其他推荐。")
+        return '\n'.join(lines)
+
+    def prepare_food(self, text, event, binding, world):
+        """Resolve only safe ordinary-food requests and scoped short answers."""
+        key = self.food_key(event)
+        pending = self.runtime.get(key)
+        if not isinstance(pending, dict) or pending.get('player_uid') != binding['player_uid'] or pending.get('account_id') != binding['account_id'] or pending.get('expires_at', 0) <= time.time():
+            pending = None
+        intent = food_intent(text)
+        change = text.strip(' 。！!，,') in ('换一个', '换一种', '换个', '下一个')
+        short_quantity = quantity_followup(text)
+        is_followup = intent is None and short_quantity is not None and pending and pending.get('awaiting_quantity') and not pending.get('claim_message_id')
+        if not intent and not is_followup and not change:
+            if short_quantity is not None:
+                return {'reply': '请说明要申请的物品，例如「申请食物 10 份」。此前的领取不会因重复数量再次执行。'}
+            # Any substantive new message cancels the incomplete food request.
+            if pending and pending.get('awaiting_quantity'):
+                self.runtime.put(key, None)
+            return None
+        if change and not pending:
+            return {'reply': '可发送「有什么食物」查看当前推荐，或直接说「申请食物 10 份」。'}
+        options = available_basic_foods(self.catalog, world)
+        if not options:
+            known = self.catalog.basic_foods()
+            explanation = evaluate_request(self.catalog, [{'item_id': known[0]['id'], 'quantity': 1}], world)['reason'] if known else '机器人的普通食品资料暂不可用，需要更新服务器资料。'
+            return {'reply': explanation + '\n本次未发放，不扣次数。'}
+        completed = bool(change and pending.get('claim_message_id'))
+        selected = options[0]
+        if (change or is_followup) and pending:
+            ids = [item['id'] for item in options]
+            index = ids.index(pending['selected_id']) if pending.get('selected_id') in ids else -1
+            selected = options[(index + 1) % len(options)] if change else options[max(index, 0)]
+        quantity = short_quantity if is_followup else intent['quantity'] if intent else None
+        awaiting_quantity = bool((intent and intent['kind'] == 'request' and quantity is None) or (change and pending.get('awaiting_quantity') and not completed))
+        context = {'player_uid': binding['player_uid'], 'account_id': binding['account_id'],
+                   'selected_id': selected['id'], 'expires_at': time.time() + 600,
+                   'awaiting_quantity': awaiting_quantity, 'claim_message_id': pending.get('claim_message_id') if completed else None}
+        self.runtime.put(key, context)
+        if change or (intent and intent['kind'] == 'browse') or quantity is None:
+            return {'reply': self.food_options(options, selected, pending=awaiting_quantity, completed=completed)}
+        model_text = f"用户此前明确申请普通食物但缺数量；现在回复「{text}」，即申请{selected['name']} {quantity}份。" if is_followup else text
+        return {'selection': selected, 'quantity': quantity, 'options': options, 'model_text': model_text}
+
+    def finish_food(self, event, message_id):
+        key = self.food_key(event)
+        pending = self.runtime.get(key)
+        if isinstance(pending, dict):
+            pending.update(awaiting_quantity=False, claim_message_id=message_id)
+            self.runtime.put(key, pending)
 
     def receipt_text(self, claim):
         lines = []

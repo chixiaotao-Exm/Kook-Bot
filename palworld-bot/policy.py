@@ -142,3 +142,14 @@ def evaluate_request(catalog: Catalog, items, world, *, now=None, limits=None):
     if len(deliveries) > limits.max_delivery_lines or sum(deliveries.values()) > limits.max_delivery_quantity or any(q > 2_147_483_647 for q in deliveries.values()):
         return _denied("delivery_limit", "换算后的材料量超出单次补给范围，请减少申请数量。", evidence)
     return {"approved": True, "code": "approved", "reason": "已按实际物品资料、配方和观测进度核对。", "items": [{"item_id": i, "name": catalog.get(i)["name"], "quantity": q} for i, q in sorted(deliveries.items())], "conversions": conversions, "evidence": evidence}
+
+
+def available_basic_foods(catalog: Catalog, world, *, quantity=1, now=None, limits=None):
+    """Search our trusted catalogue and apply exactly the same grant gates.
+
+    This is recommendation data, not an approval or a delivery. The final
+    request still requires model review, a fresh world snapshot and quota.
+    """
+    return [item for item in catalog.basic_foods()
+            if evaluate_request(catalog, [{"item_id": item["id"], "quantity": quantity}],
+                                world, now=now, limits=limits)["approved"]]

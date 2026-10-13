@@ -6,7 +6,7 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from bot import Bot
@@ -226,6 +226,125 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
         client.request = AsyncMock(side_effect=HTTPError(500))
         with self.assertRaises(HTTPError):
             await client.give({})
+
+    def foods(self):
+        self.bot.catalog.items.update({
+            'TestMeal': {'id': 'TestMeal', 'name': '测试熟果', 'category': 'food', 'required_level': 2},
+            'TestBerry': {'id': 'TestBerry', 'name': '测试野果', 'category': 'ingredient', 'required_level': 1},
+            'TestFutureMeal': {'id': 'TestFutureMeal', 'name': '测试高阶食品', 'category': 'food', 'required_level': 50},
+        })
+        preference = patch('catalog.DEFAULT_FOOD_IDS', ('TestMeal', 'TestBerry', 'TestFutureMeal'))
+        preference.start()
+        self.addCleanup(preference.stop)
+        self.bot.model.result['items'] = [{'item_id': 'TestMeal', 'quantity': 10}]
+
+    async def test_generic_food_request_selects_one_real_food_and_keeps_quantity(self):
+        self.bind()
+        self.foods()
+        await self.bot.handle(self.event('申请食物10份'))
+        self.assertEqual([(p['item_id'], p['quantity']) for p in self.bot.game.posts], [('TestMeal', 10)])
+        candidates = self.bot.model.calls[0]['candidates']
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]['assistance_selection']['quantity'], 10)
+        self.assertIn('测试熟果 × 10', self.bot.sent[0]['text'])
+        self.assertEqual(self.bot.store.allowance('u1')['used'], 1)
+
+    async def test_food_recommendation_and_hunger_never_deliver(self):
+        self.bind()
+        self.foods()
+        for index, content in enumerate(('我饿了', '有什么食物', '推荐吃什么')):
+            await self.bot.handle(self.event(content, 'browse' + str(index)))
+            self.assertIn('测试熟果', self.bot.sent[-1]['text'])
+            self.assertIn('测试野果', self.bot.sent[-1]['text'])
+            self.assertNotIn('测试高阶食品', self.bot.sent[-1]['text'])
+        await self.bot.handle(self.event('10份', 'number'))
+        self.assertEqual(self.bot.game.posts, [])
+        self.assertEqual(self.bot.model.calls, [])
+
+    async def test_missing_quantity_continues_only_for_same_bound_user_and_channel(self):
+        self.bind()
+        self.foods()
+        await self.bot.handle({**self.event('申请食物'), 'target_id': 'food-channel'})
+        self.assertIn('10份', self.bot.sent[-1]['text'])
+        self.assertEqual(self.bot.game.posts, [])
+        await self.bot.handle({**self.event('10份', 'other-channel'), 'target_id': 'elsewhere'})
+        self.assertEqual(self.bot.game.posts, [])
+        await self.bot.handle({**self.event('10份', 'same-channel'), 'target_id': 'food-channel'})
+        self.assertEqual(len(self.bot.game.posts), 1)
+        self.assertIn('此前明确申请', self.bot.model.calls[-1]['text'])
+        await self.bot.handle({**self.event('10份', 'duplicate-number'), 'target_id': 'food-channel'})
+        self.assertEqual(len(self.bot.game.posts), 1)
+
+    async def test_expired_food_context_and_new_topic_do_not_deliver(self):
+        self.bind()
+        self.foods()
+        await self.bot.handle(self.event('申请食物'))
+        key = self.bot.food_key(self.event())
+        pending = self.bot.runtime.get(key)
+        pending['expires_at'] = 1
+        self.bot.runtime.put(key, pending)
+        await self.bot.handle(self.event('10份', 'expired'))
+        self.assertEqual(self.bot.game.posts, [])
+        await self.bot.handle(self.event('申请食物', 'new-food'))
+        self.bot.model.result = {'intent': 'chat', 'approved': False, 'items': [], 'reason': '', 'reply': '好'}
+        await self.bot.handle(self.event('不要食物了', 'cancel'))
+        await self.bot.handle(self.event('10份', 'after-cancel'))
+        self.assertEqual(self.bot.game.posts, [])
+
+    async def test_change_food_only_updates_recommendation_and_never_regrants(self):
+        self.bind()
+        self.foods()
+        await self.bot.handle(self.event('申请食物'))
+        await self.bot.handle(self.event('换一个', 'change'))
+        self.assertIn('推荐：测试野果', self.bot.sent[-1]['text'])
+        self.assertEqual(self.bot.game.posts, [])
+        self.bot.model.result['items'] = [{'item_id': 'TestBerry', 'quantity': 10}]
+        await self.bot.handle(self.event('10份', 'claim'))
+        self.assertEqual(self.bot.game.posts[0]['item_id'], 'TestBerry')
+        await self.bot.handle(self.event('换一个', 'after-claim'))
+        self.assertIn('不会再次发放', self.bot.sent[-1]['text'])
+        await self.bot.handle(self.event('10份', 'after-number'))
+        self.assertEqual(len(self.bot.game.posts), 1)
+
+    async def test_generic_food_selection_cannot_be_expanded_by_model(self):
+        self.bind()
+        self.foods()
+        self.bot.model.result['items'] += [{'item_id': 'TestBerry', 'quantity': 10}]
+        await self.bot.handle(self.event('申请食物10份'))
+        self.assertEqual(self.bot.game.posts, [])
+        self.assertEqual(self.bot.store.allowance('u1')['remaining'], 3)
+
+    async def test_no_food_data_and_stale_world_never_ask_user_for_catalogue(self):
+        self.bind()
+        await self.bot.handle(self.event('申请食物10份'))
+        self.assertIn('机器人的普通食品资料', self.bot.sent[-1]['text'])
+        self.assertNotIn('请提供', self.bot.sent[-1]['text'])
+        self.foods()
+        self.bot.bridge.value['observed_at'] -= 600
+        await self.bot.handle(self.event('申请食物10份', 'stale'))
+        self.assertEqual(self.bot.game.posts, [])
+        self.assertEqual(self.bot.model.calls, [])
+
+    async def test_stage_one_food_uses_eligible_basic_ingredient(self):
+        self.bind()
+        self.foods()
+        self.bot.bridge.value['players'][0]['level'] = 1
+        self.bot.model.result['items'] = [{'item_id': 'TestBerry', 'quantity': 10}]
+        await self.bot.handle(self.event('申请食物10份'))
+        self.assertEqual(self.bot.game.posts[0]['item_id'], 'TestBerry')
+
+    async def test_generic_food_rechecks_progression_after_model(self):
+        self.bind()
+        self.foods()
+        original = self.bot.model.decide
+        async def becomes_stale(*args):
+            result = await original(*args)
+            self.bot.bridge.value['observed_at'] -= 600
+            return result
+        self.bot.model.decide = becomes_stale
+        await self.bot.handle(self.event('申请食物10份'))
+        self.assertEqual(self.bot.game.posts, [])
+        self.assertEqual(self.bot.store.allowance('u1')['remaining'], 3)
 
 
 if __name__ == "__main__":

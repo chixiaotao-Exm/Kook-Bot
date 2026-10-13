@@ -24,6 +24,70 @@ COMMON_ALIASES = {
     "LuxuryMedicines": ["高级药品"], "Pickaxe_Tier_00": ["石镐", "石制镐"],
     "Axe_Tier_00": ["石斧"], "WeakerBow": ["旧弓", "陈旧弓"],
 }
+# Operator assistance preferences, not a replacement for the private catalogue.
+# Each ID still has to exist there and pass the normal progression/quantity
+# policy. Avoid treating every ingredient (including harmful mushrooms) or
+# breeding cake as an interchangeable ordinary meal.
+DEFAULT_FOOD_IDS = ("Baked_Berries", "Berries", "BakedMushroom", "FriedEggs")
+FOOD_TOPIC = re.compile(r"食物|吃的|口粮|吃什么|饿了|饱腹")
+_NUMBER = r"(?:[0-9]{1,10}|[一二两三四五六七八九十百]{1,5})"
+_FOOD_NAME = r"(?:(?:普通|基础|简单|随便的|补充饱腹的|能饱腹的))?(?:食物|吃的|口粮)"
+_REQUEST_PREFIX = r"(?:(?:请|麻烦)?(?:帮我)?(?:我想申请|我想领取|申请|领取|给我|发给我|我要|我想要|想要|需要|来|给|发))"
+
+
+def parse_quantity(value):
+    """Parse only a whole, explicitly supplied positive decimal/Chinese count."""
+    if not isinstance(value, str) or not re.fullmatch(_NUMBER, value):
+        return None
+    if value.isascii() and value.isdigit():
+        number = int(value)
+    else:
+        digits = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
+                  "六": 6, "七": 7, "八": 8, "九": 9}
+        if value in digits:
+            number = digits[value]
+        elif value == "一百":
+            number = 100
+        else:
+            match = re.fullmatch(r"([一二两三四五六七八九]?)十([一二三四五六七八九]?)", value)
+            if not match:
+                return None
+            number = digits.get(match[1], 1) * 10 + digits.get(match[2], 0)
+    return number if 1 <= number <= 2_147_483_647 else None
+
+
+def food_intent(text):
+    """Recognize safe whole-message food requests, never truncate mixed text.
+
+    More involved messages stay with the model. These narrow forms allow a
+    concrete default without changing a negation, question or unknown food into
+    a grant. Missing quantities remain missing.
+    """
+    compact = re.sub(r"\s+", "", str(text)).strip("。！!，,")
+    if re.fullmatch(r"(?:我(?:有点|已经|很)?饿了|饿了|(?:请)?推荐(?:点)?(?:食物|吃的|吃什么)|(?:有|还有|能领|可以领)(?:哪些|什么)食物|有什么吃的|(?:看看)?食物(?:列表|目录|推荐)|食物|吃的|口粮)[？?]?", compact):
+        return {"kind": "browse", "quantity": None}
+    suffix = r"(?:吧|谢谢|就行)?"
+    patterns = (
+        rf"{_REQUEST_PREFIX}(?:一些|一点|点|些)?{_FOOD_NAME}(?P<quantity>{_NUMBER})?(?:个|份|颗)?{suffix}",
+        rf"{_REQUEST_PREFIX}(?P<quantity>{_NUMBER})(?:个|份|颗)?{_FOOD_NAME}{suffix}",
+        rf"{_FOOD_NAME}(?P<quantity>{_NUMBER})(?:个|份|颗)?{suffix}",
+    )
+    for pattern in patterns:
+        match = re.fullmatch(pattern, compact)
+        if match:
+            raw = match.groupdict().get("quantity")
+            quantity = parse_quantity(raw) if raw else None
+            if raw and quantity is None:
+                return None
+            return {"kind": "request", "quantity": quantity}
+    return None
+
+
+def quantity_followup(text):
+    """A short quantity answer only; the caller must require pending intent."""
+    compact = re.sub(r"\s+", "", str(text)).strip("。！!，,")
+    match = re.fullmatch(rf"(?:要|来|就|申请|领取)?({_NUMBER})(?:个|份|颗)?(?:吧|谢谢|就行)?", compact)
+    return parse_quantity(match[1]) if match else None
 
 
 def _positive_int(value, label):
@@ -87,7 +151,11 @@ class Catalog:
         if not isinstance(query, str) or not query.strip():
             return []
         query = query.casefold().strip()
-        tokens = re.findall(r"[\w]+", query)
+        if re.fullmatch(r"[0-9]+\s*(?:个|份|支|把|瓶|块|颗)?", query):
+            return []
+        # A quantity such as 10 must not retrieve every internal ID containing
+        # 10 (for example an unrelated equipment blueprint).
+        tokens = [token for token in re.findall(r"[\w]+", query) if not re.fullmatch(r"[0-9]+(?:个|份|支|把|瓶|块|颗)?", token)]
         chinese_terms = []
         for term in re.findall(r"[\u3400-\u9fff]+", query):
             term = re.sub(r"^(?:请|帮我|给我|我想要|我想申请|我要|想要|需要|申请|领取|补给|能给我|可以给我)+", "", term)
@@ -117,12 +185,17 @@ class Catalog:
         matches.sort(key=lambda match: (-match[0], match[1]))
         return [self.model_item(item) for _, _, item in matches[:max(1, min(int(limit), 100))]]
 
+    def basic_foods(self):
+        """Candidates in operator preference order, backed by loaded facts."""
+        return [self.model_item(self.items[item_id]) for item_id in DEFAULT_FOOD_IDS
+                if item_id in self.items and self.items[item_id].get("category") in ("food", "ingredient")]
+
     @staticmethod
     def model_item(item):
         return {k: copy.deepcopy(item.get(k)) for k in (
             "id", "name", "en", "aliases", "category", "required_level", "progression_basis",
             "direct_basic", "disabled", "recipe", "requires_technology", "requires_boss",
-            "requires_research", "requires_blueprint", "ancient",
+            "requires_research", "requires_blueprint", "ancient", "ambiguous_progression", "technology_id",
         )}
 
 
