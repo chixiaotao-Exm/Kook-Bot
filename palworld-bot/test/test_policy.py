@@ -179,8 +179,9 @@ class PolicyTests(unittest.TestCase):
     def test_generic_food_intent_requires_whole_message_match(self):
         for text in ('申请食物10份', '给我10份食物', '食物10份', '我要普通食物十份'):
             self.assertEqual(food_intent(text), {'kind': 'request', 'quantity': 10})
-        self.assertEqual(food_intent('来点吃的'), {'kind': 'request', 'quantity': None})
-        for text in ('我饿了', '有什么食物', '推荐吃什么', '想吃东西', '来点吃的', '给我吃点'):
+        for text in ('来点吃的', '给我吃点'):
+            self.assertEqual(food_intent(text), {'kind': 'request', 'quantity': None})
+        for text in ('我饿了', '有什么食物', '推荐吃什么', '想吃东西'):
             self.assertEqual(food_intent(text)['kind'], 'browse')
         for text in ('不要食物10份', '申请食物10份和石头20个', '为什么申请食物10份', '不是要10份食物', '申请神秘食物10份', '申请食物-10份', '申请食物1.5份'):
             self.assertIsNone(food_intent(text), text)

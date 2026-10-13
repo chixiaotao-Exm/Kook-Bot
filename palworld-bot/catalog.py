@@ -64,7 +64,9 @@ def food_intent(text):
     a grant. Missing quantities remain missing.
     """
     compact = re.sub(r"\s+", "", str(text)).strip("。！!，,")
-    if re.fullmatch(r"(?:我(?:有点|已经|很)?饿了|饿了|想吃(?:点)?东西|吃点东西|来点(?:东西吃|吃的|食物)|给我吃点|发点食物|(?:请)?推荐(?:点)?(?:食物|吃的|吃什么)|(?:有|还有|能领|可以领)(?:哪些|什么)食物|有什么吃的|(?:看看)?食物(?:列表|目录|推荐)|食物|吃的|口粮)[？?]?", compact):
+    if re.fullmatch(r"(?:来点吃的|给我吃点|发点食物)[？?]?", compact):
+        return {"kind": "request", "quantity": None}
+    if re.fullmatch(r"(?:我(?:有点|已经|很)?饿了|饿了|想吃(?:点)?东西|吃点东西|来点东西吃|(?:请)?推荐(?:点)?(?:食物|吃的|吃什么)|(?:有|还有|能领|可以领)(?:哪些|什么)食物|有什么吃的|(?:看看)?食物(?:列表|目录|推荐)|食物|吃的|口粮)[？?]?", compact):
         return {"kind": "browse", "quantity": None}
     suffix = r"(?:吧|谢谢|就行)?"
     patterns = (
