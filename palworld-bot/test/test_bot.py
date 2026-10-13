@@ -112,7 +112,7 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
         await self.bot.handle(self.event("申请测试工具 1 把"))
         self.assertEqual({p["item_id"]: p["quantity"] for p in self.bot.game.posts}, {"TestLog": 4, "TestRock": 2})
         self.assertEqual(self.bot.store.allowance("u1")["used"], 1)
-        self.assertIn("折算为材料", self.bot.sent[-1]["text"])
+        self.assertNotIn("折算为材料", self.bot.sent[-1]["text"])
 
     async def test_unbound_user_cannot_call_model_or_grant(self):
         await self.bot.handle(self.event())

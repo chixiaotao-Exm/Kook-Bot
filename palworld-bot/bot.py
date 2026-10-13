@@ -284,9 +284,6 @@ class Bot:
         states = {'submitted': '已提交', 'failed': '未发放', 'skipped': '未发放', 'unknown': '待核对', 'pending': '处理中', 'sending': '待核对', 'queued': '未提交'}
         for item in claim.get('deliveries', []):
             lines.append(f"{item.get('name') or item['item_id']} × {item['quantity']} · {states.get(item['state'], item['state'])}")
-        conversions = claim.get('decision', {}).get('policy', {}).get('conversions', [])
-        if conversions:
-            lines.append('成品申请已按配方折算为材料。')
         if claim.get('user_id') and self.store.binding(claim['user_id']):
             lines.append(self.allowance_text(claim['user_id']))
         return '\n'.join(lines)
