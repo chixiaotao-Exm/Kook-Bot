@@ -29,7 +29,7 @@ COMMON_ALIASES = {
 # policy. Avoid treating every ingredient (including harmful mushrooms) or
 # breeding cake as an interchangeable ordinary meal.
 DEFAULT_FOOD_IDS = ("Baked_Berries", "Berries", "BakedMushroom", "FriedEggs")
-FOOD_TOPIC = re.compile(r"食物|吃的|口粮|吃什么|饿了|饱腹")
+FOOD_TOPIC = re.compile(r"食物|吃的|吃东西|口粮|吃什么|饿了|饱腹")
 _NUMBER = r"(?:[0-9]{1,10}|[一二两三四五六七八九十百]{1,5})"
 _FOOD_NAME = r"(?:(?:普通|基础|简单|随便的|补充饱腹的|能饱腹的))?(?:食物|吃的|口粮)"
 _REQUEST_PREFIX = r"(?:(?:请|麻烦)?(?:帮我)?(?:我想申请|我想领取|申请|领取|给我|发给我|我要|我想要|想要|需要|来|给|发))"
@@ -64,7 +64,7 @@ def food_intent(text):
     a grant. Missing quantities remain missing.
     """
     compact = re.sub(r"\s+", "", str(text)).strip("。！!，,")
-    if re.fullmatch(r"(?:我(?:有点|已经|很)?饿了|饿了|(?:请)?推荐(?:点)?(?:食物|吃的|吃什么)|(?:有|还有|能领|可以领)(?:哪些|什么)食物|有什么吃的|(?:看看)?食物(?:列表|目录|推荐)|食物|吃的|口粮)[？?]?", compact):
+    if re.fullmatch(r"(?:我(?:有点|已经|很)?饿了|饿了|想吃(?:点)?东西|吃点东西|来点(?:东西吃|吃的|食物)|给我吃点|发点食物|(?:请)?推荐(?:点)?(?:食物|吃的|吃什么)|(?:有|还有|能领|可以领)(?:哪些|什么)食物|有什么吃的|(?:看看)?食物(?:列表|目录|推荐)|食物|吃的|口粮)[？?]?", compact):
         return {"kind": "browse", "quantity": None}
     suffix = r"(?:吧|谢谢|就行)?"
     patterns = (
