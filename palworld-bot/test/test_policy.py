@@ -45,12 +45,15 @@ class PolicyTests(unittest.TestCase):
         self.assertTrue(result["approved"])
         self.assertEqual(result["items"], [{"item_id": "TestLog", "name": "测试原料", "quantity": 42}])
 
-    def test_finished_item_converts_once_using_verified_recipe(self):
+    def test_finished_item_is_delivered_after_verified_recipe_check(self):
         result = self.decide(("TestTool", 1), ("TestLog", 10))
         self.assertTrue(result["approved"])
-        self.assertEqual({r["item_id"]: r["quantity"] for r in result["items"]}, {"TestLog": 14, "TestOre": 3})
+        self.assertEqual({r["item_id"]: r["quantity"] for r in result["items"]}, {"TestLog": 10, "TestTool": 1})
         self.assertEqual(result["conversions"][0]["recipe_source"], "synthetic")
-        self.assertNotIn("TestTool", [i["item_id"] for i in result["items"]])
+        self.assertEqual(result["conversions"][0]["ingredients"], [
+            {"item_id": "TestLog", "name": "测试原料", "quantity": 4},
+            {"item_id": "TestOre", "name": "测试矿物", "quantity": 3},
+        ])
 
     def test_food_medicine_receive_finished_items(self):
         result = self.decide(("TestMeal", 2), ("TestMedicine", 3))
@@ -110,11 +113,11 @@ class PolicyTests(unittest.TestCase):
         self.world.update(owned_blueprints=["TestBlueprint"], defeated_bosses=["TestBoss"], completed_research=["TestResearch"])
         self.assertTrue(self.decide(("TestTool", 1))["approved"])
 
-    def test_crafting_output_batches_preserve_material_quantity(self):
+    def test_crafting_output_batches_preserve_finished_item_quantity(self):
         self.assertEqual(self.decide(("TestAmmo", 1))["code"], "batch_quantity")
         result = self.decide(("TestAmmo", 10))
         self.assertTrue(result["approved"])
-        self.assertEqual(result["items"][0]["quantity"], 2)
+        self.assertEqual(result["items"], [{"item_id": "TestAmmo", "name": "测试弹药", "quantity": 10}])
         self.assertEqual(self.decide(("TestAmmo", 20))["code"], "quantity_limit")
 
     def test_recipe_cannot_smuggle_equipment_as_a_component(self):
@@ -122,7 +125,7 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(self.decide(("TestTool", 1))["code"], "recipe_component_unavailable")
 
     def test_combined_delivery_volume_is_bounded(self):
-        self.assertEqual(self.decide(("TestTool", 1), limits=PolicyLimits(max_delivery_quantity=6))["code"], "delivery_limit")
+        self.assertEqual(self.decide(("TestAmmo", 10), limits=PolicyLimits(max_delivery_quantity=6))["code"], "delivery_limit")
 
     def test_version_prefix_is_not_a_version_match(self):
         self.world["game_version"] = "1.2.30"

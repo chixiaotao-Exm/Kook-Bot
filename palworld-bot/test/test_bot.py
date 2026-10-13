@@ -106,11 +106,11 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.bot.store.allowance("u1")["used"], 1)
         self.assertIn("核对游戏背包", self.bot.sent[-1]["text"])
 
-    async def test_crafted_request_sends_only_recipe_materials_once(self):
+    async def test_crafted_request_sends_finished_item_once(self):
         self.bind()
         self.bot.model.result["items"] = [{"item_id": "TestTool", "quantity": 1}]
         await self.bot.handle(self.event("申请测试工具 1 把"))
-        self.assertEqual({p["item_id"]: p["quantity"] for p in self.bot.game.posts}, {"TestLog": 4, "TestRock": 2})
+        self.assertEqual({p["item_id"]: p["quantity"] for p in self.bot.game.posts}, {"TestTool": 1})
         self.assertEqual(self.bot.store.allowance("u1")["used"], 1)
         self.assertNotIn("折算为材料", self.bot.sent[-1]["text"])
 

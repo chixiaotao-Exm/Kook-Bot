@@ -136,11 +136,15 @@ def evaluate_request(catalog: Catalog, items, world, *, now=None, limits=None):
             if component is None or component.get("disabled") or component.get("category") not in ("material", "food", "ingredient", "medicine"):
                 return _denied("recipe_component_unavailable", f"{item['name']} 的配方含有未核实或不支持发放的材料。", evidence)
             amount = ingredient["quantity"] * batches
-            deliveries[component["id"]] += amount
             ingredients.append({"item_id": component["id"], "name": component["name"], "quantity": amount})
+        # A verified recipe is still required as a progression and safety
+        # gate, but the requested finished item is delivered directly.  The
+        # ingredient details remain in the audit plan for traceability; they
+        # are never added to ``deliveries``.
+        deliveries[item_id] += quantity
         conversions.append({"item_id": item_id, "name": item["name"], "quantity": quantity, "ingredients": ingredients, "recipe_source": recipe["source"]})
     if len(deliveries) > limits.max_delivery_lines or sum(deliveries.values()) > limits.max_delivery_quantity or any(q > 2_147_483_647 for q in deliveries.values()):
-        return _denied("delivery_limit", "换算后的材料量超出单次补给范围，请减少申请数量。", evidence)
+        return _denied("delivery_limit", "申请总量超出单次补给范围，请减少申请数量。", evidence)
     return {"approved": True, "code": "approved", "reason": "已按实际物品资料、配方和观测进度核对。", "items": [{"item_id": i, "name": catalog.get(i)["name"], "quantity": q} for i, q in sorted(deliveries.items())], "conversions": conversions, "evidence": evidence}
 
 
