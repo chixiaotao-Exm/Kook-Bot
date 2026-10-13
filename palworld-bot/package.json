@@ -1,0 +1,7 @@
+{
+  "name": "kook-palworld-assistant",
+  "private": true,
+  "type": "module",
+  "scripts": {"start": "node gateway.mjs", "test": "python -m unittest discover -s test -v"},
+  "engines": {"node": ">=22"}
+}

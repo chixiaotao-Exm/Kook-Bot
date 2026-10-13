@@ -10,6 +10,7 @@ KOOK 多机器人项目合集，包含双音乐源播放机器人、Sub2API 额�
 | `code-agent/` | 实际源码读写、隔离测试与草稿 PR，固定操作本仓库 | [仓库执行工具](code-agent/README.md) |
 | `bridge-bot/` | GitHub 提交、PR 和 CI 结果的 KOOK 通知桥 | [通知桥](bridge-bot/README.md) |
 | `ops-center/` | Linux 资源与服务、网站接口与证书、机器人总览、KOOK 告警和状态查询 | [运维中心](ops-center/README.md) |
+| `palworld-bot/` | 幻兽帕鲁事件播报、玩家绑定、AI 物资审核、配方换材料与每日领取次数 | [帕鲁管家](palworld-bot/README.md) |
 | `menu-bot/` | 在指定文字频道发送“菜单”，直接回复 Gran Furama 中文菜单图片 | [中文菜单机器人](menu-bot/README.md) |
 | `report-bot/` | 指定频道昵称／截图识别、本人确认、单次 PUBG 举报及回执 | [PUBG 举报助手](report-bot/README.md) |
 
