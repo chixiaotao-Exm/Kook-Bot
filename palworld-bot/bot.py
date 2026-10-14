@@ -12,7 +12,7 @@ import time
 import uuid
 
 from bridge import EventBridge
-from catalog import Catalog, FOOD_TOPIC, food_intent, quantity_followup
+from catalog import Catalog, FOOD_TOPIC, food_intent, quantity_followup, special_item_request
 from policy import evaluate_request, available_basic_foods
 from delivery import DeliveryCoordinator
 from model import Model
@@ -146,24 +146,42 @@ class Bot:
             return
         world = {key: snapshot.get(key) for key in ('observed_at', 'world_level', 'world_day', 'base_count', 'source', 'game_version')}
         world['player_level'] = player['level']
-        food = self.prepare_food(text, event, binding, world)
-        if food and food.get('reply'):
-            await self.send(food['reply'], message_id)
-            return
-        selected = food.get('selection') if food else None
-        if selected:
-            quantity = food['quantity']
-            await self.send(f"已为你选择适合当前进度的普通食品：{selected['name']} × {quantity}。正在由 gpt-6-astra 审核。", message_id)
-            candidates = [{**selected, 'assistance_selection': {'quantity': quantity, 'kind': 'ordinary_food'}}]
+        special = special_item_request(text)
+        if special:
+            special_item = self.catalog.get(special['item_id'])
+            if not special_item:
+                await self.send('消除记忆药资料暂不可用，本次未发放、不扣次数。', message_id, 'warning')
+                return
+            await self.send(f"已识别为{special_item['name']}，准备发放 {special['quantity']} 瓶，由 gpt-6-astra 审核。", message_id)
+            food = None
+            selected = None
+            quantity = None
+            candidates = [self.catalog.model_item(special_item)]
+            model_text = f"用户明确申请 MindControlDrug（{special_item['name']}）{special['quantity']} 瓶；按原数量审核并直接发放成品。"
         else:
-            await self.send('已接收 · 正在核对世界进度，并由 gpt-6-astra 审核物资申请。', message_id)
-            candidates = self.candidates(text, world)
-        model_text = food.get('model_text', text) if food else text
+            food = self.prepare_food(text, event, binding, world)
+            selected = food.get('selection') if food else None
+            quantity = food['quantity'] if selected else None
+            if food and food.get('reply'):
+                await self.send(food['reply'], message_id)
+                return
+            if selected:
+                await self.send(f"已为你选择适合当前进度的普通食品：{selected['name']} × {quantity}。正在由 gpt-6-astra 审核。", message_id)
+                candidates = [{**selected, 'assistance_selection': {'quantity': quantity, 'kind': 'ordinary_food'}}]
+                model_text = food.get('model_text', text)
+            else:
+                await self.send('已接收 · 正在核对世界进度，并由 gpt-6-astra 审核物资申请。', message_id)
+                candidates = self.candidates(text, world)
+                model_text = text
         decision = await self.model.decide(model_text, world, candidates)
         if decision['intent'] != 'request':
             # The bot owns its catalogue. Even if the model unexpectedly asks
             # for a directory, provide the verified recommendation ourselves.
             await self.send(self.food_options(food['options'], selected, quantity) if selected else decision['reply'], message_id)
+            return
+        if special and (not decision['approved'] or decision['items'] != [{'item_id': special['item_id'], 'quantity': special['quantity']}]):
+            self.store.record_denial(message_id, uid, '消除记忆药审核结果与原申请不一致。', text, decision)
+            await self.send('消除记忆药审核结果不一致，未发放、不扣次数。', message_id, 'warning')
             return
         if not decision['approved']:
             if selected:

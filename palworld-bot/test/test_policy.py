@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from catalog import Catalog, food_intent, quantity_followup
+from catalog import Catalog, food_intent, quantity_followup, special_item_request
 from policy import PolicyLimits, evaluate_request, available_basic_foods
 from unittest.mock import patch
 
@@ -60,6 +60,15 @@ class PolicyTests(unittest.TestCase):
         self.assertTrue(result["approved"])
         self.assertEqual({r["item_id"]: r["quantity"] for r in result["items"]}, {"TestMeal": 2, "TestMedicine": 3})
         self.assertEqual(result["conversions"], [])
+
+    def test_memory_reset_alias_is_one_bottle_and_unlimited_item_cap(self):
+        self.assertEqual(special_item_request('申请 消除记忆药'), {'item_id': 'MindControlDrug', 'quantity': 1, 'defaulted': True})
+        self.assertEqual(special_item_request('申请 洗点 20 瓶')['quantity'], 20)
+        self.catalog.items['MindControlDrug'] = {'id': 'MindControlDrug', 'name': '洗脑药', 'category': 'medicine', 'required_level': 42,
+            'recipe': {'output_quantity': 1, 'source': 'synthetic', 'ingredients': [{'item_id': 'TestOre', 'quantity': 1}]}}
+        result = self.decide(('MindControlDrug', 100))
+        self.assertTrue(result['approved'])
+        self.assertEqual(result['items'][0]['quantity'], 100)
 
     def test_player_progress_still_matters_in_advanced_world(self):
         self.world["player_level"] = 2

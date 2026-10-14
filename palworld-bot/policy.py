@@ -7,7 +7,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 
-from catalog import Catalog, EXCLUDED_CATEGORIES
+from catalog import Catalog, EXCLUDED_CATEGORIES, SPECIAL_ITEM_IDS
 
 
 @dataclass(frozen=True)
@@ -47,9 +47,9 @@ def _gate(item, world, effective_level):
     if item.get("ambiguous_progression"):
         return f"{label} 的解锁条件存在多个数据分支，暂不自动发放。"
     needed = _level(item.get("required_level"))
-    if needed is None:
+    if needed is None and item["id"] not in SPECIAL_ITEM_IDS:
         return f"还没有 {label} 的可靠进度条件，暂不自动发放。"
-    if effective_level < needed:
+    if needed is not None and effective_level < needed and item["id"] not in SPECIAL_ITEM_IDS:
         return f"{label} 对应的资料等级为 {needed}；当前可核验进度等级为 {effective_level}。"
     requirements = (
         ("requires_boss", "defeated_bosses", "首领挑战"),
@@ -118,7 +118,9 @@ def evaluate_request(catalog: Catalog, items, world, *, now=None, limits=None):
         direct_medicine = category == "medicine"
         direct_basic = bool(item.get("direct_basic"))
         recipe = item.get("recipe")
-        maximum = limits.max_food_quantity if direct_food else limits.max_medicine_quantity if direct_medicine else limits.max_material_quantity if direct_basic else limits.max_crafted_quantity * (recipe["output_quantity"] if recipe else 1)
+        maximum = (2_147_483_647 if item_id in SPECIAL_ITEM_IDS else
+                   limits.max_food_quantity if direct_food else limits.max_medicine_quantity if direct_medicine else
+                   limits.max_material_quantity if direct_basic else limits.max_crafted_quantity * (recipe["output_quantity"] if recipe else 1))
         if quantity > maximum:
             return _denied("quantity_limit", f"每次 {item['name']} 最多申请 {maximum} 个。", evidence)
         if direct_basic or direct_food or direct_medicine:
