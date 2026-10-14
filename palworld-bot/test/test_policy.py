@@ -62,11 +62,11 @@ class PolicyTests(unittest.TestCase):
         self.assertEqual(result["conversions"], [])
 
     def test_memory_reset_alias_is_one_bottle_and_unlimited_item_cap(self):
-        self.assertEqual(special_item_request('申请 消除记忆药'), {'item_id': 'MindControlDrug', 'quantity': 1, 'defaulted': True})
+        self.assertEqual(special_item_request('申请 消除记忆药'), {'item_id': 'StatusPointResetSan', 'quantity': 1, 'defaulted': True})
         self.assertEqual(special_item_request('申请 洗点 20 瓶')['quantity'], 20)
-        self.catalog.items['MindControlDrug'] = {'id': 'MindControlDrug', 'name': '洗脑药', 'category': 'medicine', 'required_level': 42,
+        self.catalog.items['StatusPointResetSan'] = {'id': 'StatusPointResetSan', 'name': '消除记忆药', 'category': 'consumable', 'required_level': 42,
             'recipe': {'output_quantity': 1, 'source': 'synthetic', 'ingredients': [{'item_id': 'TestOre', 'quantity': 1}]}}
-        result = self.decide(('MindControlDrug', 100))
+        result = self.decide(('StatusPointResetSan', 100))
         self.assertTrue(result['approved'])
         self.assertEqual(result['items'][0]['quantity'], 100)
 

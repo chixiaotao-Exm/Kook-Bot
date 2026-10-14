@@ -23,7 +23,7 @@ COMMON_ALIASES = {
     "Herbs": ["低级药", "低级药品"], "Medicines": ["普通药品"],
     "LuxuryMedicines": ["高级药品"], "Pickaxe_Tier_00": ["石镐", "石制镐"],
     "Axe_Tier_00": ["石斧"], "WeakerBow": ["旧弓", "陈旧弓"],
-    "MindControlDrug": ["消除记忆药", "消除记忆药物", "洗点", "洗点药", "洗脑药"],
+    "StatusPointResetSan": ["消除记忆药", "消除记忆药物", "洗点", "洗点药"],
 }
 # Operator assistance preferences, not a replacement for the private catalogue.
 # Each ID still has to exist there and pass the normal progression/quantity
@@ -34,8 +34,8 @@ FOOD_TOPIC = re.compile(r"食物|吃的|吃东西|口粮|吃什么|饿了|饱腹
 _NUMBER = r"(?:[0-9]{1,10}|[一二两三四五六七八九十百]{1,5})"
 _FOOD_NAME = r"(?:(?:普通|基础|简单|随便的|补充饱腹的|能饱腹的))?(?:食物|吃的|口粮)"
 _REQUEST_PREFIX = r"(?:(?:请|麻烦)?(?:帮我)?(?:我想申请|我想领取|申请|领取|给我|发给我|我要|我想要|想要|需要|来|给|发))"
-SPECIAL_ITEM_IDS = frozenset({"MindControlDrug"})
-SPECIAL_ITEM_NAMES = {"MindControlDrug": ("消除记忆药", "消除记忆药物", "洗点", "洗点药", "洗脑药")}
+SPECIAL_ITEM_IDS = frozenset({"StatusPointResetSan"})
+SPECIAL_ITEM_NAMES = {"StatusPointResetSan": ("消除记忆药", "消除记忆药物", "洗点", "洗点药")}
 
 
 def parse_quantity(value):

@@ -116,11 +116,11 @@ class BotTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_memory_reset_alias_auto_grants_one_bottle(self):
         self.bind()
-        self.bot.catalog.items['MindControlDrug'] = {'id': 'MindControlDrug', 'name': '洗脑药', 'category': 'medicine', 'required_level': 42,
+        self.bot.catalog.items['StatusPointResetSan'] = {'id': 'StatusPointResetSan', 'name': '消除记忆药', 'category': 'consumable', 'required_level': 42,
             'recipe': {'output_quantity': 1, 'source': 'synthetic', 'ingredients': [{'item_id': 'TestRock', 'quantity': 1}]}}
-        self.bot.model.result['items'] = [{'item_id': 'MindControlDrug', 'quantity': 1}]
+        self.bot.model.result['items'] = [{'item_id': 'StatusPointResetSan', 'quantity': 1}]
         await self.bot.handle(self.event('申请 洗点'))
-        self.assertEqual([(p['item_id'], p['quantity']) for p in self.bot.game.posts], [('MindControlDrug', 1)])
+        self.assertEqual([(p['item_id'], p['quantity']) for p in self.bot.game.posts], [('StatusPointResetSan', 1)])
 
     async def test_unbound_user_cannot_call_model_or_grant(self):
         await self.bot.handle(self.event())

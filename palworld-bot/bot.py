@@ -157,7 +157,7 @@ class Bot:
             selected = None
             quantity = None
             candidates = [self.catalog.model_item(special_item)]
-            model_text = f"用户明确申请 MindControlDrug（{special_item['name']}）{special['quantity']} 瓶；按原数量审核并直接发放成品。"
+            model_text = f"用户明确申请 StatusPointResetSan（{special_item['name']}）{special['quantity']} 瓶；按原数量审核并直接发放成品。"
         else:
             food = self.prepare_food(text, event, binding, world)
             selected = food.get('selection') if food else None
