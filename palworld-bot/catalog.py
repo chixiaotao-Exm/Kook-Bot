@@ -24,6 +24,7 @@ COMMON_ALIASES = {
     "LuxuryMedicines": ["高级药品"], "Pickaxe_Tier_00": ["石镐", "石制镐"],
     "Axe_Tier_00": ["石斧"], "WeakerBow": ["旧弓", "陈旧弓"],
     "StatusPointResetSan": ["消除记忆药", "消除记忆药物", "洗点", "洗点药"],
+    "PalGenderReverse": ["帕鲁性转药", "性转药", "帕鲁变性药", "Pal Reverser"],
 }
 # Operator assistance preferences, not a replacement for the private catalogue.
 # Each ID still has to exist there and pass the normal progression/quantity
@@ -34,8 +35,11 @@ FOOD_TOPIC = re.compile(r"食物|吃的|吃东西|口粮|吃什么|饿了|饱腹
 _NUMBER = r"(?:[0-9]{1,10}|[一二两三四五六七八九十百]{1,5})"
 _FOOD_NAME = r"(?:(?:普通|基础|简单|随便的|补充饱腹的|能饱腹的))?(?:食物|吃的|口粮)"
 _REQUEST_PREFIX = r"(?:(?:请|麻烦)?(?:帮我)?(?:我想申请|我想领取|申请|领取|给我|发给我|我要|我想要|想要|需要|来|给|发))"
-SPECIAL_ITEM_IDS = frozenset({"StatusPointResetSan"})
-SPECIAL_ITEM_NAMES = {"StatusPointResetSan": ("消除记忆药", "消除记忆药物", "洗点", "洗点药")}
+SPECIAL_ITEM_NAMES = {
+    "StatusPointResetSan": ("消除记忆药", "消除记忆药物", "洗点", "洗点药"),
+    "PalGenderReverse": ("帕鲁性转药", "性转药", "帕鲁变性药", "Pal Reverser"),
+}
+SPECIAL_ITEM_IDS = frozenset(SPECIAL_ITEM_NAMES)
 
 
 def parse_quantity(value):
@@ -96,11 +100,13 @@ def quantity_followup(text):
 
 
 def special_item_request(text):
-    """Recognize exact requests that have an automatic one-bottle default."""
+    """Recognize explicit, whole-message grants; mentions are not consent."""
     compact = re.sub(r"\s+", "", str(text)).strip("。！!，,")
     for item_id, names in SPECIAL_ITEM_NAMES.items():
-        aliases = "|".join(map(re.escape, names))
-        match = re.fullmatch(rf"(?:请|麻烦)?(?:帮我)?(?:申请|领取|给我|发给我|我要|我想要|需要)?(?:{aliases})(?P<quantity>[0-9一二两三四五六七八九十百]+)?(?:瓶|个)?", compact)
+        aliases = "|".join(re.escape(re.sub(r"\s+", "", name)) for name in (*names, item_id))
+        match = re.fullmatch(rf"{_REQUEST_PREFIX}(?:{aliases})(?P<quantity>{_NUMBER})?(?:瓶|个)?(?:吧|谢谢|就行)?", compact, re.IGNORECASE)
+        if not match:
+            match = re.fullmatch(rf"{_REQUEST_PREFIX}(?P<quantity>{_NUMBER})(?:瓶|个)?(?:{aliases})(?:吧|谢谢|就行)?", compact, re.IGNORECASE)
         if not match:
             continue
         raw = match.group("quantity")

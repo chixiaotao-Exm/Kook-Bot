@@ -26,7 +26,8 @@ HELP = '''可直接说：申请木头 30 个、申请石头 20 个、申请食�
 「状态」查看世界进度；「我的次数」查看今日配额；「帮助」查看说明。
 每位绑定玩家每天最多 3 次，北京时间 00:00 重置。拒绝和明确未发放不扣次数；结果不明时保留次数待核对。
 成品装备按核实的配方和进度直接发放；食物、药品可直接申请。
-不知道吃什么可说「有什么食物」；「申请食物 10 份」会按实际进度挑选普通食品。'''
+不知道吃什么可说「有什么食物」；「申请食物 10 份」会按实际进度挑选普通食品。
+「申请帕鲁性转药」「申请消除记忆药」「申请洗点」自动批准，未写数量时各发 1 瓶，仍计每日申请次数。'''
 
 
 class Bot:
@@ -148,16 +149,20 @@ class Bot:
         world['player_level'] = player['level']
         special = special_item_request(text)
         if special:
+            # A new explicit request ends any old food quantity continuation.
+            self.runtime.put(self.food_key(event), None)
             special_item = self.catalog.get(special['item_id'])
             if not special_item:
-                await self.send('消除记忆药资料暂不可用，本次未发放、不扣次数。', message_id, 'warning')
+                await self.send('申请的物品资料暂不可用，本次未发放、不扣次数。', message_id, 'warning')
                 return
-            await self.send(f"已识别为{special_item['name']}，准备发放 {special['quantity']} 瓶，由 gpt-6-astra 审核。", message_id)
+            await self.send(f"{special_item['name']} × {special['quantity']} 瓶已自动批准，正在核对在线角色和今日次数。", message_id)
             food = None
             selected = None
             quantity = None
-            candidates = [self.catalog.model_item(special_item)]
-            model_text = f"用户明确申请 StatusPointResetSan（{special_item['name']}）{special['quantity']} 瓶；按原数量审核并直接发放成品。"
+            decision = {'intent': 'request', 'approved': True,
+                        'items': [{'item_id': special['item_id'], 'quantity': special['quantity']}],
+                        'reason': '运营者配置的指定物品自动批准。', 'reply': '',
+                        'approval_source': 'configured_special_item'}
         else:
             food = self.prepare_food(text, event, binding, world)
             selected = food.get('selection') if food else None
@@ -173,15 +178,11 @@ class Bot:
                 await self.send('已接收 · 正在核对世界进度，并由 gpt-6-astra 审核物资申请。', message_id)
                 candidates = self.candidates(text, world)
                 model_text = text
-        decision = await self.model.decide(model_text, world, candidates)
+            decision = await self.model.decide(model_text, world, candidates)
         if decision['intent'] != 'request':
             # The bot owns its catalogue. Even if the model unexpectedly asks
             # for a directory, provide the verified recommendation ourselves.
             await self.send(self.food_options(food['options'], selected, quantity) if selected else decision['reply'], message_id)
-            return
-        if special and (not decision['approved'] or decision['items'] != [{'item_id': special['item_id'], 'quantity': special['quantity']}]):
-            self.store.record_denial(message_id, uid, '消除记忆药审核结果与原申请不一致。', text, decision)
-            await self.send('消除记忆药审核结果不一致，未发放、不扣次数。', message_id, 'warning')
             return
         if not decision['approved']:
             if selected:
@@ -208,7 +209,7 @@ class Bot:
         if not plan['approved']:
             if selected:
                 self.finish_food(event, message_id)
-            self.store.record_denial(message_id, uid, plan['reason'], text, {'model': decision, 'policy': plan})
+            self.store.record_denial(message_id, uid, plan['reason'], text, {'approval' if special else 'model': decision, 'policy': plan})
             await self.send('本次未批准：' + plan['reason'] + '\n未扣次数。', message_id, 'warning')
             return
         if selected:
@@ -216,7 +217,8 @@ class Bot:
             # A later "10份" / "换一个" must never repeat this claim.
             self.finish_food(event, message_id)
             plan['food_selection'] = {'item_id': selected['id'], 'name': selected['name'], 'quantity': quantity}
-        result = await self.delivery.grant(message_id, uid, plan['items'], requested_text=text, decision={'model': decision, 'policy': plan})
+        result = await self.delivery.grant(message_id, uid, plan['items'], requested_text=text,
+                                           decision={'approval' if special else 'model': decision, 'policy': plan})
         await self.send(self.receipt_text(result), message_id, 'success' if result['state'] == 'submitted' else 'warning')
 
     def candidates(self, text, world=None):

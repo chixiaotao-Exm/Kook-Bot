@@ -74,8 +74,9 @@ def evaluate_request(catalog: Catalog, items, world, *, now=None, limits=None):
     used for ancient/blueprint/boss gates. Ordinary levels represent assistance
     policy progression; they are not a claim that a technology was learned.
 
-    The model must approve separately. This function can only constrain that
-    approval. Daily quota/reservation/delivery persistence belong to Store.
+    Ordinary requests require model approval. Exact special-item requests are
+    pre-approved by the operator. Both paths still use the same catalogue,
+    freshness, version and delivery validation. Daily quota belongs to Store.
     """
     limits = limits or PolicyLimits()
     now = time.time() if now is None else now
@@ -123,7 +124,9 @@ def evaluate_request(catalog: Catalog, items, world, *, now=None, limits=None):
                    limits.max_material_quantity if direct_basic else limits.max_crafted_quantity * (recipe["output_quantity"] if recipe else 1))
         if quantity > maximum:
             return _denied("quantity_limit", f"每次 {item['name']} 最多申请 {maximum} 个。", evidence)
-        if direct_basic or direct_food or direct_medicine:
+        # Explicit operator-approved consumables may have no crafting recipe
+        # (PalGenderReverse). Only the exact configured IDs take this route.
+        if item_id in SPECIAL_ITEM_IDS or direct_basic or direct_food or direct_medicine:
             deliveries[item_id] += quantity
             continue
         if not recipe:
